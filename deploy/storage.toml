@@ -104,7 +104,9 @@ max_attempts   = 5
 # IS built at serve startup when the onnx feature is on.
 # ─────────────────────────────────────────────────────────────
 [llm]
-ollama_url      = "http://scribe-gpu.<your-tailnet>.ts.net:11434"
+# Chat backend: "ollama" (default) or "openai" (LM Studio / OpenAI-compatible).
+provider        = "ollama"
+base_url        = "http://scribe-gpu.<your-tailnet>.ts.net:11434"
 summarize_model = "gemma3:27b"
 # fastembed-rs model for in-process embeddings (no Ollama needed for this).
 # "nomic-embed-text" → 768-dim (default, well-supported by fastembed v4).

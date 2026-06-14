@@ -105,8 +105,11 @@ max_attempts = 5
 # fastembed embeddings run in-process (no Ollama needed for embeddings).
 # ─────────────────────────────────────────────────────────────
 [llm]
-# Ollama base URL. On the processing node Ollama is local.
-ollama_url = "http://127.0.0.1:11434"
+# Chat backend: "ollama" (default) or "openai" (OpenAI-compatible: LM Studio,
+# llama.cpp, vLLM). For LM Studio: provider="openai", base_url=".../v1".
+provider = "ollama"
+# Chat server base URL. On the processing node Ollama is local.
+base_url = "http://127.0.0.1:11434"
 
 # LLM used for title, summary, action items, and RAG /ask.
 # Choose by available VRAM:

@@ -78,7 +78,7 @@ pub struct ChatClient {
 impl ChatClient {
     /// Build from the `[llm]` config (provider + base URL + optional key).
     pub fn from_config(cfg: &LlmConfig) -> Self {
-        Self::new(cfg.provider, &cfg.ollama_url, cfg.api_key.clone())
+        Self::new(cfg.provider, &cfg.base_url, cfg.api_key.clone())
     }
 
     /// Build a client explicitly. The base URL is normalized: trailing slash
@@ -290,7 +290,7 @@ mod tests {
     fn from_config_uses_provider() {
         let mut cfg = LlmConfig::default();
         cfg.provider = LlmProvider::Openai;
-        cfg.ollama_url = "http://localhost:1234".into();
+        cfg.base_url = "http://localhost:1234".into();
         let c = ChatClient::from_config(&cfg);
         assert_eq!(c.provider(), LlmProvider::Openai);
         assert_eq!(c.base_url(), "http://localhost:1234/v1");

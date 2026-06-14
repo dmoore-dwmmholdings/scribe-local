@@ -78,8 +78,9 @@ pub fn list(cfg: &Config) {
     );
 
     println!();
-    println!("Ollama models (configured):");
-    println!("  ollama_url:      {}", cfg.llm.ollama_url);
+    println!("LLM server (configured):");
+    println!("  provider:        {:?}", cfg.llm.provider);
+    println!("  base_url:        {}", cfg.llm.base_url);
     println!("  summarize_model: {}", cfg.llm.summarize_model);
     println!("  embed_model:     {}  (dim {})", cfg.llm.embed_model, cfg.llm.embed_dim);
     println!();
@@ -126,7 +127,7 @@ pub async fn pull(cfg: &Config) {
     );
     println!();
     println!(
-        "Ollama endpoint: {} (run `scribe doctor` to verify reachability).",
-        cfg.llm.ollama_url
+        "LLM endpoint: {:?} at {} (run `scribe doctor` to verify reachability).",
+        cfg.llm.provider, cfg.llm.base_url
     );
 }

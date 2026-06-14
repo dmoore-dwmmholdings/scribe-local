@@ -96,7 +96,10 @@ flate2 = "1"
 
 # ML / inference (real deps — see §8, §9). Heavy native builds; if the
 # ONNX/CUDA toolchain is unavailable, disable the crate-level `onnx` feature.
-sherpa-onnx = "1.13"
+# Use the SHARED (DLL) prebuilt, not the default static one. The static Windows
+# prebuilt is compiled with the static CRT (/MT) and won't link against `ort`'s
+# dynamic-CRT (/MD) objects (LNK2038). The shared build is /MD, matching ort.
+sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
 fastembed = "4"
 ort = "2"
 ndarray = "0.16"

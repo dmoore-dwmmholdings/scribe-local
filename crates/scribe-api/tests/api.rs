@@ -65,7 +65,7 @@ async fn test_state(url: &str, blob_root: &Path) -> AppState {
     // Auth off (dev default) so requests need no token.
     cfg.auth.require_device_token = false;
     // Point Ollama at an unused port so /ask exercises the no-LLM fallback fast.
-    cfg.llm.ollama_url = "http://127.0.0.1:1".to_string();
+    cfg.llm.base_url = "http://127.0.0.1:1".to_string();
     AppState::build(cfg).await.expect("build state")
 }
 

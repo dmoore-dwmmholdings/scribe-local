@@ -103,7 +103,7 @@ async fn pipeline_runs_end_to_end_with_stub_engines() {
     cfg.database.url = url;
     cfg.storage.blobs = blobs.clone();
     // Ollama is not running in the test; summarize degrades to an empty row.
-    cfg.llm.ollama_url = "http://127.0.0.1:1".to_string();
+    cfg.llm.base_url = "http://127.0.0.1:1".to_string();
 
     let db = Db::connect(&cfg.database).await.expect("connect db");
     reset_schema(&db).await;

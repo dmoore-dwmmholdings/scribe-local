@@ -122,10 +122,8 @@ pub struct LlmConfig {
     pub provider: LlmProvider,
     /// Base URL of the chat server. For Ollama: `http://127.0.0.1:11434`.
     /// For LM Studio / OpenAI-compatible: `http://127.0.0.1:1234/v1`
-    /// (the `/v1` is added automatically if omitted). May be written as
-    /// `base_url` in config; `ollama_url` is kept for back-compat.
-    #[serde(alias = "base_url", alias = "server_url")]
-    pub ollama_url: String,
+    /// (the `/v1` is added automatically if omitted).
+    pub base_url: String,
     /// Bearer token for OpenAI-compatible servers that require one. LM Studio
     /// ignores it; leave unset (`None`) unless your server enforces a key.
     pub api_key: Option<String>,
@@ -277,7 +275,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: LlmProvider::Ollama,
-            ollama_url: "http://127.0.0.1:11434".to_string(),
+            base_url: "http://127.0.0.1:11434".to_string(),
             api_key: None,
             summarize_model: "gemma3:27b".to_string(),
             embed_model: "nomic-embed-text".to_string(),

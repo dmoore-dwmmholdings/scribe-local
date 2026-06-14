@@ -61,7 +61,7 @@ base_url        = "http://127.0.0.1:1234/v1"
 # For LM Studio this is the LOADED model's identifier (see `GET /v1/models`, or the
 # model name shown in LM Studio). 16 GB VRAM (4070 Ti SUPER) fits a 12–14B nicely.
 # Replace with whatever you load, e.g.:
-summarize_model = "google/gemma-3-12b"
+summarize_model = "google/gemma-4-e4b"
 
 # Embeddings run in-process via fastembed (the real build) — NOT through LM Studio,
 # so the index/query vectors always match. 768-dim = nomic-embed-text.
