@@ -14,6 +14,7 @@ pub mod merge;
 pub mod summarize;
 pub mod transcode;
 pub mod transcribe;
+pub mod transcribe_segment;
 
 /// Build a [`Error::Pipeline`] tagged with the stage name.
 pub(crate) fn stage_err<E: std::fmt::Display>(stage: &'static str, source: E) -> Error {

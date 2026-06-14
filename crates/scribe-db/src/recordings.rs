@@ -24,9 +24,10 @@ impl Db {
         audio_format: Option<&str>,
         sample_rate: Option<i32>,
     ) -> Result<Recording> {
+        // `title_auto` is set when the user gave no title, so the LLM may name it.
         let sql = format!(
-            "INSERT INTO recordings (title, device_id, participants_expected, audio_format, sample_rate) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING {COLS}"
+            "INSERT INTO recordings (title, device_id, participants_expected, audio_format, sample_rate, title_auto) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING {COLS}"
         );
         let row = sqlx::query(&sql)
             .bind(title)
@@ -34,6 +35,7 @@ impl Db {
             .bind(participants_expected)
             .bind(audio_format)
             .bind(sample_rate)
+            .bind(title.is_none())
             .fetch_one(self.pool())
             .await
             .map_err(db_err)?;
@@ -101,6 +103,24 @@ impl Db {
             .map_err(db_err)?
             .rows_affected();
         not_found_if_zero(affected, id)
+    }
+
+    /// Set an **auto-generated** title (continuous regeneration + final summary).
+    /// Only overwrites a title that is itself auto-generated or empty — never a
+    /// user-provided one. Marks the title auto so later passes may keep updating
+    /// it. Returns whether a row was updated (false when a user title was kept).
+    pub async fn set_recording_title_auto(&self, id: Uuid, title: &str) -> Result<bool> {
+        let affected = sqlx::query(
+            "UPDATE recordings SET title = $2, title_auto = true \
+             WHERE id = $1 AND (title_auto OR title IS NULL OR title = '')",
+        )
+        .bind(id)
+        .bind(title)
+        .execute(self.pool())
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+        Ok(affected > 0)
     }
 
     /// Set the blob-store key prefix for this recording's audio.

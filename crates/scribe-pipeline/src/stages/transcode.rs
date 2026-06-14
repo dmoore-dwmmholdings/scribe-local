@@ -75,7 +75,8 @@ pub async fn run(cfg: &Config, db: &Db, recording_id: Uuid) -> Result<()> {
 }
 
 /// Concatenate `inputs` and decode to a 16 kHz mono PCM WAV at `out` via ffmpeg.
-async fn transcode_to_wav(inputs: &[std::path::PathBuf], out: &Path) -> Result<()> {
+/// `pub(crate)` so the incremental segment stage can transcode a single segment.
+pub(crate) async fn transcode_to_wav(inputs: &[std::path::PathBuf], out: &Path) -> Result<()> {
     if let Some(parent) = out.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }

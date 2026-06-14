@@ -45,7 +45,7 @@ pub async fn put_segment(
     body: Body,
 ) -> ApiResult<Json<serde_json::Value>> {
     // The recording must exist (FK + a clearer 404 than a constraint error).
-    let _ = state.db.get_recording(id).await?;
+    let recording = state.db.get_recording(id).await?;
 
     let ext = resolve_ext(q.ext.as_deref(), &headers);
     let start_ms = header_i64(&headers, "x-segment-start-ms");
@@ -111,6 +111,21 @@ pub async fn put_segment(
             Some(sha256.as_slice()),
         )
         .await?;
+
+    // Live transcription: while the recording is still in progress, kick off an
+    // incremental transcribe pass so the user sees text during recording. The
+    // per-recording unique index keeps at most one live job in flight; it drains
+    // all pending segments and the worker re-enqueues if more arrive. Best-effort
+    // — a queue hiccup must not fail the upload.
+    if recording.status == scribe_core::types::RecordingStatus::Uploading {
+        if let Err(e) = state
+            .db
+            .enqueue(id, scribe_core::types::JobKind::TranscribeSegment, json!({}))
+            .await
+        {
+            tracing::warn!(%id, error = %e, "could not enqueue live transcription");
+        }
+    }
 
     Ok(Json(json!({
         "seq": seq,

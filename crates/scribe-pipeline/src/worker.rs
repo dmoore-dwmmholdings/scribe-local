@@ -39,6 +39,9 @@ pub(crate) async fn run_stage(
         JobKind::Summarize => {
             stages::summarize::run(cfg, db, &engines.ollama, recording_id).await
         }
+        JobKind::TranscribeSegment => {
+            stages::transcribe_segment::run(cfg, db, engines, recording_id).await
+        }
     }
 }
 
@@ -178,6 +181,15 @@ async fn process_job(
             enqueue_successors(db, job.kind, recording_id).await?;
             if matches!(job.kind, JobKind::Embed | JobKind::Summarize) {
                 maybe_mark_ready(db, recording_id).await?;
+            }
+            // Live transcription drains itself: if more segments arrived while we
+            // were transcribing this batch, queue another pass (now that this job
+            // is `done`, the per-recording unique index allows the new one).
+            if matches!(job.kind, JobKind::TranscribeSegment)
+                && db.count_untranscribed_segments(recording_id).await? > 0
+            {
+                db.enqueue(recording_id, JobKind::TranscribeSegment, serde_json::json!({}))
+                    .await?;
             }
             Ok(())
         }

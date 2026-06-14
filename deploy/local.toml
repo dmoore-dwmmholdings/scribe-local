@@ -38,6 +38,9 @@ model       = "parakeet-tdt-0.6b-v3"
 diarization = true
 # "cuda" uses the RTX 4070 Ti SUPER in the real-ML build; ignored by the stub.
 device      = "cuda"
+# Strip non-lexical fillers (uh, um, …) from transcripts. Override the list with
+# filler_words = ["uh","um","like",...] — defaults cover common hesitation sounds.
+remove_fillers = true
 
 [worker]
 stages         = ["all"]

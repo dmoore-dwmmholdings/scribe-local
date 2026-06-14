@@ -22,11 +22,16 @@ const STAGE: &str = "merge";
 const GAP_BREAK_MS: i64 = 1_500;
 
 /// Run the merge stage for `recording_id`.
-pub async fn run(_cfg: &Config, db: &Db, recording_id: Uuid) -> Result<()> {
+pub async fn run(cfg: &Config, db: &Db, recording_id: Uuid) -> Result<()> {
     let transcript = artifacts::get_transcript(db, recording_id).await?;
     let diarization = artifacts::get_diarization(db, recording_id).await?;
 
     let mut words = transcript.words;
+    // Strip non-lexical filler words (uh, um, …) before speaker assignment.
+    let removed = crate::fillers::FillerFilter::from_config(&cfg.asr).clean(&mut words);
+    if removed > 0 {
+        tracing::debug!(%recording_id, removed, "merge: stripped filler words");
+    }
     assign_speakers(&mut words, &diarization.turns);
     let utterances = group_into_utterances(&words);
 
@@ -93,18 +98,18 @@ fn assign_speakers(words: &mut [Word], turns: &[TurnArtifact]) {
 }
 
 /// An assembled utterance before it hits the DB.
-struct GroupedUtterance {
-    local_idx: Option<i32>,
-    start_ms: i64,
-    end_ms: i64,
-    text: String,
-    words: Vec<Word>,
+pub(crate) struct GroupedUtterance {
+    pub local_idx: Option<i32>,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
+    pub words: Vec<Word>,
 }
 
 /// Group consecutive words into utterances, breaking on a speaker change or a
 /// silent gap longer than [`GAP_BREAK_MS`]. Each word keeps its assigned
 /// `local_idx`; the utterance text is the words joined by single spaces.
-fn group_into_utterances(words: &[Word]) -> Vec<GroupedUtterance> {
+pub(crate) fn group_into_utterances(words: &[Word]) -> Vec<GroupedUtterance> {
     let mut out: Vec<GroupedUtterance> = Vec::new();
     let mut cur: Option<GroupedUtterance> = None;
     let mut prev_end: i64 = 0;

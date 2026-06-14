@@ -83,6 +83,24 @@ pub struct AsrConfig {
     pub diarization: bool,
     /// Compute device hint: `cpu` or `cuda`.
     pub device: String,
+    /// Strip non-lexical filler words (uh, um, …) from the transcript.
+    pub remove_fillers: bool,
+    /// The filler words removed when `remove_fillers` is on (matched
+    /// case-insensitively, surrounding punctuation ignored).
+    pub filler_words: Vec<String>,
+}
+
+/// Default non-lexical fillers stripped from transcripts. Deliberately
+/// conservative — only clear hesitation sounds, not contentious words like
+/// "like" or "you know" (add those to `[asr].filler_words` if you want them).
+pub fn default_filler_words() -> Vec<String> {
+    [
+        "uh", "uhh", "um", "umm", "uhm", "er", "err", "erm", "ah", "ahh", "hmm", "hm", "mm",
+        "mmm", "mhm", "eh", "uhhuh",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +272,8 @@ impl Default for AsrConfig {
             model: "parakeet-tdt-0.6b-v3".to_string(),
             diarization: true,
             device: "cpu".to_string(),
+            remove_fillers: true,
+            filler_words: default_filler_words(),
         }
     }
 }

@@ -405,9 +405,9 @@ export default function RecordingDetailScreen() {
           <View style={styles.statusBanner}>
             <Text style={styles.statusBannerText}>
               {status === 'uploading'
-                ? 'Uploading — transcript will appear when complete.'
+                ? 'Recording — transcribing live; speaker labels are assigned when you stop.'
                 : status === 'processing'
-                  ? 'Processing — transcript will appear shortly.'
+                  ? 'Finalizing transcript and speaker labels…'
                   : 'Processing failed. Check server logs.'}
             </Text>
           </View>

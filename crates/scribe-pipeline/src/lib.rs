@@ -20,7 +20,9 @@
 
 mod artifacts;
 mod engines;
+mod fillers;
 mod stages;
+mod title;
 mod worker;
 
 use std::path::Path;

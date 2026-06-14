@@ -108,17 +108,24 @@ pub enum JobKind {
     Embed,
     /// LLM title/summary/action items.
     Summarize,
+    /// Incremental ("live") transcription: transcribe newly-uploaded segments
+    /// into provisional utterances *during* recording. A side-channel job
+    /// (triggered per upload), not part of the `complete`-time DAG.
+    #[serde(rename = "transcribe_segment")]
+    TranscribeSegment,
 }
 
 impl JobKind {
-    /// Every kind, in rough pipeline order. `["all"]` expands to this.
-    pub const ALL: [JobKind; 6] = [
+    /// Every kind a worker can claim. `["all"]` expands to this. Includes the
+    /// side-channel `TranscribeSegment` so a default worker handles live jobs.
+    pub const ALL: [JobKind; 7] = [
         JobKind::Transcode,
         JobKind::Diarize,
         JobKind::Transcribe,
         JobKind::Merge,
         JobKind::Embed,
         JobKind::Summarize,
+        JobKind::TranscribeSegment,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -129,10 +136,12 @@ impl JobKind {
             JobKind::Merge => "merge",
             JobKind::Embed => "embed",
             JobKind::Summarize => "summarize",
+            JobKind::TranscribeSegment => "transcribe_segment",
         }
     }
 
     /// The stages that must complete before this one can run (DAG edges).
+    /// `TranscribeSegment` is side-channel (no DAG edges).
     pub fn predecessors(&self) -> &'static [JobKind] {
         match self {
             JobKind::Transcode => &[],
@@ -141,6 +150,7 @@ impl JobKind {
             JobKind::Merge => &[JobKind::Diarize, JobKind::Transcribe],
             JobKind::Embed => &[JobKind::Merge],
             JobKind::Summarize => &[JobKind::Merge],
+            JobKind::TranscribeSegment => &[],
         }
     }
 
@@ -153,6 +163,7 @@ impl JobKind {
             JobKind::Merge => &[JobKind::Embed, JobKind::Summarize],
             JobKind::Embed => &[],
             JobKind::Summarize => &[],
+            JobKind::TranscribeSegment => &[],
         }
     }
 }
@@ -173,6 +184,7 @@ impl FromStr for JobKind {
             "merge" => Ok(Self::Merge),
             "embed" => Ok(Self::Embed),
             "summarize" => Ok(Self::Summarize),
+            "transcribe_segment" => Ok(Self::TranscribeSegment),
             other => Err(format!("unknown job kind: {other}")),
         }
     }
