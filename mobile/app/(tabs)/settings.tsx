@@ -19,6 +19,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import 'react-native-get-random-values'; // for crypto.randomUUID()
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { api } from '../../src/api/client';
@@ -38,10 +39,12 @@ const QUALITY_OPTIONS: { label: string; value: Quality }[] = [
 
 export default function SettingsScreen() {
   const store = useSettingsStore();
+  const router = useRouter();
 
   const [baseUrl, setBaseUrl] = useState(store.baseUrl);
   const [deviceKey, setDeviceKey] = useState(store.deviceKey);
   const [deviceId, setDeviceId] = useState(store.deviceId);
+  const [updateToken, setUpdateToken] = useState(store.updateToken);
   const [audioQuality, setAudioQuality] = useState<Quality>(store.audioQuality);
   const [defaultParticipants, setDefaultParticipants] = useState(
     String(store.defaultParticipants),
@@ -68,6 +71,7 @@ export default function SettingsScreen() {
         deviceId: deviceId.trim() || crypto.randomUUID(),
         audioQuality,
         defaultParticipants: parseInt(defaultParticipants, 10) || 2,
+        updateToken: updateToken.trim(),
       });
       Alert.alert('Saved', 'Settings saved successfully.');
     } catch (err) {
@@ -131,6 +135,22 @@ export default function SettingsScreen() {
         Stored in the device's secure enclave.
       </Text>
 
+      <Text style={styles.label}>Update token</Text>
+      <TextInput
+        style={styles.input}
+        placeholder="scribe_update_…"
+        value={updateToken}
+        onChangeText={setUpdateToken}
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry
+        returnKeyType="done"
+      />
+      <Text style={styles.hint}>
+        Admin secret for the /admin/* endpoints (backend self-update and rollback).
+        Separate from the device key. Stored in the device's secure enclave.
+      </Text>
+
       {/* Test connection */}
       <TouchableOpacity
         style={styles.secondaryButton}
@@ -153,6 +173,15 @@ export default function SettingsScreen() {
           {testResult}
         </Text>
       )}
+
+      {/* Backend update */}
+      <TouchableOpacity
+        style={styles.secondaryButton}
+        onPress={() => router.push('/admin/update')}
+        accessibilityRole="button"
+      >
+        <Text style={styles.secondaryButtonText}>Backend update…</Text>
+      </TouchableOpacity>
 
       {/* Audio */}
       <Text style={[styles.sectionHeader, { marginTop: 24 }]}>Audio</Text>

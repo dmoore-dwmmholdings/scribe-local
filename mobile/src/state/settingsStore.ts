@@ -14,6 +14,7 @@ import type { AppSettings } from '../types';
 
 const STORAGE_KEY = 'scribe_settings';
 const SECURE_KEY_DEVICE_KEY = 'scribe_device_key';
+const SECURE_KEY_UPDATE_TOKEN = 'scribe_update_token';
 
 const DEFAULT_SETTINGS: AppSettings = {
   baseUrl: '',
@@ -21,6 +22,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   deviceId: '',
   audioQuality: 'medium',
   defaultParticipants: 2,
+  updateToken: '',
 };
 
 interface SettingsState extends AppSettings {
@@ -35,9 +37,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   hydrate: async () => {
     try {
-      const [stored, deviceKey] = await Promise.all([
+      const [stored, deviceKey, updateToken] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEY),
         SecureStore.getItemAsync(SECURE_KEY_DEVICE_KEY),
+        SecureStore.getItemAsync(SECURE_KEY_UPDATE_TOKEN),
       ]);
 
       const parsed: Partial<AppSettings> = stored ? JSON.parse(stored) : {};
@@ -45,6 +48,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ...DEFAULT_SETTINGS,
         ...parsed,
         deviceKey: deviceKey ?? '',
+        updateToken: updateToken ?? '',
         hydrated: true,
       });
     } catch {
@@ -56,8 +60,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const current = get();
     const next: AppSettings = { ...current, ...patch };
 
-    // Persist deviceKey securely; store the rest as plain JSON
-    const { deviceKey, ...rest } = next;
+    // Persist deviceKey and updateToken securely; store the rest as plain JSON
+    const { deviceKey, updateToken, ...rest } = next;
 
     await Promise.all([
       AsyncStorage.setItem(
@@ -65,6 +69,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         JSON.stringify(rest),
       ),
       SecureStore.setItemAsync(SECURE_KEY_DEVICE_KEY, deviceKey),
+      SecureStore.setItemAsync(SECURE_KEY_UPDATE_TOKEN, updateToken),
     ]);
 
     set(next);

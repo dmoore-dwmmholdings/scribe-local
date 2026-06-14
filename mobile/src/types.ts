@@ -259,4 +259,34 @@ export interface AppSettings {
   deviceId: string; // stable device identifier sent on POST /recordings
   audioQuality: 'low' | 'medium' | 'high'; // maps to bitrate
   defaultParticipants: number;
+  updateToken: string; // Admin bearer token for /admin/* endpoints
+}
+
+// ---------------------------------------------------------------------------
+// Admin / update API types
+// ---------------------------------------------------------------------------
+
+/** Response from `GET /admin/info`. */
+export interface UpdateInfoResponse {
+  version: string;
+  target: string;
+  update_enabled: boolean;
+  restart_mode: string;
+  has_backup: boolean;
+}
+
+/** Response from `POST /admin/update`. */
+export interface UpdateResponse {
+  from_version: string;
+  to_version: string;
+  target: string;
+  restarting: true;
+  restart_in_ms: number;
+}
+
+/** Response from `POST /admin/update/rollback`. */
+export interface RollbackResponse {
+  restored_version: string;
+  restarting: boolean;
+  restart_in_ms: number;
 }

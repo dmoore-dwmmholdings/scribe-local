@@ -14,6 +14,7 @@
  *   you add rustus.
  */
 
+import * as FileSystem from 'expo-file-system';
 import type {
   AskRequest,
   AskResponse,
@@ -26,7 +27,10 @@ import type {
   NameSpeakerRequest,
   NameSpeakerResponse,
   RecordingDetailResponse,
+  RollbackResponse,
   SearchResponse,
+  UpdateInfoResponse,
+  UpdateResponse,
   UploadSegmentResponse,
 } from '../types';
 import { useSettingsStore } from '../state/settingsStore';
@@ -282,5 +286,135 @@ export const api = {
   authHeader(): string {
     const { deviceKey } = useSettingsStore.getState();
     return `Bearer ${deviceKey}`;
+  },
+
+  // -------------------------------------------------------------------------
+  // Admin / update endpoints  (Authorization: Bearer <updateToken>)
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /admin/info — returns the current backend version and update metadata.
+   * Uses the update token, NOT the device key.
+   */
+  getUpdateInfo(): Promise<UpdateInfoResponse> {
+    const { baseUrl, updateToken } = useSettingsStore.getState();
+    if (!baseUrl) throw new Error('Scribe server URL is not configured. Go to Settings.');
+    if (!updateToken) throw new Error('Update token is not configured. Go to Settings.');
+    return fetch(url(baseUrl, '/admin/info'), {
+      headers: { Authorization: `Bearer ${updateToken}` },
+    }).then(async (r) => {
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new ApiError(r.status, text || r.statusText, '/admin/info');
+      }
+      return r.json() as Promise<UpdateInfoResponse>;
+    });
+  },
+
+  /**
+   * POST /admin/update — uploads a .tar.gz package as raw bytes and triggers
+   * an in-place backend update + restart.
+   *
+   * Uses expo-file-system uploadAsync for native binary upload with progress
+   * callbacks (BINARY_CONTENT method).  Falls back to a plain fetch if the
+   * file cannot be read as a blob.
+   *
+   * @param fileUri  - local file:// URI from expo-document-picker
+   * @param onProgress - optional callback receiving 0..1 upload fraction
+   */
+  async uploadUpdatePackage(
+    fileUri: string,
+    onProgress?: (fraction: number) => void,
+  ): Promise<UpdateResponse> {
+    const { baseUrl, updateToken } = useSettingsStore.getState();
+    if (!baseUrl) throw new Error('Scribe server URL is not configured. Go to Settings.');
+    if (!updateToken) throw new Error('Update token is not configured. Go to Settings.');
+
+    const endpoint = url(baseUrl, '/admin/update');
+
+    // expo-file-system uploadAsync gives us native progress + background
+    // capability.  It POSTs raw binary when httpMethod is POST and
+    // uploadType is BINARY_CONTENT.
+    const task = FileSystem.createUploadTask(
+      endpoint,
+      fileUri,
+      {
+        httpMethod: 'POST',
+        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        headers: {
+          Authorization: `Bearer ${updateToken}`,
+          'Content-Type': 'application/gzip',
+        },
+      },
+      (event) => {
+        if (onProgress && event.totalBytesSent > 0 && event.totalBytesExpectedToSend > 0) {
+          onProgress(event.totalBytesSent / event.totalBytesExpectedToSend);
+        }
+      },
+    );
+
+    const result = await task.uploadAsync();
+    if (!result) throw new Error('Upload returned no response');
+
+    if (result.status < 200 || result.status >= 300) {
+      throw new ApiError(result.status, result.body || 'Upload failed', '/admin/update');
+    }
+
+    return JSON.parse(result.body) as UpdateResponse;
+  },
+
+  /**
+   * POST /admin/update/rollback — reverts to the previous backup binary and
+   * triggers a restart.  Only available when `has_backup` is true.
+   */
+  rollbackUpdate(): Promise<RollbackResponse> {
+    const { baseUrl, updateToken } = useSettingsStore.getState();
+    if (!baseUrl) throw new Error('Scribe server URL is not configured. Go to Settings.');
+    if (!updateToken) throw new Error('Update token is not configured. Go to Settings.');
+    return fetch(url(baseUrl, '/admin/update/rollback'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${updateToken}` },
+    }).then(async (r) => {
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new ApiError(r.status, text || r.statusText, '/admin/update/rollback');
+      }
+      return r.json() as Promise<RollbackResponse>;
+    });
+  },
+
+  /**
+   * Polls GET /health until the server responds with status 200 or the
+   * timeout elapses.  Use this after an update/rollback to detect when
+   * the backend has restarted into the new binary.
+   *
+   * Resolves with the final HealthResponse, or rejects with an error if
+   * the timeout expires.
+   */
+  async waitForHealthy(timeoutMs: number = 60_000): Promise<HealthResponse> {
+    const { baseUrl } = useSettingsStore.getState();
+    if (!baseUrl) throw new Error('Scribe server URL is not configured. Go to Settings.');
+
+    const deadline = Date.now() + timeoutMs;
+    const POLL_INTERVAL_MS = 2_000;
+
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(url(baseUrl, '/health'), { signal: AbortSignal.timeout(4_000) });
+        if (r.ok) {
+          return r.json() as Promise<HealthResponse>;
+        }
+      } catch {
+        // backend is still down — keep polling
+      }
+      // Wait before next poll (skip if we've already hit the deadline)
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(POLL_INTERVAL_MS, remaining)),
+      );
+    }
+
+    throw new Error(`Backend did not become healthy within ${timeoutMs / 1000}s`);
   },
 };

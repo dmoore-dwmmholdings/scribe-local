@@ -27,6 +27,10 @@ export default function RootLayout() {
           name="recordings/[id]"
           options={{ title: 'Recording', headerBackTitle: 'Back' }}
         />
+        <Stack.Screen
+          name="admin/update"
+          options={{ title: 'Backend Update', headerBackTitle: 'Settings' }}
+        />
       </Stack>
     </>
   );
