@@ -1,3 +1,4 @@
+import '../src/util/polyfills'; // crypto.getRandomValues + randomUUID — must be first
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
