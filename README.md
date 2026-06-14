@@ -232,6 +232,24 @@ models/
 See [models/README.md](models/README.md) for download instructions and sources.
 fastembed models are downloaded automatically at first run.
 
+### GPU acceleration (NVIDIA / CUDA)
+
+The bundled `onnxruntime.dll` is CPU-only, so `[asr].device = "cuda"` falls back
+to CPU until you install the CUDA execution provider. On Windows:
+
+```powershell
+.\scripts\setup-gpu.ps1     # installs the GPU onnxruntime provider + CUDA 12/cuDNN 9 DLLs
+```
+
+It drops Microsoft's `onnxruntime-gpu` (version-matched to the bundled
+onnxruntime, so it stays compatible with both sherpa-onnx and fastembed) plus the
+CUDA/cuDNN runtime DLLs beside `scribe.exe`. Then set `[asr].device = "cuda"`
+(the default `deploy/local.toml` already does) and restart. Verify with
+`nvidia-smi` — `scribe.exe` should appear as a compute app and GPU utilization
+should spike during a transcription. Re-run after a clean `cargo build` (which
+re-copies the CPU DLLs). CPU ASR (Parakeet) is already faster-than-real-time, so
+the GPU is an optimization, not a requirement.
+
 ---
 
 ## Configuration reference
