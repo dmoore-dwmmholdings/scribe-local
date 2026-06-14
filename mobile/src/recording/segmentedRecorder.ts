@@ -38,12 +38,13 @@
  */
 
 import {
-  AudioRecorder,
+  AudioModule,
   setAudioModeAsync,
   requestRecordingPermissionsAsync,
+  type AudioRecorder,
   type RecordingOptions,
 } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -194,7 +195,13 @@ export class SegmentedRecorder {
     try {
       // AudioRecorder is instantiated with options; prepareToRecordAsync
       // allocates OS resources, then record() starts capture.
-      const recorder = new AudioRecorder(RECORDING_OPTIONS);
+      //
+      // SDK 54: the `AudioRecorder` class is re-exported type-only from
+      // expo-audio; the constructable value lives on `AudioModule.AudioRecorder`
+      // (this is exactly what the useAudioRecorder hook calls internally).
+      // We can't use the hook here because this is a plain class, not a
+      // React component, and we deliberately create one recorder per segment.
+      const recorder = new AudioModule.AudioRecorder(RECORDING_OPTIONS);
       await recorder.prepareToRecordAsync();
       recorder.record();
       this.activeRecorder = recorder;

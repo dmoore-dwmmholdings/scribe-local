@@ -14,7 +14,10 @@
  *   you add rustus.
  */
 
-import * as FileSystem from 'expo-file-system';
+// SDK 54: createUploadTask / FileSystemUploadType (the binary upload + progress
+// API) moved to the /legacy entry point. Importing from there preserves the
+// exact upload behavior and progress callbacks the update screen relies on.
+import * as FileSystem from 'expo-file-system/legacy';
 import type {
   AskRequest,
   AskResponse,

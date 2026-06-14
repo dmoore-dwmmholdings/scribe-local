@@ -21,7 +21,9 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+// SDK 54: the classic file-system API (deleteAsync, etc.) moved to the
+// /legacy entry point. We keep using it to preserve exact behavior.
+import * as FileSystem from 'expo-file-system/legacy';
 import { api } from '../api/client';
 import { useRecordingsStore } from '../state/recordingsStore';
 import type { PendingSegment } from '../types';

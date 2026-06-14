@@ -15,7 +15,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.scribe.mobile",
       "infoPlist": {
-        "UIBackgroundModes": ["audio"],
+        "UIBackgroundModes": [
+          "audio"
+        ],
         "NSMicrophoneUsageDescription": "Scribe records meetings; microphone access is required.",
         "NSSpeechRecognitionUsageDescription": "Scribe transcribes meetings locally."
       }
@@ -38,7 +40,9 @@
       [
         "expo-secure-store",
         {}
-      ]
+      ],
+      "expo-font",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
