@@ -10,13 +10,19 @@ name = "scribe"
 path = "src/main.rs"
 
 [features]
+# `onnx` turns on the real-ML build everywhere the binary needs it consistently:
+# the worker's ASR/embeddings (scribe-pipeline/onnx) *and* the API's query
+# embedder (scribe-api/local-embed) — same binary, same model. Build with
+# `--no-default-features` for the full deterministic-stub build (no ONNX runtime).
 default = ["onnx"]
-onnx = ["scribe-pipeline/onnx"]
+onnx = ["scribe-pipeline/onnx", "scribe-api/local-embed"]
 
 [dependencies]
 scribe-core = { workspace = true }
 scribe-db = { workspace = true }
-scribe-api = { workspace = true }
+# default-features=false so `--no-default-features` on the CLI actually disables
+# the API's ONNX query embedder; the `onnx` feature above forwards it back on.
+scribe-api = { workspace = true, default-features = false }
 scribe-pipeline = { workspace = true, default-features = false }
 scribe-asr = { workspace = true, default-features = false }
 scribe-llm = { workspace = true, default-features = false }
@@ -28,3 +34,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+# Used directly for two small raw queries the db crate doesn't wrap: the
+# post-migrate / doctor migration count, and the `speaker merge` transaction.
+sqlx = { workspace = true }

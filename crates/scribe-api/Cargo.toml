@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Keep the query embedder consistent with the worker's index embedder: same
+# binary, same feature → same model. Disable with `--no-default-features` to
+# fall back to scribe-llm's deterministic hash stub (no ONNX runtime needed).
+default = ["local-embed"]
+local-embed = ["scribe-llm/local-embed"]
+
 [dependencies]
 scribe-core = { workspace = true }
 scribe-db = { workspace = true }
@@ -25,3 +32,11 @@ bytes = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 rustls = { workspace = true }
+toml = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
+http-body-util = "0.1"
+tempfile = "3"

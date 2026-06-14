@@ -1,0 +1,113 @@
+# /etc/scribe/storage.toml
+# Configuration for the STORAGE NODE: runs `scribe serve`.
+# This node hosts the Axum HTTP API, audio blobs on disk, and Postgres.
+# It does NOT run the ML pipeline — that is the compute node's job.
+#
+# Loading order (later overrides earlier):
+#   1. Built-in defaults (see crates/scribe-core/src/config.rs)
+#   2. This TOML file
+#   3. Environment variables: SCRIBE_<SECTION>__<KEY>
+#      e.g.  SCRIBE_DATABASE__URL="postgres://..." overrides [database].url
+#            SCRIBE_STORAGE__SIGNING_SECRET="..."  overrides [storage].signing_secret
+#
+# Replace <your-tailnet> with your actual Tailscale tailnet name.
+
+# ─────────────────────────────────────────────────────────────
+# Database
+# ─────────────────────────────────────────────────────────────
+[database]
+# Postgres is on the same node (or the tailnet). The pgvector extension must be
+# enabled (the docker-compose.yml uses pgvector/pgvector:pg17 which includes it).
+# Run `scribe migrate` once to apply migrations before starting `serve`.
+url             = "postgres://scribe:scribe@localhost/scribe?sslmode=disable"
+# For production with TLS between app and DB:
+#   url = "postgres://scribe@localhost/scribe?sslmode=require"
+max_connections = 20
+
+# ─────────────────────────────────────────────────────────────
+# Blob storage (audio files on disk)
+# Layout: {blobs}/{recording_id}/segments/000001.m4a …
+#                                audio.wav   (transcoded cache)
+# ─────────────────────────────────────────────────────────────
+[storage]
+blobs = "/var/lib/scribe/blobs"
+
+# HMAC key for short-lived signed URLs handed to the worker for audio pulls.
+# MUST be changed in production — set via env:
+#   SCRIBE_STORAGE__SIGNING_SECRET="$(openssl rand -hex 32)"
+signing_secret = "change-me-in-production"
+
+# How long a signed audio-pull URL stays valid (seconds). The worker fetches
+# audio promptly after claiming a job so 600 s (10 min) is generous.
+signed_url_ttl_secs = 600
+
+# ─────────────────────────────────────────────────────────────
+# API server (Axum)
+# `tailscale serve` terminates TLS on the tailnet and reverse-proxies here,
+# so we bind plain HTTP on localhost. See docs/networking-tailscale.md.
+# ─────────────────────────────────────────────────────────────
+[api]
+# Bind address for the Axum server. tailscale serve fronts this.
+bind = "127.0.0.1:8443"
+
+# Optional rustus tus-server upstream. rustus handles the resumable-upload
+# protocol; its completion hook calls back into scribe serve. If omitted,
+# the plain PUT /recordings/{id}/segments/{seq} endpoint is used instead.
+# tus_upstream = "http://127.0.0.1:1080"
+
+# Maximum upload body for a single segment PATCH/PUT (bytes). Must be large
+# enough for a 30–60 s AAC chunk at ~32 kbps (~14 MB/hour → ~1–2 MB/segment).
+max_segment_bytes = 16777216   # 16 MiB
+
+# Public base URL the worker uses to pull audio over the tailnet.
+# This must be reachable from the processing node. Use the MagicDNS name so
+# it resolves from anywhere on the tailnet.
+public_base_url = "https://scribe.<your-tailnet>.ts.net"
+
+# ─────────────────────────────────────────────────────────────
+# Auth (per-device API keys — defense in depth behind Tailscale)
+# ─────────────────────────────────────────────────────────────
+[auth]
+# Path to a TOML file of device_id = "api-key" pairs.
+# See deploy/devices.toml.example for the format.
+device_keys = "/etc/scribe/devices.toml"
+
+# Set to true to reject any request without a recognized device token.
+# The X-Device-Token header (or Authorization: Bearer <key>) carries it.
+require_device_token = true
+
+# ─────────────────────────────────────────────────────────────
+# ASR — NOT used by `serve` but present so the same file works
+# for both subcommands if you ever co-locate them.
+# ─────────────────────────────────────────────────────────────
+[asr]
+model       = "parakeet-tdt-0.6b-v3"
+diarization = false   # serve doesn't run ASR; set true only on the worker node
+device      = "cpu"
+
+# ─────────────────────────────────────────────────────────────
+# Worker — NOT used by `serve` (the storage node doesn't pull jobs).
+# Values are valid so the config loads without error if `worker`
+# defaults are applied by figment.
+# ─────────────────────────────────────────────────────────────
+[worker]
+stages      = ["all"]
+concurrency = 1
+models_dir  = "/var/lib/scribe/models"
+heartbeat_secs = 15
+poll_secs      = 5
+max_attempts   = 5
+
+# ─────────────────────────────────────────────────────────────
+# LLM — NOT used by `serve` directly (Ollama lives on the
+# compute node), but the query embedder (for /search and /ask)
+# IS built at serve startup when the onnx feature is on.
+# ─────────────────────────────────────────────────────────────
+[llm]
+ollama_url      = "http://scribe-gpu.<your-tailnet>.ts.net:11434"
+summarize_model = "gemma3:27b"
+# fastembed-rs model for in-process embeddings (no Ollama needed for this).
+# "nomic-embed-text" → 768-dim (default, well-supported by fastembed v4).
+# If you switch models, also update embed_dim and run `scribe reindex --embeddings`.
+embed_model = "nomic-embed-text"
+embed_dim   = 768

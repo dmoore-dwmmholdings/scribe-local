@@ -1,0 +1,69 @@
+# scribe-serve.service — systemd unit for the Scribe storage node
+#
+# Installing
+# ──────────
+#   sudo cp deploy/systemd/scribe-serve.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now scribe-serve
+#
+# Prerequisites
+# ─────────────
+#   1. Build the binary:  cargo build --release -p scribe-cli
+#      (add --no-default-features for the stub build on non-MSVC toolchains)
+#   2. sudo cp target/release/scribe /usr/local/bin/scribe
+#   3. sudo useradd --system --no-create-home --shell /sbin/nologin scribe
+#   4. sudo mkdir -p /var/lib/scribe/blobs /var/log/scribe
+#      sudo chown -R scribe:scribe /var/lib/scribe /var/log/scribe
+#   5. sudo cp deploy/storage.toml   /etc/scribe/storage.toml
+#      sudo cp deploy/devices.toml.example /etc/scribe/devices.toml
+#      sudo nano /etc/scribe/devices.toml          # add real device keys
+#      sudo chown root:scribe /etc/scribe/*.toml
+#      sudo chmod 640         /etc/scribe/*.toml
+#   6. Create /etc/scribe/scribe-serve.env (see [Service] EnvironmentFile below)
+#   7. Run migrations: sudo -u scribe scribe migrate --config /etc/scribe/storage.toml
+#   8. Ensure tailscale serve is configured (see docs/networking-tailscale.md)
+
+[Unit]
+Description=Scribe storage node (Axum API + blob store)
+Documentation=file:///etc/scribe/storage.toml
+After=network-online.target postgresql.service
+Wants=network-online.target
+# If you run Postgres in Docker instead of systemd, remove postgresql.service.
+
+[Service]
+Type=simple
+User=scribe
+Group=scribe
+
+# Environment overrides: put secrets here instead of in the TOML file.
+# Example /etc/scribe/scribe-serve.env:
+#   SCRIBE_STORAGE__SIGNING_SECRET=<output of: openssl rand -hex 32>
+#   SCRIBE_DATABASE__URL=postgres://scribe:REALPASSWORD@localhost/scribe
+#   RUST_LOG=scribe=info,tower_http=warn
+EnvironmentFile=-/etc/scribe/scribe-serve.env
+
+ExecStart=/usr/local/bin/scribe serve --config /etc/scribe/storage.toml
+
+# Restart policy: always restart; give systemd 5 s before each attempt.
+Restart=always
+RestartSec=5
+
+# Allow the binary time to drain connections on shutdown.
+TimeoutStopSec=30
+
+# Logging: structured JSON goes to journald; view with:
+#   journalctl -u scribe-serve -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scribe-serve
+
+# Hardening (remove lines that conflict with your system's policies)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/scribe /var/log/scribe
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

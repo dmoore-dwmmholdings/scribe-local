@@ -1,0 +1,94 @@
+# Scribe — docker-compose for local development
+#
+# What lives here vs. what doesn't
+# ─────────────────────────────────
+# Managed: postgres  (always needed)
+# Optional: ollama   (processing-node LLM; enable with --profile ollama)
+# NOT here: scribe   (runs as a host binary / systemd service; see deploy/)
+#
+# Usage:
+#   docker compose up -d postgres          # just the DB
+#   docker compose --profile ollama up -d  # DB + Ollama
+#
+# Environment: copy .env.example → .env and override as needed.
+
+services:
+
+  # ─────────────────────────────────────────────────────────────
+  # Postgres with pgvector
+  # ─────────────────────────────────────────────────────────────
+  # NOTE: if you already have another Postgres container running on the host
+  # at port 5432 (e.g. a dev instance), set POSTGRES_PORT=5433 in your .env
+  # or export it before calling docker compose.
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       scribe
+      POSTGRES_USER:     scribe
+      POSTGRES_PASSWORD: scribe
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Default 5432. If your host already uses 5432 (another dev PG),
+      # override: POSTGRES_PORT=5433 in .env before composing.
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scribe -d scribe"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────────
+  # Ollama (optional — processing node LLM)
+  # Activate with:  docker compose --profile ollama up -d
+  # After starting: docker exec scribe-ollama ollama pull gemma3:27b
+  # ─────────────────────────────────────────────────────────────
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    # Uncomment to pass GPU resources (requires nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ─────────────────────────────────────────────────────────────
+  # scribe binary (commented out — run on host or via systemd)
+  #
+  # Keeping this here as a reference; the recommended path is:
+  #   scribe serve  --config /etc/scribe/storage.toml    # storage node
+  #   scribe worker --config /etc/scribe/compute.toml    # processing node
+  #
+  # If you do want to containerise it, uncomment and adjust:
+  # ─────────────────────────────────────────────────────────────
+  # scribe-serve:
+  #   image: ghcr.io/your-org/scribe:latest
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   command: ["serve", "--config", "/etc/scribe/storage.toml"]
+  #   environment:
+  #     SCRIBE_DATABASE__URL: "postgres://scribe:scribe@postgres/scribe"
+  #     SCRIBE_DATABASE__MAX_CONNECTIONS: "10"
+  #   volumes:
+  #     - /var/lib/scribe/blobs:/var/lib/scribe/blobs
+  #     - ./deploy/storage.toml:/etc/scribe/storage.toml:ro
+  #   ports:
+  #     - "8443:8443"
+  #   network_mode: host   # or use a tailscale sidecar
+
+volumes:
+  pgdata:
+    driver: local
+  ollama_models:
+    driver: local

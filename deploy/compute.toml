@@ -1,0 +1,127 @@
+# /etc/scribe/compute.toml
+# Configuration for the PROCESSING NODE: runs `scribe worker`.
+# This node owns the ML pipeline (sherpa-onnx ASR/diarization, fastembed
+# embeddings, Ollama LLM) and connects to Postgres + the storage API over
+# the Tailscale tailnet.  It holds no durable state of its own.
+#
+# Loading order (later overrides earlier):
+#   1. Built-in defaults (see crates/scribe-core/src/config.rs)
+#   2. This TOML file
+#   3. Environment variables: SCRIBE_<SECTION>__<KEY>
+#      e.g.  SCRIBE_DATABASE__URL="postgres://..."
+#            SCRIBE_WORKER__CONCURRENCY="2"
+#
+# Replace <your-tailnet> with your actual Tailscale tailnet name.
+
+# ─────────────────────────────────────────────────────────────
+# Database
+# The worker reaches Postgres on the storage node over the tailnet.
+# ─────────────────────────────────────────────────────────────
+[database]
+url             = "postgres://scribe:scribe@scribe.<your-tailnet>.ts.net/scribe?sslmode=disable"
+# For production:
+#   url = "postgres://scribe@scribe.<your-tailnet>.ts.net/scribe?sslmode=require"
+max_connections = 5   # worker uses fewer connections than serve
+
+# ─────────────────────────────────────────────────────────────
+# Storage — NOT used by the worker directly.
+# The worker fetches audio via signed URLs (api.public_base_url) and writes
+# results back through the DB, so it never writes to blobs directly.
+# ─────────────────────────────────────────────────────────────
+[storage]
+blobs              = "/tmp/scribe-blobs-unused"   # placeholder; not accessed by worker
+signing_secret     = "set-only-on-storage-node"
+signed_url_ttl_secs = 600
+
+# ─────────────────────────────────────────────────────────────
+# API — NOT used by `worker`. Present so the config struct loads cleanly.
+# public_base_url tells the worker where to pull audio from (the storage node).
+# ─────────────────────────────────────────────────────────────
+[api]
+bind              = "127.0.0.1:8443"          # unused by worker
+max_segment_bytes = 16777216                  # unused by worker; matches storage node default
+public_base_url   = "https://scribe.<your-tailnet>.ts.net"
+
+# ─────────────────────────────────────────────────────────────
+# Auth — NOT used by `worker` (the worker authenticates to the storage API
+# using the device key configured here; the storage node verifies it).
+# ─────────────────────────────────────────────────────────────
+[auth]
+device_keys           = "/etc/scribe/devices.toml"   # the worker's own key entry
+require_device_token  = false   # worker is not an HTTP server
+
+# ─────────────────────────────────────────────────────────────
+# ASR — sherpa-onnx speech pipeline (VAD + diarization + recognition).
+# REQUIRES the real ONNX build (default features); see docs/deployment.md
+# §"Stub vs real build" if the ONNX runtime is unavailable on your toolchain.
+# ─────────────────────────────────────────────────────────────
+[asr]
+# ASR model id.  Supported values (from crates/scribe-asr/src/models.rs):
+#   "parakeet-tdt-0.6b-v3"    → Parakeet transducer (recommended; fastest)
+#   "whisper-large-v3-turbo"  → Whisper large-v3-turbo (better multilingual)
+# The model files must be present under worker.models_dir/asr/
+model       = "parakeet-tdt-0.6b-v3"
+
+# Enable VAD + segmentation + speaker embeddings + clustering.
+diarization = true
+
+# Compute device: "cpu" or "cuda".
+# "cuda" requires a CUDA-capable GPU and the CUDA ONNX runtime provider.
+device = "cuda"
+
+# ─────────────────────────────────────────────────────────────
+# Worker loop
+# ─────────────────────────────────────────────────────────────
+[worker]
+# Which job kinds this worker handles.
+# "all" expands to: transcode, diarize, transcribe, merge, embed, summarize.
+# Split-stage example (two workers, one per machine):
+#   stages = ["transcode", "diarize", "transcribe"]  # on a lighter node
+#   stages = ["merge", "embed", "summarize"]         # on the GPU box
+stages = ["all"]
+
+# Number of concurrent jobs. A GPU box should use 1 to avoid VRAM contention.
+# Increase only if you have multiple GPUs or run CPU-only stages here.
+concurrency = 1
+
+# Directory containing ONNX model assets. See models/README.md for layout.
+models_dir = "/var/lib/scribe/models"
+
+# Heartbeat interval (seconds). The worker bumps locked_at every N seconds
+# while a job runs. The reaper requeues jobs whose locked_at is older than 3×.
+heartbeat_secs = 15
+
+# Poll backstop interval (seconds). Wakes the worker even if a NOTIFY was
+# missed (Postgres NOTIFY is best-effort and is not redelivered across reconnects).
+poll_secs = 5
+
+# After this many failed attempts a job is moved to state='failed' and the
+# recording is marked failed for manual inspection.
+max_attempts = 5
+
+# ─────────────────────────────────────────────────────────────
+# LLM (Ollama + fastembed)
+# Ollama runs on this machine (the processing node) at localhost:11434.
+# fastembed embeddings run in-process (no Ollama needed for embeddings).
+# ─────────────────────────────────────────────────────────────
+[llm]
+# Ollama base URL. On the processing node Ollama is local.
+ollama_url = "http://127.0.0.1:11434"
+
+# LLM used for title, summary, action items, and RAG /ask.
+# Choose by available VRAM:
+#   8 GB  VRAM → "llama3.2:8b" or "qwen3:8b" or "phi4:14b" (Q4)
+#   12 GB VRAM → "gemma3:12b"
+#   24 GB VRAM → "gemma3:27b" (recommended quality tier)
+summarize_model = "gemma3:27b"
+
+# Embedding model for fastembed-rs (in-process; does NOT use Ollama).
+# fastembed v4 supports: "nomic-embed-text" (768-dim, default),
+# "all-minilm-l6-v2" (384-dim), "bge-small-en-v1.5" (384-dim),
+# "bge-base-en-v1.5" (768-dim), "multilingual-e5-large" (1024-dim).
+# Note: "qwen3-embedding-0.6b" falls back to nomic-embed-text (768-dim)
+# in fastembed v4; serve it via TEI/Infinity for the real model.
+# The dimension MUST match the chunks.embedding column in Postgres.
+# Changing this model requires: scribe reindex --embeddings
+embed_model = "nomic-embed-text"
+embed_dim   = 768

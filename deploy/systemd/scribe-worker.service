@@ -1,0 +1,72 @@
+# scribe-worker.service — systemd unit for the Scribe processing node
+#
+# Installing
+# ──────────
+#   sudo cp deploy/systemd/scribe-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now scribe-worker
+#
+# Prerequisites
+# ─────────────
+#   1. Build the binary on this machine (processing node, ideally Linux + CUDA):
+#        cargo build --release -p scribe-cli
+#      The default build includes the real ONNX stack (sherpa-onnx + fastembed).
+#      If the ONNX/CUDA native toolchain is unavailable (e.g. Windows GNU):
+#        cargo build --release -p scribe-cli --no-default-features
+#      See docs/deployment.md §"Stub vs real build".
+#   2. sudo cp target/release/scribe /usr/local/bin/scribe
+#   3. sudo useradd --system --no-create-home --shell /sbin/nologin scribe
+#   4. sudo mkdir -p /var/lib/scribe/models /var/log/scribe
+#      sudo chown -R scribe:scribe /var/lib/scribe /var/log/scribe
+#   5. Populate /var/lib/scribe/models — see models/README.md
+#   6. sudo cp deploy/compute.toml /etc/scribe/compute.toml
+#      sudo nano /etc/scribe/compute.toml    # set your tailnet name + DB URL
+#      sudo chown root:scribe /etc/scribe/compute.toml
+#      sudo chmod 640         /etc/scribe/compute.toml
+#   7. Create /etc/scribe/scribe-worker.env (see EnvironmentFile below)
+#   8. Ensure Ollama is running: sudo systemctl enable --now ollama
+#      Then pull the LLM: ollama pull gemma3:27b
+
+[Unit]
+Description=Scribe processing node (ML pipeline worker)
+Documentation=file:///etc/scribe/compute.toml
+After=network-online.target ollama.service
+Wants=network-online.target
+# Ollama may not be managed by systemd on all setups; adjust as needed.
+
+[Service]
+Type=simple
+User=scribe
+Group=scribe
+
+# Environment overrides.  Example /etc/scribe/scribe-worker.env:
+#   SCRIBE_DATABASE__URL=postgres://scribe:REALPASSWORD@scribe.<tailnet>.ts.net/scribe
+#   RUST_LOG=scribe=info
+EnvironmentFile=-/etc/scribe/scribe-worker.env
+
+ExecStart=/usr/local/bin/scribe worker --config /etc/scribe/compute.toml
+
+# Restart policy: always restart; if the GPU is temporarily busy the worker
+# will reconnect and resume polling.
+Restart=always
+RestartSec=10
+
+# Allow long-running transcription jobs to finish.
+TimeoutStopSec=120
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scribe-worker
+
+# Hardening (GPU access may require relaxing some of these)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/scribe /tmp /var/log/scribe
+ProtectHome=yes
+PrivateTmp=yes
+# CUDA/ONNX may need access to /dev/nvidia*; if so, remove CapabilityBoundingSet.
+# For GPU, you may also need:  DeviceAllow=/dev/nvidia* rw
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

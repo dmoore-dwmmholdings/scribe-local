@@ -35,7 +35,7 @@ scribe-db = { path = "crates/scribe-db" }
 scribe-asr = { path = "crates/scribe-asr", default-features = false }
 scribe-llm = { path = "crates/scribe-llm", default-features = false }
 scribe-pipeline = { path = "crates/scribe-pipeline", default-features = false }
-scribe-api = { path = "crates/scribe-api" }
+scribe-api = { path = "crates/scribe-api", default-features = false }
 
 # Async runtime + HTTP
 tokio = { version = "1.43", features = ["full"] }

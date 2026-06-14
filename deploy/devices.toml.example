@@ -1,0 +1,30 @@
+# /etc/scribe/devices.toml
+#
+# Per-device API keys for scribe's bearer-token auth layer.
+# Loaded by the storage node when auth.device_keys points here.
+#
+# Format: device_id = "api_key"
+#   device_id — a stable identifier you choose (phone model, hostname, etc.)
+#   api_key   — a random secret the device sends in X-Device-Token (or
+#               Authorization: Bearer <key>) on every request.
+#
+# Generate a key:
+#   openssl rand -hex 32
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+#
+# After adding or rotating keys, restart `scribe serve` (or send SIGHUP if
+# hot-reload is implemented in your build).
+
+# ── Registered devices ──────────────────────────────────────────────────────
+
+# Primary phone
+iphone-pro-dawson = "a3f8c2d1e4b5a6789012345678901234deadbeefcafe0123456789abcdef0123"
+
+# Secondary device / tablet
+ipad-mini        = "b7e91234abcd5678ef901234567890abcdef1234567890abcdef1234567890ab"
+
+# Processing node (scribe-worker authenticates to scribe-serve with its own key)
+gpu-workstation  = "c0ffee01234567890abcdef1234567890abcdef1234567890abcdef12345678"
+
+# Dev / test client (rotate or remove before production)
+dev-laptop       = "00000000000000000000000000000000000000000000000000000000000000de"
