@@ -279,8 +279,29 @@ impl Config {
             fig = fig.merge(Toml::file(p));
         }
         fig = fig.merge(Env::prefixed("SCRIBE_").split("__"));
-        fig.extract()
-            .map_err(|e| Error::Config(format!("invalid configuration: {e}")))
+        let mut cfg: Config = fig
+            .extract()
+            .map_err(|e| Error::Config(format!("invalid configuration: {e}")))?;
+        cfg.normalize_paths();
+        Ok(cfg)
+    }
+
+    /// Resolve filesystem paths to absolute form. Relative paths in the config
+    /// are otherwise interpreted against each process's working directory, which
+    /// (a) makes `serve` and `worker` disagree on `blobs` if launched from
+    /// different dirs, and (b) breaks ffmpeg's concat demuxer, which resolves
+    /// list entries relative to the list file. Absolutizing once at load avoids
+    /// both. Absolute paths (the production norm) pass through unchanged.
+    pub fn normalize_paths(&mut self) {
+        fn abs(p: &Path) -> PathBuf {
+            std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+        }
+        self.storage.blobs = abs(&self.storage.blobs);
+        self.worker.models_dir = abs(&self.worker.models_dir);
+        self.update.staging_dir = abs(&self.update.staging_dir);
+        if let Some(bp) = &self.update.binary_path {
+            self.update.binary_path = Some(abs(bp));
+        }
     }
 
     /// Resolve the effective stage list (`["all"]` expands to every kind).

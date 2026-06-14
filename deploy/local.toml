@@ -1,0 +1,60 @@
+# Scribe — single-machine config (storage + worker on ONE box).
+#
+# This runs both roles on the same computer, which is the simplest way to start.
+# Later you can split into deploy/storage.toml + deploy/compute.toml across two
+# machines (see docs/deployment.md).
+#
+# Env overrides still apply: SCRIBE_<SECTION>__<KEY>, e.g.
+#   $env:SCRIBE_DATABASE__URL = "postgres://scribe:scribe@localhost:5433/scribe"
+
+[database]
+# Docker pgvector container (scripts/launch-local.ps1 starts it). Port 5433
+# because a native Postgres already occupies 5432 on this machine.
+url             = "postgres://scribe:scribe@localhost:5433/scribe?sslmode=disable"
+max_connections = 10
+
+[storage]
+# Audio + transcoded WAV land here. Relative paths resolve to where you run
+# `scribe` from (the repo root if you use the launch script).
+blobs               = "./data/blobs"
+signing_secret      = "change-me"
+signed_url_ttl_secs = 600
+
+[api]
+# Plain HTTP on localhost. For phone access, put `tailscale serve` in front
+# (Stage 3 in the launch guide) — do NOT expose this port to the internet.
+bind             = "127.0.0.1:8443"
+max_segment_bytes = 16777216
+public_base_url  = "http://127.0.0.1:8443"
+
+[auth]
+# Start with auth off for local testing. Turn ON before exposing over Tailscale:
+#   require_device_token = true   + a deploy/devices.toml with your phone's key.
+require_device_token = false
+# device_keys = "./deploy/devices.toml"
+
+[asr]
+model       = "parakeet-tdt-0.6b-v3"
+diarization = true
+# "cuda" uses the RTX 4070 Ti SUPER in the real-ML build; ignored by the stub.
+device      = "cuda"
+
+[worker]
+stages         = ["all"]
+concurrency    = 1
+models_dir     = "./models"
+heartbeat_secs = 15
+poll_secs      = 5
+max_attempts   = 5
+
+[llm]
+ollama_url      = "http://127.0.0.1:11434"
+# 16 GB VRAM (4070 Ti SUPER): a 12–14B model fits comfortably with long context.
+# gemma3:27b at Q4 is ~16 GB and will be tight — start with gemma3:12b.
+summarize_model = "gemma3:12b"
+embed_model     = "nomic-embed-text"
+embed_dim       = 768
+
+[update]
+# Self-update endpoint — keep OFF until you've set a token + signing key.
+enabled = false
