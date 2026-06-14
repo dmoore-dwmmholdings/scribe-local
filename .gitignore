@@ -13,6 +13,8 @@ Cargo.lock.bak
 # Downloaded model assets, but keep the docs that explain them.
 /models/*
 !/models/README.md
+# fastembed downloads its ONNX embedding model here at runtime.
+.fastembed_cache/
 
 # Env / secrets
 .env
