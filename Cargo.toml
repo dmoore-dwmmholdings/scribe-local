@@ -25,12 +25,16 @@ repository = "https://example.invalid/scribe"
 # Versions reflect the mid-2026 ecosystem called out in scribe-design.md §14.
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
-# Internal crates
+# Internal crates. The ML-bearing crates are declared `default-features = false`
+# at the workspace level so consumers can actually opt out of the heavy ONNX
+# stack (Cargo ignores a member's `default-features = false` unless the
+# workspace dep also sets it). Consumers turn the real models back on via their
+# own `onnx`/`local-embed` feature, which forwards to these.
 scribe-core = { path = "crates/scribe-core" }
 scribe-db = { path = "crates/scribe-db" }
-scribe-asr = { path = "crates/scribe-asr" }
-scribe-llm = { path = "crates/scribe-llm" }
-scribe-pipeline = { path = "crates/scribe-pipeline" }
+scribe-asr = { path = "crates/scribe-asr", default-features = false }
+scribe-llm = { path = "crates/scribe-llm", default-features = false }
+scribe-pipeline = { path = "crates/scribe-pipeline", default-features = false }
 scribe-api = { path = "crates/scribe-api" }
 
 # Async runtime + HTTP

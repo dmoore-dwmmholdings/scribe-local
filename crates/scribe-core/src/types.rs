@@ -323,6 +323,7 @@ pub struct Summary {
     pub summary: Option<String>,
     pub action_items: serde_json::Value,
     pub topics: serde_json::Value,
+    pub decisions: serde_json::Value,
     pub model: Option<String>,
     pub created_at: DateTime<Utc>,
 }

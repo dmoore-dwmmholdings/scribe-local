@@ -8,7 +8,10 @@ license.workspace = true
 [dependencies]
 scribe-core = { workspace = true }
 sqlx = { workspace = true }
-pgvector = { workspace = true }
+# `halfvec` enables the `pgvector::HalfVector` type (the `chunks.embedding`
+# column is `halfvec(768)`). Features are additive, so this augments the
+# `["sqlx", "postgres"]` set declared on the workspace dependency.
+pgvector = { workspace = true, features = ["halfvec"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -17,3 +20,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
