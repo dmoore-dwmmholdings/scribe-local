@@ -16,8 +16,10 @@ with no cloud APIs and no data leaving your network.
 - [Real-ML build (ONNX + GPU)](#real-ml-build)
 - [Configuration reference](#configuration-reference)
 - [API endpoints](#api-endpoints)
+- [Self-update](#self-update)
 - [Mobile app](#mobile-app)
 - [Design document and roadmap](#design-document-and-roadmap)
+- [License](#license)
 
 ---
 
@@ -102,6 +104,11 @@ mobile/            React Native / Expo app
 The stub build requires no GPU, no ONNX runtime, and no model files. The
 pipeline runs end-to-end with deterministic placeholder outputs — ideal for
 development and CI.
+
+> **Windows one-liner:** `\.scripts\launch-local.ps1` does all of the steps
+> below (start Postgres → build → migrate → run `serve` + `worker`) using
+> [`deploy/local.toml`](deploy/local.toml). Add `-Real` once you've installed
+> the MSVC toolchain, ONNX models, and Ollama. The manual steps follow.
 
 ### 1. Start Postgres
 
@@ -375,3 +382,20 @@ The full architecture and technology decision record is in
 | 3 | Diarization + speaker labels + `scribe enroll` |
 | 4 | LLM indexing, hybrid search, summaries, RAG `/ask` |
 | 5 | Hardening: heartbeat/reaper, multi-worker, observability, backups |
+
+---
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

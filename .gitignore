@@ -9,13 +9,19 @@ Cargo.lock.bak
 *.wav
 *.m4a
 *.onnx
-/models
 /blobs
+# Downloaded model assets, but keep the docs that explain them.
+/models/*
+!/models/README.md
 
 # Env / secrets
 .env
 *.local.toml
 devices.toml
+# Update signing keys and built update packages — never commit these.
+*.key
+release.key*
+scribe-*.tar.gz
 
 # Node / Expo (mobile)
 mobile/node_modules
