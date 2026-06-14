@@ -90,6 +90,19 @@ impl Db {
         not_found_if_zero(affected, id)
     }
 
+    /// Set the recording's display title (used to auto-name from the LLM summary
+    /// when the user didn't provide one).
+    pub async fn set_recording_title(&self, id: Uuid, title: &str) -> Result<()> {
+        let affected = sqlx::query("UPDATE recordings SET title = $2 WHERE id = $1")
+            .bind(id)
+            .bind(title)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        not_found_if_zero(affected, id)
+    }
+
     /// Set the blob-store key prefix for this recording's audio.
     pub async fn set_recording_storage_key(&self, id: Uuid, storage_key: &str) -> Result<()> {
         let affected = sqlx::query("UPDATE recordings SET storage_key = $2 WHERE id = $1")

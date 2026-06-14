@@ -18,11 +18,51 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Keyboard,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { api } from '../../src/api/client';
 import type { AskResponse, Citation } from '../../src/types';
+
+// ---------------------------------------------------------------------------
+// Answer parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Split an answer string into plain-text and citation-marker segments.
+ * A marker `[N]` is only treated as a citation when N maps to a real citation
+ * index (1-based) — stray brackets like "[note]" or "[99]" stay as text.
+ */
+type AnswerSegment =
+  | { type: 'text'; text: string }
+  | { type: 'marker'; n: number };
+
+function parseAnswer(answer: string, citationCount: number): AnswerSegment[] {
+  const segments: AnswerSegment[] = [];
+  const re = /\[(\d+)\]/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = re.exec(answer)) !== null) {
+    const n = Number(match[1]);
+    // Only treat as a marker if it references a real citation.
+    if (n < 1 || n > citationCount) continue;
+
+    if (match.index > lastIndex) {
+      segments.push({ type: 'text', text: answer.slice(lastIndex, match.index) });
+    }
+    segments.push({ type: 'marker', n });
+    lastIndex = re.lastIndex;
+  }
+
+  if (lastIndex < answer.length) {
+    segments.push({ type: 'text', text: answer.slice(lastIndex) });
+  }
+
+  return segments;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -38,17 +78,27 @@ function formatMs(ms: number | null): string {
 
 function CitationCard({
   citation,
-  index,
+  label,
+  highlighted,
   onPress,
+  onLayout,
 }: {
   citation: Citation;
-  index: number;
+  /** 1-based number shown in the [N] prefix. */
+  label: number;
+  highlighted: boolean;
   onPress: () => void;
+  onLayout: (y: number) => void;
 }) {
   return (
-    <TouchableOpacity style={styles.citation} onPress={onPress} accessibilityRole="link">
+    <TouchableOpacity
+      style={[styles.citation, highlighted && styles.citationHighlighted]}
+      onPress={onPress}
+      onLayout={(e) => onLayout(e.nativeEvent.layout.y)}
+      accessibilityRole="link"
+    >
       <Text style={styles.citationLabel}>
-        [{index + 1}] {citation.recording_title ?? 'Untitled'}
+        [{label}] {citation.recording_title ?? 'Untitled'}
         {citation.start_ms != null ? ` · ${formatMs(citation.start_ms)}` : ''}
       </Text>
       <Text style={styles.citationSnippet} numberOfLines={3}>
@@ -66,7 +116,12 @@ export default function AskScreen() {
   const [response, setResponse] = useState<AskResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [highlighted, setHighlighted] = useState<number | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // Y offset of the Sources section + each card within the scroll view, so we
+  // can scroll a tapped [N] marker into view.
+  const sectionYRef = useRef(0);
+  const cardYRef = useRef<Record<number, number>>({});
 
   const ask = useCallback(async () => {
     const q = question.trim();
@@ -75,6 +130,8 @@ export default function AskScreen() {
     setLoading(true);
     setError(null);
     setResponse(null);
+    setHighlighted(null);
+    cardYRef.current = {};
 
     try {
       const res = await api.ask({ question: q, top_k: 6 });
@@ -87,8 +144,56 @@ export default function AskScreen() {
     }
   }, [question]);
 
+  const openCitation = useCallback(
+    (c: Citation) => {
+      router.push({
+        pathname: '/recordings/[id]',
+        params: {
+          id: c.recording_id,
+          seekMs: String(c.start_ms ?? 0),
+        },
+      });
+    },
+    [router],
+  );
+
+  // Tapping a [N] marker: scroll its source card into view and flash a
+  // highlight so the user can see which source backs that claim.
+  const focusCitation = useCallback((n: number) => {
+    setHighlighted(n);
+    const cardY = cardYRef.current[n];
+    if (cardY != null) {
+      scrollRef.current?.scrollTo({
+        y: Math.max(sectionYRef.current + cardY - 12, 0),
+        animated: true,
+      });
+    }
+    setTimeout(() => {
+      setHighlighted((cur) => (cur === n ? null : cur));
+    }, 1500);
+  }, []);
+
+  // Citations actually referenced by a [N] marker, in order of first mention.
+  const citations = response?.citations ?? [];
+  const segments = response ? parseAnswer(response.answer, citations.length) : [];
+  const citedOrder: number[] = [];
+  for (const seg of segments) {
+    if (seg.type === 'marker' && !citedOrder.includes(seg.n)) {
+      citedOrder.push(seg.n);
+    }
+  }
+  // Fall back to all citations if the model didn't use any brackets.
+  const sourcesToShow =
+    citedOrder.length > 0
+      ? citedOrder.map((n) => ({ n, citation: citations[n - 1] }))
+      : citations.map((citation, i) => ({ n: i + 1, citation }));
+
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+    >
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.scroll}
@@ -99,31 +204,48 @@ export default function AskScreen() {
           locally by your server's LLM.
         </Text>
 
-        {/* Answer */}
+        {/* Answer with inline, tappable [N] citation markers */}
         {response && (
           <View style={styles.answerCard}>
-            <Text style={styles.answerText}>{response.answer}</Text>
+            <Text style={styles.answerText}>
+              {segments.map((seg, i) =>
+                seg.type === 'text' ? (
+                  <Text key={i}>{seg.text}</Text>
+                ) : (
+                  <Text
+                    key={i}
+                    style={styles.marker}
+                    onPress={() => focusCitation(seg.n)}
+                    accessibilityRole="link"
+                    accessibilityLabel={`Citation ${seg.n}`}
+                  >
+                    {` [${seg.n}] `}
+                  </Text>
+                ),
+              )}
+            </Text>
           </View>
         )}
 
-        {/* Citations */}
-        {response && response.citations.length > 0 && (
-          <View style={styles.citationsSection}>
+        {/* Sources — only the cited ones, in [N] order (or all as fallback) */}
+        {response && sourcesToShow.length > 0 && (
+          <View
+            style={styles.citationsSection}
+            onLayout={(e) => {
+              sectionYRef.current = e.nativeEvent.layout.y;
+            }}
+          >
             <Text style={styles.citationsHeader}>Sources</Text>
-            {response.citations.map((c, i) => (
+            {sourcesToShow.map(({ n, citation }) => (
               <CitationCard
-                key={i}
-                citation={c}
-                index={i}
-                onPress={() =>
-                  router.push({
-                    pathname: '/recordings/[id]',
-                    params: {
-                      id: c.recording_id,
-                      seekMs: String(c.start_ms ?? 0),
-                    },
-                  })
-                }
+                key={n}
+                citation={citation}
+                label={n}
+                highlighted={highlighted === n}
+                onLayout={(y) => {
+                  cardYRef.current[n] = y;
+                }}
+                onPress={() => openCitation(citation)}
               />
             ))}
           </View>
@@ -162,7 +284,7 @@ export default function AskScreen() {
           </TouchableOpacity>
         )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -199,6 +321,15 @@ const styles = StyleSheet.create({
     color: '#111',
     lineHeight: 24,
   },
+  marker: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+    backgroundColor: '#1E88E5',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
   citationsSection: {
     marginBottom: 16,
   },
@@ -217,6 +348,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderLeftWidth: 3,
     borderLeftColor: '#1E88E5',
+  },
+  citationHighlighted: {
+    backgroundColor: '#E3F2FD',
+    borderLeftWidth: 4,
   },
   citationLabel: {
     fontSize: 12,

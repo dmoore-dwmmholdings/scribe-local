@@ -13,6 +13,7 @@
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { api } from '../api/client';
 import type { Recording } from '../types';
 
 const CACHE_KEY = 'scribe_recordings_cache';
@@ -25,6 +26,8 @@ interface RecordingsState {
 
   hydrate: () => Promise<void>;
   setRecordings: (recordings: Recording[]) => Promise<void>;
+  /** Fetch the latest list from the server and update the cache. */
+  refresh: () => Promise<void>;
   upsertRecording: (recording: Recording) => void;
   setUploadProgress: (recordingId: string, progress: number) => void;
   getRecording: (id: string) => Recording | undefined;
@@ -54,6 +57,15 @@ export const useRecordingsStore = create<RecordingsState>((set, get) => ({
       await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(recordings));
     } catch {
       // Cache write failure is non-fatal
+    }
+  },
+
+  refresh: async () => {
+    try {
+      const res = await api.listRecordings({ limit: 100 });
+      await get().setRecordings(res.recordings);
+    } catch {
+      // Keep cached data on network error
     }
   },
 

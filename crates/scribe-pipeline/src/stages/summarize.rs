@@ -76,6 +76,16 @@ pub async fn run(
     )
     .await?;
 
+    // Auto-name the recording from the generated title when the user didn't set
+    // one — otherwise it shows up unnamed in the app even after processing.
+    if let Some(title) = parsed.title.as_deref() {
+        let rec = db.get_recording(recording_id).await?;
+        let has_title = rec.title.as_deref().map(|t| !t.trim().is_empty()).unwrap_or(false);
+        if !has_title {
+            db.set_recording_title(recording_id, title).await?;
+        }
+    }
+
     tracing::info!(%recording_id, model = %model, "summarize complete");
     Ok(())
 }

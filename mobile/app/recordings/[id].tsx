@@ -30,9 +30,9 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
-  Platform,
 } from 'react-native';
 import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import {
   createAudioPlayer,
   setAudioModeAsync,
@@ -231,26 +231,47 @@ export default function RecordingDetailScreen() {
   // Load detail
   // -------------------------------------------------------------------------
 
-  const loadDetail = useCallback(async () => {
-    if (!id) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.getRecording(id);
-      setDetail(res);
-      navigation.setOptions({
-        title: res.recording.title ?? 'Recording',
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load recording');
-    } finally {
-      setLoading(false);
-    }
-  }, [id, navigation]);
+  const loadDetail = useCallback(
+    async (background = false) => {
+      if (!id) return;
+      if (!background) setLoading(true);
+      setError(null);
+      try {
+        const res = await api.getRecording(id);
+        setDetail(res);
+        navigation.setOptions({
+          title: res.recording.title ?? 'Recording',
+        });
+      } catch (err) {
+        // On a background refresh, keep the stale screen rather than wiping it
+        if (!background) {
+          setError(err instanceof Error ? err.message : 'Failed to load recording');
+        }
+      } finally {
+        if (!background) setLoading(false);
+      }
+    },
+    [id, navigation],
+  );
 
   useEffect(() => {
     loadDetail();
   }, [loadDetail]);
+
+  // While the recording is still uploading/processing, poll until it reaches a
+  // terminal status (ready/failed).  Background refreshes don't show the
+  // full-screen spinner.
+  const status = detail?.recording.status;
+  useEffect(() => {
+    if (!id) return;
+    if (status !== 'uploading' && status !== 'processing') return;
+
+    const interval = setInterval(() => {
+      loadDetail(true);
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [id, status, loadDetail]);
 
   // -------------------------------------------------------------------------
   // Audio
@@ -356,7 +377,7 @@ export default function RecordingDetailScreen() {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorText}>{error ?? 'No data'}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={loadDetail}>
+        <TouchableOpacity style={styles.retryButton} onPress={() => loadDetail()}>
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
       </View>
@@ -364,7 +385,6 @@ export default function RecordingDetailScreen() {
   }
 
   const { recording, speakers, utterances, summary } = detail;
-  const status = recording.status;
 
   const filteredUtterances = searchQuery.trim()
     ? utterances.filter((u) =>
@@ -401,7 +421,7 @@ export default function RecordingDetailScreen() {
               onPress={togglePlayback}
               accessibilityLabel={playing ? 'Pause' : 'Play'}
             >
-              <Text style={styles.playButtonText}>{playing ? '⏸' : '▶'}</Text>
+              <Ionicons name={playing ? 'pause' : 'play'} size={18} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.position}>{formatMs(positionMs)}</Text>
             {recording.duration_ms != null && (
@@ -564,12 +584,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#E53935',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  playButtonText: {
-    fontSize: 16,
-    color: '#fff',
-    // slight left offset for the ▶ glyph
-    marginLeft: Platform.OS === 'ios' ? 2 : 0,
   },
   position: {
     fontSize: 14,

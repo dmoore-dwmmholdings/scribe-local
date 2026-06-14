@@ -8,7 +8,7 @@
  * Tapping a row deep-links to the Recording Detail screen.
  */
 
-import { useEffect, useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,8 +18,7 @@ import {
   RefreshControl,
   ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
-import { api } from '../../src/api/client';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useRecordingsStore } from '../../src/state/recordingsStore';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import type { Recording } from '../../src/types';
@@ -95,25 +94,40 @@ function RecordingRow({
 
 // ---------------------------------------------------------------------------
 
+function isPending(r: Recording): boolean {
+  return r.status === 'uploading' || r.status === 'processing';
+}
+
 export default function LibraryScreen() {
   const router = useRouter();
   const { baseUrl } = useSettingsStore();
-  const { recordings, uploadProgress, hydrated, setRecordings } =
+  const { recordings, uploadProgress, hydrated, refresh } =
     useRecordingsStore();
 
   const fetchRecordings = useCallback(async () => {
     if (!baseUrl) return;
-    try {
-      const res = await api.listRecordings({ limit: 100 });
-      await setRecordings(res.recordings);
-    } catch {
-      // Keep cached data on network error
-    }
-  }, [baseUrl, setRecordings]);
+    await refresh();
+  }, [baseUrl, refresh]);
 
+  // Refresh whenever the Library screen regains focus.
+  useFocusEffect(
+    useCallback(() => {
+      fetchRecordings();
+    }, [fetchRecordings]),
+  );
+
+  // While any recording is still uploading/processing, poll the list until
+  // they all reach a terminal status.  Stops polling once everything settles.
+  const hasPending = recordings.some(isPending);
   useEffect(() => {
-    fetchRecordings();
-  }, [fetchRecordings]);
+    if (!baseUrl || !hasPending) return;
+
+    const interval = setInterval(() => {
+      fetchRecordings();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [baseUrl, hasPending, fetchRecordings]);
 
   if (!hydrated) {
     return (
