@@ -111,3 +111,40 @@ summarize_model = "gemma3:27b"
 # If you switch models, also update embed_dim and run `scribe reindex --embeddings`.
 embed_model = "nomic-embed-text"
 embed_dim   = 768
+
+# ─────────────────────────────────────────────────────────────
+# Self-update (POST /admin/update) — OPT-IN. Lets the holder of the update
+# token install a signed new binary and restart the backend. Disabled by
+# default because it is, by design, remote code execution. See docs/self-update.md.
+# Generate a keypair with:  scribe update keygen
+# ─────────────────────────────────────────────────────────────
+[update]
+# Master switch. While false, the /admin/update endpoints return 404.
+enabled = false
+
+# Admin bearer token for the update endpoints (DISTINCT from device keys).
+# Set via env in production: SCRIBE_UPDATE__TOKEN="$(openssl rand -hex 32)"
+# token = "change-me"
+
+# ed25519 public key (hex) that must have signed the package manifest. The
+# matching private key signs releases with `scribe update sign`. Required when
+# enabled — a leaked token alone cannot install an unsigned/forged binary.
+# public_key = "<64 hex chars from `scribe update keygen`>"
+
+# How to restart after install: "self-exec" (replace this process, no service
+# manager needed — works on macOS/Linux) or "supervisor" (exit cleanly and let
+# systemd/launchd relaunch). With the launchd/systemd units, prefer "supervisor".
+restart = "self-exec"
+
+# Where uploaded packages are staged/unpacked.
+staging_dir = "/var/lib/scribe/updates"
+
+# Path to the running binary to replace. Defaults to the running executable.
+# binary_path = "/usr/local/bin/scribe"
+
+# Safety toggles (default false): refuse downgrades / foreign-target packages.
+allow_downgrade = false
+allow_target_mismatch = false
+
+# Delay before restarting, so the HTTP response reaches the client first (ms).
+restart_delay_ms = 750

@@ -26,6 +26,7 @@ scribe-api = { workspace = true, default-features = false }
 scribe-pipeline = { workspace = true, default-features = false }
 scribe-asr = { workspace = true, default-features = false }
 scribe-llm = { workspace = true, default-features = false }
+scribe-update = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

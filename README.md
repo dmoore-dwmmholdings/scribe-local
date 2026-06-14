@@ -88,6 +88,7 @@ mobile/            React Native / Expo app
 | Tool | Notes |
 |---|---|
 | Rust (stable, ≥ 1.82) | `rustup` recommended. MSVC toolchain required on Windows for the real-ML build. |
+| OS | Linux, **macOS** (arm64/x86_64), or Windows. The backend is portable Rust; on macOS the real-ML build works out of the box (prebuilt ONNX Runtime + CoreML). |
 | Docker (or Podman) | For the Postgres + pgvector container. |
 | ffmpeg | Used by the `transcode` stage; must be on `$PATH`. |
 | Tailscale | For secure remote access. Free tier works. |
@@ -310,6 +311,33 @@ GET    /search?q=…                         hybrid full-text + vector semantic 
 POST   /ask                                RAG: {question} → {answer, citations}
 ```
 
+Backend self-update (only when `[update].enabled`, gated by the **update token**):
+
+```
+GET    /admin/info                         running version, target, rollback availability
+POST   /admin/update                       body = signed .tar.gz; installs + restarts
+POST   /admin/update/rollback              restore the previous binary + restart
+```
+
+---
+
+## Self-update
+
+The backend can update itself from a **signed package** — upload a new binary
+from the phone (Settings → Backend update) or `curl`, and the server verifies
+the ed25519 signature, installs it atomically (keeping a `.old` backup), runs
+the new migrations, and restarts into it. Disabled by default; it is, by design,
+remote code execution. Full guide: **[docs/self-update.md](docs/self-update.md)**.
+
+```bash
+scribe update keygen --out release.key            # one-time: signing keypair
+scribe update sign  --key release.key --binary target/release/scribe \
+                    --version 0.2.0 --out scribe-0.2.0.tar.gz
+# then upload scribe-0.2.0.tar.gz via the app or POST /admin/update
+```
+
+CLI: `scribe update <keygen|sign|verify|apply|rollback|info>`.
+
 ---
 
 ## Mobile app
@@ -329,7 +357,7 @@ The full architecture and technology decision record is in
 [`scribe-design.md`](scribe-design.md). Key sections:
 
 - §3 — System architecture
-- §4 — Subcommands (`serve`, `worker`, `migrate`, `ingest`, `reindex`, `enroll`, `speaker`, `models`, `doctor`)
+- §4 — Subcommands (`serve`, `worker`, `migrate`, `ingest`, `reindex`, `enroll`, `speaker`, `models`, `update`, `doctor`)
 - §5 — Tailscale networking
 - §7 — Job queue and pipeline DAG
 - §8 — ASR and speaker diarization (sherpa-onnx)

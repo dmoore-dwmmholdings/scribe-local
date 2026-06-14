@@ -16,6 +16,8 @@ local-embed = ["scribe-llm/local-embed"]
 scribe-core = { workspace = true }
 scribe-db = { workspace = true }
 scribe-llm = { workspace = true, default-features = false }
+scribe-update = { workspace = true }
+subtle = { workspace = true }
 axum = { workspace = true }
 axum-server = { workspace = true }
 tower = { workspace = true }

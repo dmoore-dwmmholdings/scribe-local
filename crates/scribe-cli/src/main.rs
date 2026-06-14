@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 mod doctor;
 mod models;
+mod update;
 
 // ---------------------------------------------------------------------------
 // CLI surface (clap derive) — mirrors design §4.
@@ -78,8 +79,62 @@ enum Command {
     #[command(subcommand)]
     Models(ModelsCmd),
 
+    /// Self-update: generate keys, sign/verify/install signed binary packages.
+    #[command(subcommand)]
+    Update(UpdateCmd),
+
     /// Validate config, DB connectivity, model presence, ffmpeg, Ollama.
     Doctor,
+}
+
+/// Backend self-update (design: §5). The frontend uploads a signed package to
+/// `POST /admin/update`; these subcommands are the operator/CLI side — building
+/// and verifying those packages, or installing one locally.
+#[derive(Debug, Subcommand)]
+enum UpdateCmd {
+    /// Generate an ed25519 signing keypair for release packages.
+    Keygen {
+        /// Write the private key here (public key goes to `<out>.pub`).
+        /// Without it, keys are printed to stdout.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+    /// Build a signed update package (`.tar.gz`) from a binary.
+    Sign {
+        /// Private signing key — a 64-hex-char string or a path to a key file.
+        #[arg(long, value_name = "KEY")]
+        key: String,
+        /// The binary to package (e.g. `target/release/scribe`).
+        #[arg(long, value_name = "FILE")]
+        binary: PathBuf,
+        /// Version to stamp into the manifest (e.g. `0.2.0`).
+        #[arg(long)]
+        version: String,
+        /// Target triple override (default: this host's, e.g. aarch64-apple-darwin).
+        #[arg(long)]
+        target: Option<String>,
+        /// Optional release notes.
+        #[arg(long, default_value = "")]
+        notes: String,
+        /// Output package path.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
+    /// Verify a package against the configured `[update].public_key` (dry run).
+    Verify {
+        #[arg(value_name = "PACKAGE")]
+        package: PathBuf,
+    },
+    /// Install a package over this binary (verify + migrate + atomic swap).
+    /// Does NOT restart a running server — restart `scribe serve` afterwards.
+    Apply {
+        #[arg(value_name = "PACKAGE")]
+        package: PathBuf,
+    },
+    /// Restore the previously-installed binary from its `.old` backup.
+    Rollback,
+    /// Show the running version, host target, and rollback availability.
+    Info,
 }
 
 #[derive(Debug, Args)]
@@ -326,6 +381,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 ModelsCmd::List => models::list(&cfg),
                 ModelsCmd::Pull => models::pull(&cfg).await,
             }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Update(cmd) => {
+            update::run(&cfg, cmd).await?;
             Ok(ExitCode::SUCCESS)
         }
 

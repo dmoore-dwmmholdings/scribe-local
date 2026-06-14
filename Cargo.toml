@@ -6,6 +6,7 @@ members = [
     "crates/scribe-asr",
     "crates/scribe-llm",
     "crates/scribe-pipeline",
+    "crates/scribe-update",
     "crates/scribe-api",
     "crates/scribe-cli",
 ]
@@ -35,6 +36,7 @@ scribe-db = { path = "crates/scribe-db" }
 scribe-asr = { path = "crates/scribe-asr", default-features = false }
 scribe-llm = { path = "crates/scribe-llm", default-features = false }
 scribe-pipeline = { path = "crates/scribe-pipeline", default-features = false }
+scribe-update = { path = "crates/scribe-update" }
 scribe-api = { path = "crates/scribe-api", default-features = false }
 
 # Async runtime + HTTP
@@ -83,6 +85,14 @@ futures = "0.3"
 async-trait = "0.1"
 sha2 = "0.10"
 hex = "0.4"
+
+# Self-update: signed-package verification + archive handling (all pure Rust,
+# no native deps — builds on every platform). See crates/scribe-update.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+subtle = "2.6"
+tar = "0.4"
+flate2 = "1"
 
 # ML / inference (real deps — see §8, §9). Heavy native builds; if the
 # ONNX/CUDA toolchain is unavailable, disable the crate-level `onnx` feature.

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd unit for the Scribe STORAGE NODE (`scribe serve`).
+
+  Install:
+    sudo cp deploy/launchd/com.scribe.serve.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.scribe.serve.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.scribe.serve.plist
+    sudo launchctl enable system/com.scribe.serve
+  Stop / start:
+    sudo launchctl kickstart -k system/com.scribe.serve   # restart
+    sudo launchctl bootout system/com.scribe.serve        # stop
+
+  KeepAlive makes launchd relaunch the process when it exits — which is exactly
+  what the self-update "supervisor" restart mode relies on (set
+  [update].restart = "supervisor" in compute/storage.toml when using this).
+  Adjust paths: the binary at /usr/local/bin/scribe, config at /etc/scribe.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.scribe.serve</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/scribe</string>
+        <string>serve</string>
+        <string>--config</string>
+        <string>/etc/scribe/storage.toml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Run as a dedicated unprivileged user you create (dscl). -->
+    <key>UserName</key>
+    <string>scribe</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info,sqlx=warn</string>
+        <!-- Prefer setting secrets here or via a wrapper, not in the TOML:
+             <key>SCRIBE_UPDATE__TOKEN</key><string>…</string>
+             <key>SCRIBE_STORAGE__SIGNING_SECRET</key><string>…</string> -->
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/scribe/serve.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/scribe/serve.err.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

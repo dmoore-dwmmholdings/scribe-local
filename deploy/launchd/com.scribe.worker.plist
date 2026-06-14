@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd unit for the Scribe PROCESSING NODE (`scribe worker`).
+
+  Install:
+    sudo cp deploy/launchd/com.scribe.worker.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.scribe.worker.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.scribe.worker.plist
+    sudo launchctl enable system/com.scribe.worker
+  Restart:
+    sudo launchctl kickstart -k system/com.scribe.worker
+
+  On macOS the real-ML build works: `ort`/ONNX Runtime ships prebuilt binaries
+  for arm64 + x86_64 and sherpa-onnx supports CoreML. Build with default
+  features and place the ONNX models under [worker].models_dir. Ollama runs as
+  its own service (e.g. `brew services start ollama`).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.scribe.worker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/scribe</string>
+        <string>worker</string>
+        <string>--config</string>
+        <string>/etc/scribe/compute.toml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>UserName</key>
+    <string>scribe</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info,sqlx=warn</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/scribe/worker.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/scribe/worker.err.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

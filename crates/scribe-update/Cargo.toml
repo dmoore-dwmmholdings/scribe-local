@@ -1,0 +1,31 @@
+[package]
+name = "scribe-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Unit tests live in `tests/` (integration), not inline. On Windows, a unit-test
+# binary named `scribe_update-*.exe` trips UAC "installer detection" (the word
+# "update") and refuses to run without elevation; an integration binary with a
+# neutral name does not. Coverage is identical.
+[lib]
+test = false
+
+[dependencies]
+scribe-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+subtle = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

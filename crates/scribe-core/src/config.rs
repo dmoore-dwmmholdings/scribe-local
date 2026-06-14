@@ -29,6 +29,7 @@ pub struct Config {
     pub asr: AsrConfig,
     pub worker: WorkerConfig,
     pub llm: LlmConfig,
+    pub update: UpdateConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +115,44 @@ pub struct LlmConfig {
     pub embed_dim: usize,
 }
 
+/// How `serve` restarts itself into a freshly-installed binary (design: §5
+/// self-update). `SelfExec` replaces the process image (`execv`) and needs no
+/// service manager; `Supervisor` exits cleanly and lets systemd/launchd relaunch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartMode {
+    SelfExec,
+    Supervisor,
+}
+
+/// Backend self-update over the API (`POST /admin/update`). Disabled by default
+/// — enabling it lets a holder of the update token install a new binary, so it
+/// requires an ed25519 public key and a token to turn on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Master switch. When false, the update endpoints return 404.
+    pub enabled: bool,
+    /// Bearer token authorizing update calls (distinct from device keys).
+    pub token: Option<String>,
+    /// ed25519 public key (hex, 32 bytes) that must have signed the package
+    /// manifest. Required when `enabled`.
+    pub public_key: Option<String>,
+    /// How to restart after a successful install.
+    pub restart: RestartMode,
+    /// Directory where uploaded packages are staged/unpacked.
+    pub staging_dir: PathBuf,
+    /// Path to the running binary to replace. `None` → `std::env::current_exe()`.
+    pub binary_path: Option<PathBuf>,
+    /// Allow installing a package whose version is <= the running version.
+    pub allow_downgrade: bool,
+    /// Allow installing a package whose `target` triple differs from this host.
+    pub allow_target_mismatch: bool,
+    /// Delay (ms) between answering the update request and restarting, so the
+    /// HTTP response flushes to the client first.
+    pub restart_delay_ms: u64,
+}
+
 // --------------------------------------------------------------------------
 // Defaults
 // --------------------------------------------------------------------------
@@ -128,6 +167,23 @@ impl Default for Config {
             asr: AsrConfig::default(),
             worker: WorkerConfig::default(),
             llm: LlmConfig::default(),
+            update: UpdateConfig::default(),
+        }
+    }
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: None,
+            public_key: None,
+            restart: RestartMode::SelfExec,
+            staging_dir: PathBuf::from("/var/lib/scribe/updates"),
+            binary_path: None,
+            allow_downgrade: false,
+            allow_target_mismatch: false,
+            restart_delay_ms: 750,
         }
     }
 }

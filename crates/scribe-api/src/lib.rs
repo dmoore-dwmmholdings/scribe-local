@@ -95,9 +95,25 @@ pub fn router(state: AppState) -> Router {
             auth::require_auth,
         ));
 
+    // Self-update routes sit behind the *update token* (not device auth) and
+    // only respond when [update].enabled. The package upload streams to disk,
+    // so its body limit is disabled too.
+    let admin = Router::new()
+        .route(
+            "/admin/update",
+            post(handlers::admin::update).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/admin/update/rollback", post(handlers::admin::rollback_handler))
+        .route("/admin/info", get(handlers::admin::info))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_update_auth,
+        ));
+
     // Health is unauthenticated and outside the auth layer.
     Router::new()
         .route("/health", get(handlers::health::health))
+        .merge(admin)
         .merge(authed)
         .with_state(state)
 }
