@@ -1,0 +1,30 @@
+[package]
+name = "scribe-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "scribe"
+path = "src/main.rs"
+
+[features]
+default = ["onnx"]
+onnx = ["scribe-pipeline/onnx"]
+
+[dependencies]
+scribe-core = { workspace = true }
+scribe-db = { workspace = true }
+scribe-api = { workspace = true }
+scribe-pipeline = { workspace = true, default-features = false }
+scribe-asr = { workspace = true, default-features = false }
+scribe-llm = { workspace = true, default-features = false }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,97 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/scribe-core",
+    "crates/scribe-db",
+    "crates/scribe-asr",
+    "crates/scribe-llm",
+    "crates/scribe-pipeline",
+    "crates/scribe-api",
+    "crates/scribe-cli",
+]
+default-members = ["crates/scribe-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+authors = ["Scribe contributors"]
+repository = "https://example.invalid/scribe"
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions. Member crates reference these with
+# `dep = { workspace = true }` so the whole tree stays on one set of versions.
+# Versions reflect the mid-2026 ecosystem called out in scribe-design.md §14.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# Internal crates
+scribe-core = { path = "crates/scribe-core" }
+scribe-db = { path = "crates/scribe-db" }
+scribe-asr = { path = "crates/scribe-asr" }
+scribe-llm = { path = "crates/scribe-llm" }
+scribe-pipeline = { path = "crates/scribe-pipeline" }
+scribe-api = { path = "crates/scribe-api" }
+
+# Async runtime + HTTP
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tokio-stream = "0.1"
+axum = { version = "0.8", features = ["macros", "json", "query", "multipart"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "limit", "cors", "fs"] }
+hyper = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+rustls = "0.23"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+
+# Database + vectors
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "macros",
+    "migrate",
+] }
+pgvector = { version = "0.4", features = ["sqlx", "postgres"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# CLI / logging / errors
+clap = { version = "4.5", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+anyhow = "1"
+
+# Primitives
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1"
+futures = "0.3"
+async-trait = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+
+# ML / inference (real deps — see §8, §9). Heavy native builds; if the
+# ONNX/CUDA toolchain is unavailable, disable the crate-level `onnx` feature.
+sherpa-onnx = "1.13"
+fastembed = "4"
+ort = "2"
+ndarray = "0.16"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Faster iterative checks for the heavy ML crates in dev.
+[profile.dev.package."*"]
+opt-level = 1

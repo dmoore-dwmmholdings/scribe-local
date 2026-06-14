@@ -1,0 +1,33 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Scribe runtime data
+/var
+/data
+*.wav
+*.m4a
+*.onnx
+/models
+/blobs
+
+# Env / secrets
+.env
+*.local.toml
+devices.toml
+
+# Node / Expo (mobile)
+mobile/node_modules
+mobile/.expo
+mobile/dist
+mobile/web-build
+mobile/*.log
+mobile/.expo-shared
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json

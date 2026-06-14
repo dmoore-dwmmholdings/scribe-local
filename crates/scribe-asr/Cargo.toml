@@ -1,0 +1,25 @@
+[package]
+name = "scribe-asr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Real ONNX speech stack (sherpa-onnx: VAD + diarization + ASR). On by default
+# per the design's "real deps from the start". Disable with
+# `--no-default-features` if the ONNX/CUDA native toolchain is unavailable; the
+# crate then falls back to a deterministic stub engine so the rest of the
+# workspace still builds and the pipeline runs end-to-end.
+default = ["onnx"]
+onnx = ["dep:sherpa-onnx"]
+
+[dependencies]
+scribe-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+ndarray = { workspace = true }
+sherpa-onnx = { workspace = true, optional = true }

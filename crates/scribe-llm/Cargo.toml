@@ -1,0 +1,25 @@
+[package]
+name = "scribe-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Real local embeddings via fastembed-rs (ONNX). On by default. Disable with
+# `--no-default-features` to fall back to a deterministic hash-embedding stub
+# (keeps the pipeline runnable without the ONNX runtime). The Ollama client is
+# always available — it is plain HTTP and needs no native deps.
+default = ["local-embed"]
+local-embed = ["dep:fastembed"]
+
+[dependencies]
+scribe-core = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+fastembed = { workspace = true, optional = true }
