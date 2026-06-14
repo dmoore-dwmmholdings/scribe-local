@@ -29,7 +29,7 @@ impl Engines {
     pub fn load(cfg: &Config) -> Result<Arc<Engines>> {
         let speech = SpeechEngine::load(&cfg.worker.models_dir, &cfg.asr)?;
         let embedder = build_embedder(&cfg.llm)?;
-        let ollama = OllamaClient::new(&cfg.llm.ollama_url);
+        let ollama = OllamaClient::from_config(&cfg.llm);
         tracing::info!(
             backend = speech.backend().as_str(),
             embed_dim = embedder.dim(),

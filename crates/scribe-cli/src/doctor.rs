@@ -248,27 +248,20 @@ fn check_models(report: &mut Report, cfg: &Config) {
     }
 }
 
-/// (6) Ollama reachable — WARN if not (a storage-only node has no Ollama).
+/// (6) LLM server reachable — WARN if not (a storage-only node may have none).
+/// Provider-aware: Ollama (`/api/tags`) or OpenAI-compatible / LM Studio
+/// (`/v1/models`).
 async fn check_ollama(report: &mut Report, cfg: &Config) {
-    let client = OllamaClient::new(&cfg.llm.ollama_url);
+    let client = OllamaClient::from_config(&cfg.llm);
+    let label = "llm";
+    let where_ = format!("{:?} at {}", cfg.llm.provider, client.base_url());
     match client.health().await {
-        Ok(true) => report.add(
-            Status::Pass,
-            "ollama",
-            format!("reachable at {}", cfg.llm.ollama_url),
-        ),
-        Ok(false) => report.add(
-            Status::Warn,
-            "ollama",
-            format!("responded with non-2xx at {}", cfg.llm.ollama_url),
-        ),
+        Ok(true) => report.add(Status::Pass, label, format!("reachable — {where_}")),
+        Ok(false) => report.add(Status::Warn, label, format!("responded non-2xx — {where_}")),
         Err(_) => report.add(
             Status::Warn,
-            "ollama",
-            format!(
-                "not reachable at {} — needed only on the processing node",
-                cfg.llm.ollama_url
-            ),
+            label,
+            format!("not reachable — {where_} (needed only on the processing node)"),
         ),
     }
 }

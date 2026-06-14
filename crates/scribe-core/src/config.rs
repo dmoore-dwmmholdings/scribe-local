@@ -102,12 +102,35 @@ pub struct WorkerConfig {
     pub max_attempts: i32,
 }
 
+/// Which local LLM server serves chat (summaries / RAG answers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LlmProvider {
+    /// Ollama's native API (`/api/chat`, `/api/tags`), default `:11434`.
+    Ollama,
+    /// Any OpenAI-compatible server (`/v1/chat/completions`, `/v1/models`):
+    /// **LM Studio**, llama.cpp server, vLLM, etc.
+    #[serde(alias = "openai-compatible", alias = "lmstudio", alias = "lm-studio")]
+    Openai,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
-    /// Ollama OpenAI-compatible base URL.
+    /// Which server type to talk to: `ollama` (default) or `openai`
+    /// (OpenAI-compatible, e.g. LM Studio).
+    pub provider: LlmProvider,
+    /// Base URL of the chat server. For Ollama: `http://127.0.0.1:11434`.
+    /// For LM Studio / OpenAI-compatible: `http://127.0.0.1:1234/v1`
+    /// (the `/v1` is added automatically if omitted). May be written as
+    /// `base_url` in config; `ollama_url` is kept for back-compat.
+    #[serde(alias = "base_url", alias = "server_url")]
     pub ollama_url: String,
-    /// Model used for summaries / Q&A.
+    /// Bearer token for OpenAI-compatible servers that require one. LM Studio
+    /// ignores it; leave unset (`None`) unless your server enforces a key.
+    pub api_key: Option<String>,
+    /// Model used for summaries / Q&A. For LM Studio this is the loaded model's
+    /// identifier (as shown in LM Studio / `GET /v1/models`).
     pub summarize_model: String,
     /// Embedding model id (dimension is a schema commitment — design §9).
     pub embed_model: String,
@@ -253,7 +276,9 @@ impl Default for WorkerConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
+            provider: LlmProvider::Ollama,
             ollama_url: "http://127.0.0.1:11434".to_string(),
+            api_key: None,
             summarize_model: "gemma3:27b".to_string(),
             embed_model: "nomic-embed-text".to_string(),
             embed_dim: 768,

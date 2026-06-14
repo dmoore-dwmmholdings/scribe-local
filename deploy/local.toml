@@ -48,12 +48,30 @@ poll_secs      = 5
 max_attempts   = 5
 
 [llm]
-ollama_url      = "http://127.0.0.1:11434"
-# 16 GB VRAM (4070 Ti SUPER): a 12–14B model fits comfortably with long context.
-# gemma3:27b at Q4 is ~16 GB and will be tight — start with gemma3:12b.
-summarize_model = "gemma3:12b"
+# Chat backend for summaries + RAG answers:
+#   "openai"  → OpenAI-compatible server (LM Studio, llama.cpp, vLLM)
+#   "ollama"  → Ollama's native API
+provider        = "openai"
+
+# LM Studio's local server. Start it in LM Studio → Developer tab → "Start Server"
+# (default port 1234), and load a model. The trailing /v1 is added if you omit it.
+base_url        = "http://127.0.0.1:1234/v1"
+# api_key       = "lm-studio"   # LM Studio ignores this; set only if your server requires a key
+
+# For LM Studio this is the LOADED model's identifier (see `GET /v1/models`, or the
+# model name shown in LM Studio). 16 GB VRAM (4070 Ti SUPER) fits a 12–14B nicely.
+# Replace with whatever you load, e.g.:
+summarize_model = "google/gemma-3-12b"
+
+# Embeddings run in-process via fastembed (the real build) — NOT through LM Studio,
+# so the index/query vectors always match. 768-dim = nomic-embed-text.
 embed_model     = "nomic-embed-text"
 embed_dim       = 768
+
+# To use Ollama instead of LM Studio:
+#   provider = "ollama"
+#   base_url = "http://127.0.0.1:11434"
+#   summarize_model = "gemma3:12b"
 
 [update]
 # Self-update endpoint — keep OFF until you've set a token + signing key.

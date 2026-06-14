@@ -52,7 +52,7 @@ impl AppState {
     pub async fn build(cfg: Config) -> Result<AppState> {
         let db = Db::connect(&cfg.database).await?;
         let embedder = build_embedder(&cfg.llm)?;
-        let ollama = OllamaClient::new(&cfg.llm.ollama_url);
+        let ollama = OllamaClient::from_config(&cfg.llm);
         let blobs = cfg.storage.blobs.clone();
 
         let keys = load_device_keys(cfg.auth.device_keys.as_deref())?;
