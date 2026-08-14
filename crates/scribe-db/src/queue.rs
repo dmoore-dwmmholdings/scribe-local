@@ -251,6 +251,20 @@ impl Db {
         Ok(done as usize == preds.len())
     }
 
+    /// Delete every queue row for a recording. Used when reprocessing so the
+    /// fresh pipeline run isn't gated by stale `done` predecessor jobs from a
+    /// prior run (`predecessors_done` / the `ready` check count `done` jobs).
+    /// Returns the number of jobs removed.
+    pub async fn delete_jobs_by_recording(&self, recording_id: Uuid) -> Result<u64> {
+        let affected = sqlx::query("DELETE FROM jobs WHERE recording_id = $1")
+            .bind(recording_id)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        Ok(affected)
+    }
+
     /// Fetch a job by id (mostly for tests / observability).
     pub async fn get_job(&self, job_id: i64) -> Result<Option<Job>> {
         let sql = format!("SELECT {COLS} FROM jobs WHERE id = $1");

@@ -13,6 +13,7 @@ use scribe_core::config::Config;
 use scribe_core::types::{Job, JobKind, RecordingStatus};
 use scribe_core::Result;
 use scribe_db::Db;
+use serde_json::Value;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -20,13 +21,16 @@ use crate::engines::Engines;
 use crate::stages;
 
 /// Dispatch one stage by kind. Shared by the worker and the inline driver so the
-/// stage code path is identical regardless of how it was triggered.
+/// stage code path is identical regardless of how it was triggered. `payload` is
+/// the job's payload jsonb (empty `{}` for the inline driver), carrying per-job
+/// options such as the summarize `template`.
 pub(crate) async fn run_stage(
     cfg: &Config,
     db: &Db,
     engines: &Engines,
     kind: JobKind,
     recording_id: Uuid,
+    payload: &Value,
 ) -> Result<()> {
     match kind {
         JobKind::Transcode => stages::transcode::run(cfg, db, recording_id).await,
@@ -34,15 +38,34 @@ pub(crate) async fn run_stage(
         JobKind::Transcribe => {
             stages::transcribe::run(cfg, db, &engines.speech, recording_id).await
         }
-        JobKind::Merge => stages::merge::run(cfg, db, recording_id).await,
+        JobKind::Merge => stages::merge::run(cfg, db, &engines.ollama, recording_id).await,
         JobKind::Embed => stages::embed::run(cfg, db, &engines.embedder, recording_id).await,
         JobKind::Summarize => {
-            stages::summarize::run(cfg, db, &engines.ollama, recording_id).await
+            let template = summarize_template(cfg, payload);
+            stages::summarize::run(cfg, db, &engines.ollama, recording_id, &template).await
         }
         JobKind::TranscribeSegment => {
             stages::transcribe_segment::run(cfg, db, engines, recording_id).await
         }
     }
+}
+
+/// Resolve the summary template id for a summarize job: the job payload's
+/// `"template"` key, else `cfg.llm.summary_template`, else `"general"`.
+fn summarize_template(cfg: &Config, payload: &Value) -> String {
+    let from_payload = payload
+        .get("template")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(t) = from_payload {
+        return t.to_string();
+    }
+    let from_cfg = cfg.llm.summary_template.trim();
+    if !from_cfg.is_empty() {
+        return from_cfg.to_string();
+    }
+    scribe_core::summary_template::DEFAULT_TEMPLATE_ID.to_string()
 }
 
 /// After a terminal stage (`embed` or `summarize`) finishes, flip the recording
@@ -172,7 +195,7 @@ async fn process_job(
         }
     });
 
-    let result = run_stage(cfg, db, engines, job.kind, recording_id).await;
+    let result = run_stage(cfg, db, engines, job.kind, recording_id, &job.payload).await;
     hb.abort();
 
     match result {
@@ -185,7 +208,14 @@ async fn process_job(
             // Live transcription drains itself: if more segments arrived while we
             // were transcribing this batch, queue another pass (now that this job
             // is `done`, the per-recording unique index allows the new one).
+            //
+            // CRITICAL: only re-enqueue while the recording is still UPLOADING.
+            // The stage no-ops once the recording is complete, so any straggler
+            // segments uploaded around `/complete` stay untranscribed — without
+            // this status guard the `count > 0` check would re-enqueue forever
+            // (a runaway loop that created millions of no-op jobs).
             if matches!(job.kind, JobKind::TranscribeSegment)
+                && db.get_recording(recording_id).await?.status == RecordingStatus::Uploading
                 && db.count_untranscribed_segments(recording_id).await? > 0
             {
                 db.enqueue(recording_id, JobKind::TranscribeSegment, serde_json::json!({}))

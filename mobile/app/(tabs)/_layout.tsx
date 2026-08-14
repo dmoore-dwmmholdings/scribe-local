@@ -1,11 +1,12 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { colors } from '../../src/theme';
 
 type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
 
 function tabIcon(name: IoniconsName, focusedName: IoniconsName) {
   return ({ color, focused }: { color: string; focused: boolean }) => (
-    <Ionicons name={focused ? focusedName : name} size={24} color={color} />
+    <Ionicons name={focused ? focusedName : name} size={23} color={color} />
   );
 }
 
@@ -13,8 +14,16 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#E53935',
-        headerShown: true,
+        headerShown: false,
+        tabBarActiveTintColor: colors.accent,
+        tabBarInactiveTintColor: colors.textDim,
+        sceneStyle: { backgroundColor: colors.bg },
+        tabBarStyle: {
+          backgroundColor: colors.surfaceAlt,
+          borderTopColor: colors.border,
+          borderTopWidth: 1,
+        },
+        tabBarLabelStyle: { fontSize: 10, fontWeight: '600' },
       }}
     >
       <Tabs.Screen
@@ -28,7 +37,7 @@ export default function TabLayout() {
         name="library"
         options={{
           title: 'Library',
-          tabBarIcon: tabIcon('library-outline', 'library'),
+          tabBarIcon: tabIcon('list-outline', 'list'),
         }}
       />
       <Tabs.Screen
@@ -42,14 +51,14 @@ export default function TabLayout() {
         name="ask"
         options={{
           title: 'Ask',
-          tabBarIcon: tabIcon('chatbubble-outline', 'chatbubble'),
+          tabBarIcon: tabIcon('chatbubble-ellipses-outline', 'chatbubble-ellipses'),
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: tabIcon('settings-outline', 'settings'),
+          tabBarIcon: tabIcon('options-outline', 'options'),
         }}
       />
     </Tabs>

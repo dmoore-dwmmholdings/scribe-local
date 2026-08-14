@@ -32,6 +32,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import { api, ApiError } from '../../src/api/client';
 import type { UpdateInfoResponse } from '../../src/types';
+import { colors, mono, radius } from '../../src/theme';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -260,7 +261,7 @@ export default function BackendUpdateScreen() {
       {/* Info card */}
       <Text style={styles.sectionHeader}>Current backend</Text>
       {infoLoading ? (
-        <ActivityIndicator color="#E53935" style={styles.infoSpinner} />
+        <ActivityIndicator color={colors.accent} style={styles.infoSpinner} />
       ) : infoError ? (
         <View style={styles.errorCard}>
           <Text style={styles.errorText}>{infoError}</Text>
@@ -276,12 +277,12 @@ export default function BackendUpdateScreen() {
           <Row
             label="Updates enabled"
             value={info.update_enabled ? 'Yes' : 'No'}
-            valueColor={info.update_enabled ? '#43A047' : '#E53935'}
+            valueColor={info.update_enabled ? colors.statusReady : colors.accentDeep}
           />
           <Row
             label="Backup available"
             value={info.has_backup ? 'Yes' : 'No'}
-            valueColor={info.has_backup ? '#43A047' : '#aaa'}
+            valueColor={info.has_backup ? colors.statusReady : colors.textDim}
           />
           <TouchableOpacity style={styles.refreshBtn} onPress={loadInfo}>
             <Text style={styles.refreshBtnText}>Refresh</Text>
@@ -301,7 +302,7 @@ export default function BackendUpdateScreen() {
       {/* Phase: uploading / restarting / rolling back */}
       {busy && (
         <View style={styles.phaseCard}>
-          <ActivityIndicator color="#E53935" style={{ marginBottom: 12 }} />
+          <ActivityIndicator color={colors.accent} style={{ marginBottom: 12 }} />
           <Text style={styles.phaseMessage}>{phaseMessage}</Text>
           {phase === 'uploading' && (
             <View style={styles.progressTrack}>
@@ -352,7 +353,7 @@ export default function BackendUpdateScreen() {
             disabled={phase === 'picking'}
           >
             {phase === 'picking' ? (
-              <ActivityIndicator color="#E53935" />
+              <ActivityIndicator color={colors.accent} />
             ) : (
               <Text style={styles.secondaryButtonText}>Select package…</Text>
             )}
@@ -440,14 +441,14 @@ const styles = StyleSheet.create({
   container: {
     padding: 20,
     paddingBottom: 48,
-    backgroundColor: '#fff',
+    backgroundColor: colors.bg,
   },
   sectionHeader: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#aaa',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+    color: colors.accent,
+    fontFamily: mono,
+    letterSpacing: 2,
     marginBottom: 12,
   },
   infoSpinner: {
@@ -455,28 +456,29 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
     padding: 14,
     marginBottom: 16,
-    backgroundColor: '#fafafa',
+    backgroundColor: colors.surface,
   },
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 5,
+    paddingVertical: 6,
   },
   rowLabel: {
-    fontSize: 13,
-    color: '#666',
+    fontSize: 13.5,
+    color: colors.textMuted,
   },
   rowValue: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#111',
+    color: colors.textPrimary,
     flexShrink: 1,
     textAlign: 'right',
     marginLeft: 12,
+    fontFamily: mono,
   },
   refreshBtn: {
     marginTop: 10,
@@ -484,32 +486,34 @@ const styles = StyleSheet.create({
   },
   refreshBtnText: {
     fontSize: 13,
-    color: '#E53935',
+    color: colors.accent,
     fontWeight: '600',
   },
   noteCard: {
-    backgroundColor: '#FFF8E1',
-    borderRadius: 8,
+    backgroundColor: 'rgba(226,168,95,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(226,168,95,0.3)',
+    borderRadius: radius.inner,
     padding: 12,
     marginBottom: 16,
   },
   noteText: {
     fontSize: 12,
-    color: '#795548',
+    color: colors.amber,
     lineHeight: 18,
   },
   phaseCard: {
     borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
     padding: 16,
     marginBottom: 16,
     alignItems: 'center',
-    backgroundColor: '#fafafa',
+    backgroundColor: colors.surface,
   },
   phaseMessage: {
     fontSize: 14,
-    color: '#333',
+    color: colors.textLight,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 10,
@@ -518,104 +522,109 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#eee',
+    backgroundColor: colors.toggleOff,
     overflow: 'hidden',
     marginBottom: 6,
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#E53935',
+    backgroundColor: colors.accent,
     borderRadius: 3,
   },
   progressLabel: {
     fontSize: 12,
-    color: '#888',
+    color: colors.textMuted,
+    fontFamily: mono,
     fontVariant: ['tabular-nums'],
   },
   successCard: {
     borderWidth: 1,
-    borderColor: '#C8E6C9',
-    borderRadius: 10,
+    borderColor: 'rgba(147,176,114,0.35)',
+    borderRadius: radius.inner,
     padding: 16,
     marginBottom: 16,
-    backgroundColor: '#F1F8E9',
+    backgroundColor: 'rgba(147,176,114,0.1)',
     alignItems: 'center',
   },
   successText: {
     fontSize: 14,
-    color: '#2E7D32',
+    color: colors.statusReady,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 8,
   },
   newVersionLabel: {
     fontSize: 13,
-    color: '#43A047',
+    color: colors.statusReady,
     fontWeight: '600',
     marginBottom: 12,
+    fontFamily: mono,
   },
   errorCard: {
     borderWidth: 1,
-    borderColor: '#FFCDD2',
-    borderRadius: 10,
+    borderColor: 'rgba(232,81,46,0.35)',
+    borderRadius: radius.inner,
     padding: 16,
     marginBottom: 16,
-    backgroundColor: '#FFF3F3',
+    backgroundColor: 'rgba(232,81,46,0.1)',
     alignItems: 'center',
   },
   errorText: {
     fontSize: 14,
-    color: '#C62828',
+    color: colors.accentDeep,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 10,
   },
   retryBtn: {
     borderWidth: 1,
-    borderColor: '#E53935',
-    borderRadius: 6,
+    borderColor: colors.chipActiveBorder,
+    borderRadius: 8,
     paddingHorizontal: 16,
-    paddingVertical: 6,
+    paddingVertical: 7,
+    backgroundColor: colors.accentFaint,
   },
   retryBtnText: {
-    color: '#E53935',
+    color: colors.accent,
     fontWeight: '600',
     fontSize: 13,
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: '#E53935',
-    borderRadius: 8,
-    padding: 10,
+    borderColor: colors.chipActiveBorder,
+    borderRadius: 11,
+    padding: 11,
     alignItems: 'center',
     marginBottom: 12,
+    backgroundColor: colors.accentFaint,
   },
   secondaryButtonText: {
-    color: '#E53935',
+    color: colors.accent,
     fontWeight: '600',
     fontSize: 14,
   },
   fileCard: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
+    borderColor: colors.borderInput,
+    borderRadius: radius.inner,
     padding: 12,
     marginBottom: 12,
-    backgroundColor: '#fafafa',
+    backgroundColor: colors.surface,
   },
   fileName: {
     fontSize: 14,
-    color: '#111',
+    color: colors.textPrimary,
     fontWeight: '500',
   },
   fileSize: {
     fontSize: 12,
-    color: '#888',
+    color: colors.textMuted,
     marginTop: 4,
+    fontFamily: mono,
   },
   primaryButton: {
-    backgroundColor: '#E53935',
-    borderRadius: 10,
+    backgroundColor: colors.accent,
+    borderRadius: radius.inner,
     padding: 14,
     alignItems: 'center',
     marginBottom: 6,
@@ -624,32 +633,32 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   primaryButtonText: {
-    color: '#fff',
+    color: colors.white,
     fontSize: 16,
     fontWeight: '700',
   },
   disabledHint: {
     fontSize: 12,
-    color: '#E53935',
+    color: colors.accent,
     textAlign: 'center',
     marginBottom: 8,
   },
   rollbackButton: {
     borderWidth: 1.5,
-    borderColor: '#FB8C00',
-    borderRadius: 8,
-    padding: 10,
+    borderColor: colors.amber,
+    borderRadius: 11,
+    padding: 11,
     alignItems: 'center',
     marginBottom: 8,
   },
   rollbackButtonText: {
-    color: '#FB8C00',
+    color: colors.amber,
     fontWeight: '600',
     fontSize: 14,
   },
   hint: {
     fontSize: 12,
-    color: '#bbb',
+    color: colors.textDim,
     lineHeight: 17,
     marginBottom: 8,
   },

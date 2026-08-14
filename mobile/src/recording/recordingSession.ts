@@ -25,6 +25,7 @@ import { uploadQueue } from './uploadQueue';
 import { api } from '../api/client';
 import { useRecordingsStore } from '../state/recordingsStore';
 import { useSettingsStore } from '../state/settingsStore';
+import { log } from '../util/logger';
 import type { Recording } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ export type SessionState =
   | 'idle'
   | 'starting'
   | 'recording'
+  | 'paused'
   | 'stopping'
   | 'done'
   | 'error';
@@ -48,6 +50,7 @@ export type SessionEvent =
   | { type: 'state'; state: SessionState }
   | { type: 'tick'; elapsedMs: number }
   | { type: 'segment'; seq: number; uploaded: boolean }
+  | { type: 'mark'; atMs: number }
   | { type: 'error'; error: Error };
 
 // ---------------------------------------------------------------------------
@@ -59,11 +62,15 @@ export class RecordingSession {
   private _segmentCount = 0;
   private _listeners: SessionEventListener[] = [];
   private _tickTimer: ReturnType<typeof setInterval> | null = null;
+  /** Bookmarked moments (ms into the captured audio). */
+  private _marks: number[] = [];
 
   private recorder: SegmentedRecorder = new SegmentedRecorder({
     onSegmentReady: (seg) => this._handleSegmentReady(seg),
     onError: (err) => this._handleError(err),
-    segmentDurationSeconds: 30,
+    // 15s segments keep live transcription responsive (first words appear soon
+    // after the first segment uploads) without excessive request overhead.
+    segmentDurationSeconds: 15,
   });
 
   // -------------------------------------------------------------------------
@@ -84,6 +91,10 @@ export class RecordingSession {
 
   get segmentCount(): number {
     return this._segmentCount;
+  }
+
+  get marks(): number[] {
+    return this._marks;
   }
 
   on(listener: SessionEventListener): () => void {
@@ -163,7 +174,10 @@ export class RecordingSession {
 
     if (this._recordingId) {
       try {
-        await api.completeRecording(this._recordingId, { duration_ms: durationMs });
+        await api.completeRecording(this._recordingId, {
+          duration_ms: durationMs,
+          marks: this._marks,
+        });
         // Update local state to processing
         const cached = useRecordingsStore.getState().getRecording(this._recordingId);
         if (cached) {
@@ -183,12 +197,47 @@ export class RecordingSession {
     this._setState('done');
   }
 
+  /** Pause capture. Keeps the session alive; the timer freezes. */
+  async pause(): Promise<void> {
+    if (this._state !== 'recording') return;
+    try {
+      await this.recorder.pause();
+      this._stopTick();
+      this._setState('paused');
+      this._emit({ type: 'tick', elapsedMs: this.recorder.elapsedMs });
+    } catch (err) {
+      this._handleError(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  /** Resume capture after a pause. */
+  async resume(): Promise<void> {
+    if (this._state !== 'paused') return;
+    try {
+      await this.recorder.resume();
+      this._setState('recording');
+      this._startTick();
+    } catch (err) {
+      this._handleError(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  /** Bookmark the current moment (ms into the captured audio). */
+  mark(): number | null {
+    if (this._state !== 'recording' && this._state !== 'paused') return null;
+    const at = this.recorder.elapsedMs;
+    this._marks.push(at);
+    this._emit({ type: 'mark', atMs: at });
+    return at;
+  }
+
   // -------------------------------------------------------------------------
   // Internal
   // -------------------------------------------------------------------------
 
   private _handleSegmentReady(seg: SegmentInfo): void {
     this._segmentCount += 1;
+    log('rec', `segment ready #${seg.seq}`, { startMs: seg.startMs, durMs: seg.durationMs });
     this._emit({ type: 'segment', seq: seg.seq, uploaded: false });
 
     if (!this._recordingId) return;
@@ -211,6 +260,7 @@ export class RecordingSession {
   }
 
   private _handleError(error: Error): void {
+    log('rec', 'ERROR', error);
     this._setState('error');
     this._stopTick();
     this._emit({ type: 'error', error });
@@ -218,6 +268,7 @@ export class RecordingSession {
 
   private _setState(state: SessionState): void {
     this._state = state;
+    log('rec', `state → ${state}`, { id: this._recordingId, seg: this._segmentCount });
     this._emit({ type: 'state', state });
   }
 

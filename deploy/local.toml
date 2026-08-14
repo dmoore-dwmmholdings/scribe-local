@@ -34,10 +34,12 @@ require_device_token = false
 # device_keys = "./deploy/devices.toml"
 
 [asr]
-model       = "parakeet-tdt-0.6b-v3"
+model       = "whisper-large-v3-turbo"
 diarization = true
-# "cuda" uses the RTX 4070 Ti SUPER in the real-ML build; ignored by the stub.
-device      = "cuda"
+# CPU: the GPU's VRAM is occupied by LM Studio (~15 GB used), so Whisper-large
+# runs on CPU here. Switch back to "cuda" if you free GPU memory (e.g. unload /
+# shrink the LM Studio model). Affects ASR + diarization + speaker embedding.
+device      = "cpu"
 # Strip non-lexical fillers (uh, um, …) from transcripts. Override the list with
 # filler_words = ["uh","um","like",...] — defaults cover common hesitation sounds.
 remove_fillers = true
@@ -65,6 +67,11 @@ base_url        = "http://127.0.0.1:1234/v1"
 # model name shown in LM Studio). 16 GB VRAM (4070 Ti SUPER) fits a 12–14B nicely.
 # Replace with whatever you load, e.g.:
 summarize_model = "google/gemma-4-e4b"
+
+# Template that frames the automatic summary: general | standup | interview |
+# one_on_one | lecture | sales. A recording can be re-summarized with a different
+# template via POST /recordings/{id}/summarize. Unknown/empty → "general".
+# summary_template = "general"
 
 # Embeddings run in-process via fastembed (the real build) — NOT through LM Studio,
 # so the index/query vectors always match. 768-dim = nomic-embed-text.

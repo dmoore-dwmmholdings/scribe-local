@@ -17,15 +17,22 @@
 //! ```text
 //! GET    /health                                       (unauthenticated)
 //! POST   /recordings
-//! GET    /recordings
-//! GET    /recordings/{id}
+//! GET    /recordings                                    (optional ?tag= filter)
+//! GET    /recordings/{id}                               (detail: summaries[] per template)
 //! POST   /recordings/{id}/complete
+//! POST   /recordings/{id}/reprocess                     (re-run the whole pipeline)
+//! POST   /recordings/{id}/summarize                     (re-summarize w/ template, adds a view)
+//! POST   /recordings/{id}/translate                      (translate the summary via the LLM)
+//! PUT    /recordings/{id}/tags                           (replace org tags)
+//! PATCH  /recordings/{id}/utterances/{utterance_id}      (edit transcript text)
 //! PUT    /recordings/{id}/segments/{seq}               (body limit disabled, streamed)
 //! GET    /recordings/{id}/segments/{seq}               (range support)
 //! GET    /recordings/{id}/audio                         (range support)
 //! POST   /recordings/{id}/speakers/{local_idx}/name
+//! GET    /tags                                           (distinct tags in use)
 //! GET    /search
 //! POST   /ask
+//! GET    /summary-templates
 //! ```
 //!
 //! Every route except `GET /health` passes through the device-token auth layer
@@ -40,7 +47,7 @@ mod state;
 use std::net::SocketAddr;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::Router;
 
 use scribe_core::config::Config;
@@ -73,6 +80,27 @@ pub fn router(state: AppState) -> Router {
             "/recordings/{id}/complete",
             post(handlers::recordings::complete_recording),
         )
+        .route(
+            "/recordings/{id}/reprocess",
+            post(handlers::recordings::reprocess_recording),
+        )
+        .route(
+            "/recordings/{id}/summarize",
+            post(handlers::recordings::summarize_recording),
+        )
+        .route(
+            "/recordings/{id}/translate",
+            post(handlers::recordings::translate_summary),
+        )
+        .route(
+            "/recordings/{id}/tags",
+            put(handlers::recordings::set_recording_tags),
+        )
+        .route(
+            "/recordings/{id}/utterances/{utterance_id}",
+            patch(handlers::recordings::edit_utterance),
+        )
+        .route("/tags", get(handlers::recordings::list_tags))
         // Upload streams to disk; disable the body limit on just this route.
         .route(
             "/recordings/{id}/segments/{seq}",
@@ -90,6 +118,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/search", get(handlers::search::search))
         .route("/ask", post(handlers::search::ask))
+        .route(
+            "/summary-templates",
+            get(handlers::recordings::list_summary_templates),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,

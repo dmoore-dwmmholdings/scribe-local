@@ -12,7 +12,7 @@ use crate::Db;
 /// Columns selected for a full [`Recording`] row, in one place so every query
 /// stays in sync with [`recording_from_row`].
 const COLS: &str = "id, title, created_at, device_id, duration_ms, status, \
-                    participants_expected, audio_format, sample_rate, storage_key";
+                    participants_expected, audio_format, sample_rate, storage_key, tags, marks";
 
 impl Db {
     /// Insert a new recording in the `uploading` state and return it.
@@ -54,17 +54,40 @@ impl Db {
         recording_from_row(&row)
     }
 
-    /// List recordings, newest first, paginated.
-    pub async fn list_recordings(&self, limit: i64, offset: i64) -> Result<Vec<Recording>> {
-        let sql = format!(
-            "SELECT {COLS} FROM recordings ORDER BY created_at DESC LIMIT $1 OFFSET $2"
-        );
-        let rows = sqlx::query(&sql)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(self.pool())
-            .await
-            .map_err(db_err)?;
+    /// List recordings, newest first, paginated. When `tag` is `Some`, only
+    /// recordings carrying that tag are returned (`$tag = ANY(tags)`).
+    pub async fn list_recordings(
+        &self,
+        limit: i64,
+        offset: i64,
+        tag: Option<&str>,
+    ) -> Result<Vec<Recording>> {
+        let rows = match tag {
+            Some(tag) => {
+                let sql = format!(
+                    "SELECT {COLS} FROM recordings WHERE $3 = ANY(tags) \
+                     ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+                );
+                sqlx::query(&sql)
+                    .bind(limit)
+                    .bind(offset)
+                    .bind(tag)
+                    .fetch_all(self.pool())
+                    .await
+                    .map_err(db_err)?
+            }
+            None => {
+                let sql = format!(
+                    "SELECT {COLS} FROM recordings ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+                );
+                sqlx::query(&sql)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(self.pool())
+                    .await
+                    .map_err(db_err)?
+            }
+        };
         rows.iter().map(recording_from_row).collect()
     }
 
@@ -85,6 +108,21 @@ impl Db {
         let affected = sqlx::query("UPDATE recordings SET duration_ms = $2 WHERE id = $1")
             .bind(id)
             .bind(duration_ms)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        not_found_if_zero(affected, id)
+    }
+
+    /// Persist the recording's bookmark marks (millisecond offsets into the
+    /// audio), replacing any existing set. Captured by the client during
+    /// recording and supplied at completion. Returns [`Error::NotFound`] if the
+    /// id is unknown.
+    pub async fn set_recording_marks(&self, id: Uuid, marks: &[i32]) -> Result<()> {
+        let affected = sqlx::query("UPDATE recordings SET marks = $1 WHERE id = $2")
+            .bind(marks)
+            .bind(id)
             .execute(self.pool())
             .await
             .map_err(db_err)?
@@ -143,6 +181,106 @@ impl Db {
             .map_err(db_err)?;
         row.try_get::<i64, _>("n").map_err(db_err)
     }
+
+    /// Replace a recording's tags with a normalized set and return the stored
+    /// list. Tags are trimmed, lowercased, empties dropped, and de-duplicated
+    /// preserving first-seen order. Returns [`Error::NotFound`] if the id is
+    /// unknown (mirrors [`Db::get_recording`]).
+    pub async fn set_recording_tags(&self, id: Uuid, tags: &[String]) -> Result<Vec<String>> {
+        let normalized = normalize_tags(tags);
+        let row = sqlx::query("UPDATE recordings SET tags = $1 WHERE id = $2 RETURNING tags")
+            .bind(&normalized)
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| Error::NotFound(format!("recording {id}")))?;
+        row.try_get::<Vec<String>, _>("tags").map_err(db_err)
+    }
+
+    /// Delete the recording's pipeline scratch artifacts (`recording_artifacts`:
+    /// the transcript/diarization hand-offs). Used when reprocessing so the
+    /// re-run regenerates them from scratch. Returns the number of rows removed.
+    pub async fn delete_artifacts_by_recording(&self, recording_id: Uuid) -> Result<u64> {
+        let affected = sqlx::query("DELETE FROM recording_artifacts WHERE recording_id = $1")
+            .bind(recording_id)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        Ok(affected)
+    }
+
+    /// Reset a recording for a full pipeline re-run (Feature D — reprocess).
+    ///
+    /// In a single transaction, delete every piece of DERIVED data —
+    /// utterances, chunks, summaries (all templates), pipeline scratch
+    /// artifacts, and the recording's queue jobs (so stale `done` predecessors
+    /// don't gate the re-run) — then flip the recording to `processing`. The
+    /// transcoded audio/segments on disk are left untouched. The caller enqueues
+    /// the `transcode` job afterwards, which cascades the rest of the DAG.
+    ///
+    /// Returns [`Error::NotFound`] if the recording id is unknown (the status
+    /// update affects zero rows).
+    pub async fn reset_for_reprocess(&self, id: Uuid) -> Result<()> {
+        let mut tx = self.pool().begin().await.map_err(db_err)?;
+
+        for table in [
+            "utterances",
+            "chunks",
+            "summaries",
+            "recording_artifacts",
+            "jobs",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE recording_id = $1"))
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        }
+
+        let affected = sqlx::query("UPDATE recordings SET status = $2 WHERE id = $1")
+            .bind(id)
+            .bind(RecordingStatus::Processing.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        not_found_if_zero(affected, id)?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Every distinct tag in use across all recordings, sorted alphabetically.
+    pub async fn distinct_tags(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT unnest(tags) AS t FROM recordings WHERE tags <> '{}' ORDER BY t",
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_err)?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>("t").map_err(db_err))
+            .collect()
+    }
+}
+
+/// Normalize a tag list: trim, lowercase, drop empties, dedupe preserving the
+/// order tags were first seen.
+fn normalize_tags(tags: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(tags.len());
+    for tag in tags {
+        let t = tag.trim().to_lowercase();
+        if t.is_empty() {
+            continue;
+        }
+        if seen.insert(t.clone()) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 fn not_found_if_zero(affected: u64, id: Uuid) -> Result<()> {

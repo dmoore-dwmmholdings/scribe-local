@@ -1,12 +1,14 @@
 //! End-to-end smoke test against a live Postgres (pgvector).
 //!
-//! Skipped unless `DATABASE_URL` is set. Run it with a clean schema:
+//! Skipped unless `DATABASE_URL` is set. Use a DISPOSABLE test database — this
+//! expects (and the api/pipeline tests enforce) a clean schema, and must NOT run
+//! against the live dev `scribe` DB (`assert_disposable_test_db` guards this):
 //!
 //! ```text
-//! docker exec -i scribe-pg psql -U scribe -d scribe \
+//! docker exec -i scribe-pg psql -U scribe -d scribe_test \
 //!   -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; \
 //!       CREATE EXTENSION vector; CREATE EXTENSION pgcrypto;"
-//! DATABASE_URL=postgres://scribe:scribe@localhost:5433/scribe \
+//! DATABASE_URL=postgres://scribe:scribe@localhost:5433/scribe_test \
 //!   cargo test -p scribe-db --test smoke -- --nocapture
 //! ```
 //!
@@ -30,6 +32,10 @@ async fn smoke_full_pipeline() {
         return;
     };
 
+    // This test inserts fixtures (and expects a clean schema). Refuse to run
+    // against a non-disposable database so it can't pollute/clobber live data.
+    scribe_db::assert_disposable_test_db(&url);
+
     let cfg = DatabaseConfig {
         url,
         max_connections: 5,
@@ -51,6 +57,7 @@ async fn smoke_full_pipeline() {
         .expect("create recording");
     assert_eq!(rec.status, RecordingStatus::Uploading);
     assert_eq!(rec.title.as_deref(), Some("Q3 offsite"));
+    assert!(rec.marks.is_empty(), "new recording has no marks by default");
 
     let fetched = db.get_recording(rec.id).await.expect("get recording");
     assert_eq!(fetched.id, rec.id);
@@ -68,9 +75,18 @@ async fn smoke_full_pipeline() {
     db.set_recording_storage_key(rec.id, &format!("{}/", rec.id))
         .await
         .expect("set storage key");
+    db.set_recording_marks(rec.id, &[1500, 42_000])
+        .await
+        .expect("set marks");
 
-    let listed = db.list_recordings(10, 0).await.expect("list recordings");
+    let listed = db
+        .list_recordings(10, 0, None)
+        .await
+        .expect("list recordings");
     assert!(listed.iter().any(|r| r.id == rec.id));
+    // Marks round-trip through the list/get column mapping.
+    let marked = listed.iter().find(|r| r.id == rec.id).unwrap();
+    assert_eq!(marked.marks, vec![1500, 42_000]);
 
     // --- segments (idempotent upsert) --------------------------------------
     let seg0 = db
@@ -294,10 +310,12 @@ async fn smoke_full_pipeline() {
             serde_json::json!(["search", "pgvector"]),
             serde_json::json!(["ship next sprint"]),
             Some("gemma3:27b"),
+            Some("standup"),
         )
         .await
         .expect("upsert summary");
     assert_eq!(summary.title.as_deref(), Some("Q3 offsite recap"));
+    assert_eq!(summary.template.as_deref(), Some("standup"));
 
     // Upsert again (idempotent on recording_id).
     let summary2 = db
@@ -309,10 +327,12 @@ async fn smoke_full_pipeline() {
             serde_json::json!([]),
             serde_json::json!([]),
             Some("gemma3:27b"),
+            Some("interview"),
         )
         .await
         .expect("re-upsert summary");
     assert_eq!(summary2.title.as_deref(), Some("Q3 offsite recap v2"));
+    assert_eq!(summary2.template.as_deref(), Some("interview"));
 
     let got = db.get_summary(rec.id).await.expect("get summary");
     assert!(got.is_some());

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use scribe_core::config::Config;
+use scribe_core::summary_template;
 use scribe_core::types::Utterance;
 use scribe_core::Result;
 use scribe_db::Db;
@@ -19,24 +20,33 @@ use uuid::Uuid;
 
 const SYSTEM_PROMPT: &str = "You are a meeting-notes assistant. Respond with only JSON.";
 
-/// Run the summarize stage for `recording_id`.
+/// Run the summarize stage for `recording_id` using the given template.
+///
+/// `template` is a template id (e.g. `"general"`, `"interview"`); it is resolved
+/// case-insensitively, falling back to `general` for an empty/unknown id. The
+/// template only changes the prompt framing — the required output JSON shape and
+/// the persisted columns are unchanged.
 pub async fn run(
     cfg: &Config,
     db: &Db,
     ollama: &OllamaClient,
     recording_id: Uuid,
+    template: &str,
 ) -> Result<()> {
     let utterances = db.list_utterances_by_recording(recording_id).await?;
     let names = speaker_names(db, recording_id).await?;
     let transcript = render_transcript(&utterances, &names);
 
+    let tmpl = summary_template::resolve(template);
     let model = &cfg.llm.summarize_model;
     let user = format!(
-        "Summarize the following meeting transcript. Return a JSON object with keys: \
+        "{instructions}\n\n\
+         Return ONLY a JSON object with keys: \
          \"title\" (string), \"summary\" (string), \"action_items\" (array of strings), \
          \"decisions\" (array of strings), \"topics\" (array of strings). \
          If the transcript is empty or trivial, still return the object with empty values.\n\n\
-         Transcript:\n{transcript}"
+         Transcript:\n{transcript}",
+        instructions = tmpl.instructions
     );
 
     let messages = [ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(user)];
@@ -73,6 +83,7 @@ pub async fn run(
         parsed.topics,
         parsed.decisions,
         Some(model),
+        Some(tmpl.id),
     )
     .await?;
 
@@ -83,7 +94,7 @@ pub async fn run(
         db.set_recording_title_auto(recording_id, title).await?;
     }
 
-    tracing::info!(%recording_id, model = %model, "summarize complete");
+    tracing::info!(%recording_id, model = %model, template = %tmpl.id, "summarize complete");
     Ok(())
 }
 

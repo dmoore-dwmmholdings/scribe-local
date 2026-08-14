@@ -26,6 +26,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api } from '../api/client';
 import { useRecordingsStore } from '../state/recordingsStore';
+import { log } from '../util/logger';
 import type { PendingSegment } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,7 @@ export class UploadQueue {
       });
 
       // Success — remove from queue and clean up the temp file
+      log('upload', `segment #${item.seq} uploaded`);
       this.queue = this.queue.filter((s) => s.id !== item.id);
       await this._persist();
       this._updateProgress(item.recordingId);
@@ -150,6 +152,7 @@ export class UploadQueue {
       // Best-effort delete the cached segment file
       FileSystem.deleteAsync(item.fileUri, { idempotent: true }).catch(() => {});
     } catch (err) {
+      log('upload', `segment #${item.seq} attempt ${item.attempts} failed`, err);
       if (item.attempts >= MAX_ATTEMPTS) {
         item.status = 'failed';
         console.warn(

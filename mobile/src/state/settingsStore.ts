@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   audioQuality: 'medium',
   defaultParticipants: 2,
   updateToken: '',
+  reduceMotion: false,
 };
 
 interface SettingsState extends AppSettings {

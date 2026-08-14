@@ -1,0 +1,69 @@
+# Scribe - single-box Windows SERVER config (storage + worker on one always-on PC).
+#
+# This is the runtime config that ships in the deploy bundle. Copy/edit it on the
+# server. Relative paths (./data, ./models) resolve to the bundle directory, which
+# the run/service scripts set as the working directory.
+#
+# Secrets are better set via env vars (the service installer reads them), e.g.
+#   $env:SCRIBE_DATABASE__URL, $env:SCRIBE_STORAGE__SIGNING_SECRET
+
+[database]
+# pgvector container started by run-server.ps1 (docker compose, host port 5433).
+url             = "postgres://scribe:scribe@localhost:5433/scribe?sslmode=disable"
+max_connections = 10
+
+[storage]
+blobs               = "./data/blobs"
+# CHANGE THIS. Generate one: powershell -c "[guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')"
+# or `openssl rand -hex 32`. Used to sign short-lived audio-pull URLs.
+signing_secret      = "CHANGE-ME-to-a-32-byte-hex-secret"
+signed_url_ttl_secs = 600
+
+[api]
+# Plain HTTP on localhost; `tailscale serve` puts HTTPS in front on the tailnet.
+bind              = "127.0.0.1:8443"
+max_segment_bytes = 16777216
+# CHANGE THIS to the SERVER's tailnet MagicDNS name (tailscale status --json -> Self.DNSName).
+public_base_url   = "https://YOUR-SERVER.your-tailnet.ts.net"
+
+[auth]
+# Real deployment: REQUIRE device tokens so the tailnet-exposed API isn't open.
+# Put `device_id = "api_key"` pairs in deploy/devices.toml (see devices.toml.example),
+# and enter the matching key in the mobile app (Settings -> Device API key).
+require_device_token = true
+device_keys          = "./deploy/devices.toml"
+
+[asr]
+# GPU server: run ASR + diarization on CUDA. NOTE the VRAM tradeoff below.
+model          = "whisper-large-v3-turbo"
+diarization    = true
+device         = "cuda"
+remove_fillers = true
+
+[worker]
+stages         = ["all"]
+concurrency    = 1
+models_dir     = "./models"
+heartbeat_secs = 15
+poll_secs      = 5
+max_attempts   = 5
+
+[llm]
+# LLM runs ON the server (LM Studio or Ollama). For LM Studio (OpenAI-compatible),
+# start its server (Developer -> Start Server) and load a model.
+#   IMPORTANT VRAM NOTE: if the LLM and CUDA ASR share one GPU, they compete for
+#   VRAM. If the LLM fills the card (Whisper-large won't load), either set
+#   asr.device = "cpu" here, or load a smaller LLM. This is the same constraint
+#   as the dev box.
+provider        = "openai"
+base_url        = "http://127.0.0.1:1234/v1"
+# api_key       = "lm-studio"
+summarize_model = "google/gemma-4-e4b"   # the loaded model's id (GET /v1/models)
+embed_model     = "nomic-embed-text"      # in-process fastembed; dim is a schema commitment
+embed_dim       = 768
+correct_transcript = true
+
+[update]
+# Optional: turn on later to push new builds from dev via POST /admin/update
+# (signed packages) instead of re-copying the bundle. See docs/self-update.md.
+enabled = false

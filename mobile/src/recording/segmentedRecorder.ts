@@ -45,6 +45,7 @@ import {
   type RecordingOptions,
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
+import { log } from '../util/logger';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,6 +115,11 @@ export class SegmentedRecorder {
   private _startTimeMs = 0;
   private _segmentStartMs = 0;
   private _running = false;
+  private _paused = false;
+  /** Total time (ms) spent paused, excluded from the audio timeline. */
+  private _pausedAccumMs = 0;
+  /** Wall-clock when the current pause began (0 when not paused). */
+  private _pauseStartMs = 0;
 
   constructor(options: SegmentedRecorderOptions) {
     this.onSegmentReady = options.onSegmentReady;
@@ -122,15 +128,21 @@ export class SegmentedRecorder {
     this.segmentDurationMs = Math.min(60, Math.max(10, dur)) * 1000;
   }
 
-  /** Whether a recording session is active. */
+  /** Whether a recording session is active (including while paused). */
   get isRecording(): boolean {
     return this._running;
   }
 
-  /** Elapsed milliseconds since the session started. */
+  /** Whether capture is currently paused. */
+  get isPaused(): boolean {
+    return this._paused;
+  }
+
+  /** Elapsed milliseconds of captured audio (frozen while paused). */
   get elapsedMs(): number {
     if (!this._running) return 0;
-    return Date.now() - this._startTimeMs;
+    const now = this._paused ? this._pauseStartMs : Date.now();
+    return now - this._startTimeMs - this._pausedAccumMs;
   }
 
   // -------------------------------------------------------------------------
@@ -166,7 +178,44 @@ export class SegmentedRecorder {
     this._startTimeMs = options.startTimeMs;
     this.seq = 0;
     this._running = true;
+    this._paused = false;
+    this._pausedAccumMs = 0;
+    this._pauseStartMs = 0;
 
+    await this._startSegment();
+  }
+
+  /**
+   * Pause capture: close + emit the current segment and stop rotating new ones,
+   * but keep the session alive.  The audio timeline excludes paused time.
+   */
+  async pause(): Promise<void> {
+    if (!this._running || this._paused) return;
+    this._paused = true;
+    this._pauseStartMs = Date.now();
+    this._clearTimer();
+
+    const segStartMs = this._segmentStartMs;
+    const currentSeq = this.seq;
+    const fileUri = await this._stopActiveRecorder();
+    if (fileUri) {
+      const durationMs = Date.now() - segStartMs;
+      this.seq += 1;
+      this.onSegmentReady({
+        seq: currentSeq,
+        fileUri,
+        startMs: segStartMs - this._startTimeMs - this._pausedAccumMs,
+        durationMs,
+      });
+    }
+  }
+
+  /** Resume capture after pause: start a fresh segment. */
+  async resume(): Promise<void> {
+    if (!this._running || !this._paused) return;
+    this._pausedAccumMs += Date.now() - this._pauseStartMs;
+    this._paused = false;
+    this._pauseStartMs = 0;
     await this._startSegment();
   }
 
@@ -174,6 +223,7 @@ export class SegmentedRecorder {
   async stop(): Promise<void> {
     if (!this._running) return;
     this._running = false;
+    this._paused = false;
     this._clearTimer();
     await this._closeCurrentSegment();
 
@@ -192,6 +242,7 @@ export class SegmentedRecorder {
   private async _startSegment(): Promise<void> {
     this._segmentStartMs = Date.now();
 
+    let recorder: AudioRecorder | null = null;
     try {
       // AudioRecorder is instantiated with options; prepareToRecordAsync
       // allocates OS resources, then record() starts capture.
@@ -201,13 +252,15 @@ export class SegmentedRecorder {
       // (this is exactly what the useAudioRecorder hook calls internally).
       // We can't use the hook here because this is a plain class, not a
       // React component, and we deliberately create one recorder per segment.
-      const recorder = new AudioModule.AudioRecorder(RECORDING_OPTIONS);
+      log('audio', `startSegment #${this.seq}: new AudioRecorder`);
+      recorder = new AudioModule.AudioRecorder(RECORDING_OPTIONS);
       await recorder.prepareToRecordAsync();
       recorder.record();
       this.activeRecorder = recorder;
+      log('audio', `startSegment #${this.seq}: recording`);
 
       // Schedule rotation after the segment duration
-      if (this._running) {
+      if (this._running && !this._paused) {
         this.segmentTimer = setTimeout(() => {
           this._rotateSegment().catch((err) =>
             this.onError(err instanceof Error ? err : new Error(String(err))),
@@ -215,6 +268,16 @@ export class SegmentedRecorder {
         }, this.segmentDurationMs);
       }
     } catch (err) {
+      log('audio', 'startSegment FAILED', err);
+      // Release the recorder if prepare/record threw after construction —
+      // otherwise this half-initialized native object leaks too.
+      if (recorder && recorder !== this.activeRecorder) {
+        try {
+          recorder.release();
+        } catch {
+          // ignore
+        }
+      }
       this._running = false;
       this.onError(err instanceof Error ? err : new Error(String(err)));
     }
@@ -240,13 +303,13 @@ export class SegmentedRecorder {
       this.onSegmentReady({
         seq: currentSeq,
         fileUri,
-        startMs: segStartMs - this._startTimeMs,
+        startMs: segStartMs - this._startTimeMs - this._pausedAccumMs,
         durationMs,
       });
     }
 
     // Start the next segment immediately (still running)
-    if (this._running) {
+    if (this._running && !this._paused) {
       await this._startSegment();
     }
   }
@@ -262,7 +325,7 @@ export class SegmentedRecorder {
       this.onSegmentReady({
         seq: currentSeq,
         fileUri,
-        startMs: segStartMs - this._startTimeMs,
+        startMs: segStartMs - this._startTimeMs - this._pausedAccumMs,
         durationMs,
       });
     }
@@ -273,12 +336,32 @@ export class SegmentedRecorder {
     this.activeRecorder = null;
     if (!rec) return null;
 
+    let uri: string | null = null;
     try {
       await rec.stop();
-      return rec.uri ?? null;
-    } catch {
-      return null;
+      // Read the uri BEFORE releasing — release() tears down the native object.
+      // The file itself is already finalized on disk by stop(), so the upload
+      // queue can still read it later.
+      uri = rec.uri ?? null;
+      log('audio', `stopped recorder, uri=${uri ? 'ok' : 'null'}`);
+    } catch (err) {
+      log('audio', 'recorder.stop FAILED', err);
+    } finally {
+      // CRITICAL: an AudioRecorder is an expo SharedObject. Instances created
+      // imperatively (as we do, one per segment) are NOT auto-released — only
+      // the `useAudioRecorder` hook releases on unmount. Without this call,
+      // every ~15 s segment leaks a native AVAudioRecorder attached to the
+      // shared AVAudioSession, so a long recording exhausts audio/memory
+      // resources and iOS terminates the app mid-recording. See expo-audio's
+      // SharedObject.release().
+      try {
+        rec.release();
+        log('audio', `released recorder #${this.seq}`);
+      } catch (e) {
+        log('audio', 'recorder.release FAILED', e);
+      }
     }
+    return uri;
   }
 
   private _clearTimer(): void {

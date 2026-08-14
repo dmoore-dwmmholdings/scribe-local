@@ -8,9 +8,9 @@
   API server and the worker in two new PowerShell windows so you can see logs.
 
   Build modes:
-    (default) stub  — no ONNX runtime/models needed; transcripts are placeholders.
+    (default) stub  - no ONNX runtime/models needed; transcripts are placeholders.
                       Proves the whole pipeline end-to-end. Builds on any toolchain.
-    -Real           — real models on the GPU. Requires the MSVC Rust toolchain,
+    -Real           - real models on the GPU. Requires the MSVC Rust toolchain,
                       ONNX models under .\models, and Ollama running. See the
                       launch guide / docs/self-update.md notes.
 
@@ -83,6 +83,6 @@ Write-Host "  Test:   & '$bin' --config $Config ingest <file>.m4a --title test -
 Write-Host "  Doctor: & '$bin' --config $Config doctor"
 Write-Host "`nTwo windows opened (serve + worker). Close them to stop." -ForegroundColor Yellow
 if (-not $Real) {
-    Write-Host "`nNOTE: stub build — transcripts are placeholders. Re-run with -Real once the" -ForegroundColor Yellow
+    Write-Host "`nNOTE: stub build - transcripts are placeholders. Re-run with -Real once the" -ForegroundColor Yellow
     Write-Host "      MSVC toolchain + ONNX models + Ollama are installed for real transcription."
 }

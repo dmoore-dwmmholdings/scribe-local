@@ -34,6 +34,8 @@ pub fn recording_from_row(row: &PgRow) -> Result<Recording, Error> {
         audio_format: row.try_get("audio_format").map_err(crate::db_err)?,
         sample_rate: row.try_get("sample_rate").map_err(crate::db_err)?,
         storage_key: row.try_get("storage_key").map_err(crate::db_err)?,
+        tags: row.try_get("tags").map_err(crate::db_err)?,
+        marks: row.try_get("marks").map_err(crate::db_err)?,
     })
 }
 
@@ -91,6 +93,7 @@ pub fn summary_from_row(row: &PgRow) -> Result<Summary, Error> {
         topics: row.try_get("topics").map_err(crate::db_err)?,
         decisions: row.try_get("decisions").map_err(crate::db_err)?,
         model: row.try_get("model").map_err(crate::db_err)?,
+        template: row.try_get("template").map_err(crate::db_err)?,
         created_at: row.try_get("created_at").map_err(crate::db_err)?,
     })
 }

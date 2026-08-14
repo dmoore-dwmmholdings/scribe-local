@@ -59,40 +59,47 @@ impl AsrModelPaths {
     /// Locate the ASR model files under `{models_dir}/asr`, preferring a
     /// transducer layout (the Parakeet default) and falling back to Whisper.
     pub fn discover(models_dir: &Path) -> Option<AsrModelPaths> {
+        Self::discover_preferring(models_dir, false)
+    }
+
+    /// Like [`discover`](Self::discover) but, when `prefer_whisper` is set, tries
+    /// the Whisper layout first. This lets `[asr].model = "whisper-..."` select
+    /// Whisper even when transducer files are also present in `models_dir/asr`.
+    pub fn discover_preferring(models_dir: &Path, prefer_whisper: bool) -> Option<AsrModelPaths> {
         let dir = models_dir.join("asr");
         let tokens = dir.join("tokens.txt");
         if !tokens.exists() {
             return None;
         }
-
-        // Transducer (Parakeet / Zipformer): encoder+decoder+joiner.
-        let encoder_t = first_existing([dir.join("encoder.onnx"), dir.join("encoder.int8.onnx")]);
-        let decoder_t = first_existing([dir.join("decoder.onnx"), dir.join("decoder.int8.onnx")]);
-        let joiner_t = first_existing([dir.join("joiner.onnx"), dir.join("joiner.int8.onnx")]);
-        if let (Some(encoder), Some(decoder), Some(joiner)) = (encoder_t, decoder_t, joiner_t) {
-            return Some(AsrModelPaths::Transducer {
-                encoder,
-                decoder,
-                joiner,
-                tokens,
-            });
+        if prefer_whisper {
+            return whisper_paths(&dir, &tokens).or_else(|| transducer_paths(&dir, &tokens));
         }
-
-        // Whisper: *-encoder.onnx + *-decoder.onnx (single encoder/decoder pair).
-        let encoder_w =
-            first_existing([dir.join("encoder.onnx"), dir.join("whisper-encoder.onnx")]);
-        let decoder_w =
-            first_existing([dir.join("decoder.onnx"), dir.join("whisper-decoder.onnx")]);
-        if let (Some(encoder), Some(decoder)) = (encoder_w, decoder_w) {
-            return Some(AsrModelPaths::Whisper {
-                encoder,
-                decoder,
-                tokens,
-            });
-        }
-
-        None
+        transducer_paths(&dir, &tokens).or_else(|| whisper_paths(&dir, &tokens))
     }
+}
+
+/// Transducer (Parakeet / Zipformer): encoder + decoder + joiner.
+fn transducer_paths(dir: &Path, tokens: &Path) -> Option<AsrModelPaths> {
+    let encoder = first_existing([dir.join("encoder.onnx"), dir.join("encoder.int8.onnx")])?;
+    let decoder = first_existing([dir.join("decoder.onnx"), dir.join("decoder.int8.onnx")])?;
+    let joiner = first_existing([dir.join("joiner.onnx"), dir.join("joiner.int8.onnx")])?;
+    Some(AsrModelPaths::Transducer {
+        encoder,
+        decoder,
+        joiner,
+        tokens: tokens.to_path_buf(),
+    })
+}
+
+/// Whisper: encoder + decoder (no joiner) + tokens.
+fn whisper_paths(dir: &Path, tokens: &Path) -> Option<AsrModelPaths> {
+    let encoder = first_existing([dir.join("encoder.onnx"), dir.join("whisper-encoder.onnx")])?;
+    let decoder = first_existing([dir.join("decoder.onnx"), dir.join("whisper-decoder.onnx")])?;
+    Some(AsrModelPaths::Whisper {
+        encoder,
+        decoder,
+        tokens: tokens.to_path_buf(),
+    })
 }
 
 impl DiarizationModelPaths {

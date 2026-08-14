@@ -1,12 +1,13 @@
 /**
- * Screen 5: Ask
+ * Screen 5: Ask — Kiln RAG over the corpus.
  *
- * Natural-language question over the corpus (RAG).
- * The server embeds the question, retrieves top-k transcript chunks from
- * pgvector, feeds them to the LLM, and returns an answer with citations
- * (design §9 "Ask (RAG)").
+ * Start state: an ember-orb hero, framing copy, and "TRY ASKING" suggestion
+ * cards.  Answer state: the question as a warm bubble, the answer led by a mini
+ * ember avatar with inline tappable citation superscripts, and a SOURCES list
+ * whose rows carry ember thumbnails and deep-link to the cited moment.
  *
- * Citations deep-link to the specific moment in the Recording Detail screen.
+ * The server embeds the question, retrieves top-k chunks from pgvector, and
+ * returns an answer with citations.
  */
 
 import { useState, useCallback, useRef } from 'react';
@@ -22,22 +23,19 @@ import {
   Platform,
   Keyboard,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { api } from '../../src/api/client';
 import type { AskResponse, Citation } from '../../src/types';
+import { EmberOrb, seedFromString } from '../../src/components/EmberOrb';
+import { Screen } from '../../src/components/ui';
+import { colors, mono, radius } from '../../src/theme';
 
 // ---------------------------------------------------------------------------
 // Answer parsing
 // ---------------------------------------------------------------------------
 
-/**
- * Split an answer string into plain-text and citation-marker segments.
- * A marker `[N]` is only treated as a citation when N maps to a real citation
- * index (1-based) — stray brackets like "[note]" or "[99]" stay as text.
- */
-type AnswerSegment =
-  | { type: 'text'; text: string }
-  | { type: 'marker'; n: number };
+type AnswerSegment = { type: 'text'; text: string } | { type: 'marker'; n: number };
 
 function parseAnswer(answer: string, citationCount: number): AnswerSegment[] {
   const segments: AnswerSegment[] = [];
@@ -47,24 +45,18 @@ function parseAnswer(answer: string, citationCount: number): AnswerSegment[] {
 
   while ((match = re.exec(answer)) !== null) {
     const n = Number(match[1]);
-    // Only treat as a marker if it references a real citation.
     if (n < 1 || n > citationCount) continue;
-
     if (match.index > lastIndex) {
       segments.push({ type: 'text', text: answer.slice(lastIndex, match.index) });
     }
     segments.push({ type: 'marker', n });
     lastIndex = re.lastIndex;
   }
-
   if (lastIndex < answer.length) {
     segments.push({ type: 'text', text: answer.slice(lastIndex) });
   }
-
   return segments;
 }
-
-// ---------------------------------------------------------------------------
 
 function formatMs(ms: number | null): string {
   if (ms == null) return '';
@@ -74,9 +66,15 @@ function formatMs(ms: number | null): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+const SUGGESTIONS = [
+  'What did we decide about the record screen?',
+  'List every action item from this week',
+  'Summarize my most recent meeting',
+];
+
 // ---------------------------------------------------------------------------
 
-function CitationCard({
+function SourceRow({
   citation,
   label,
   highlighted,
@@ -84,7 +82,6 @@ function CitationCard({
   onLayout,
 }: {
   citation: Citation;
-  /** 1-based number shown in the [N] prefix. */
   label: number;
   highlighted: boolean;
   onPress: () => void;
@@ -92,18 +89,24 @@ function CitationCard({
 }) {
   return (
     <TouchableOpacity
-      style={[styles.citation, highlighted && styles.citationHighlighted]}
+      style={[styles.source, highlighted && styles.sourceHighlighted]}
       onPress={onPress}
       onLayout={(e) => onLayout(e.nativeEvent.layout.y)}
       accessibilityRole="link"
     >
-      <Text style={styles.citationLabel}>
-        [{label}] {citation.recording_title ?? 'Untitled'}
-        {citation.start_ms != null ? ` · ${formatMs(citation.start_ms)}` : ''}
-      </Text>
-      <Text style={styles.citationSnippet} numberOfLines={3}>
-        {citation.snippet}
-      </Text>
+      <View style={styles.sourceThumb}>
+        <EmberOrb size={30} variant="mini" seed={seedFromString(citation.recording_id + label)} dir={label % 2 ? -1 : 1} />
+      </View>
+      <View style={styles.sourceBody}>
+        <Text style={styles.sourceTitle} numberOfLines={1}>
+          [{label}] {citation.recording_title ?? 'Untitled'}
+        </Text>
+        <Text style={styles.sourceMeta} numberOfLines={2}>
+          {citation.start_ms != null ? `${formatMs(citation.start_ms)} · ` : ''}
+          {citation.snippet}
+        </Text>
+      </View>
+      <Text style={styles.sourcePlay}>▶</Text>
     </TouchableOpacity>
   );
 }
@@ -118,294 +121,427 @@ export default function AskScreen() {
   const [error, setError] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const scrollRef = useRef<ScrollView>(null);
-  // Y offset of the Sources section + each card within the scroll view, so we
-  // can scroll a tapped [N] marker into view.
   const sectionYRef = useRef(0);
   const cardYRef = useRef<Record<number, number>>({});
 
-  const ask = useCallback(async () => {
-    const q = question.trim();
-    if (!q) return;
-    Keyboard.dismiss();
-    setLoading(true);
-    setError(null);
-    setResponse(null);
-    setHighlighted(null);
-    cardYRef.current = {};
+  const ask = useCallback(
+    async (q: string) => {
+      const query = q.trim();
+      if (!query) return;
+      Keyboard.dismiss();
+      setLoading(true);
+      setError(null);
+      setResponse(null);
+      setHighlighted(null);
+      cardYRef.current = {};
 
-    try {
-      const res = await api.ask({ question: q, top_k: 6 });
-      setResponse(res);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Request failed');
-    } finally {
-      setLoading(false);
-    }
-  }, [question]);
+      try {
+        const res = await api.ask({ question: query, top_k: 6 });
+        setResponse(res);
+        setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Request failed');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
+  const submit = useCallback(() => ask(question), [ask, question]);
+
+  const runSuggestion = useCallback(
+    (s: string) => {
+      setQuestion(s);
+      ask(s);
+    },
+    [ask],
+  );
 
   const openCitation = useCallback(
     (c: Citation) => {
       router.push({
         pathname: '/recordings/[id]',
-        params: {
-          id: c.recording_id,
-          seekMs: String(c.start_ms ?? 0),
-        },
+        params: { id: c.recording_id, seekMs: String(c.start_ms ?? 0) },
       });
     },
     [router],
   );
 
-  // Tapping a [N] marker: scroll its source card into view and flash a
-  // highlight so the user can see which source backs that claim.
   const focusCitation = useCallback((n: number) => {
     setHighlighted(n);
     const cardY = cardYRef.current[n];
     if (cardY != null) {
-      scrollRef.current?.scrollTo({
-        y: Math.max(sectionYRef.current + cardY - 12, 0),
-        animated: true,
-      });
+      scrollRef.current?.scrollTo({ y: Math.max(sectionYRef.current + cardY - 12, 0), animated: true });
     }
-    setTimeout(() => {
-      setHighlighted((cur) => (cur === n ? null : cur));
-    }, 1500);
+    setTimeout(() => setHighlighted((cur) => (cur === n ? null : cur)), 1500);
   }, []);
 
-  // Citations actually referenced by a [N] marker, in order of first mention.
   const citations = response?.citations ?? [];
   const segments = response ? parseAnswer(response.answer, citations.length) : [];
   const citedOrder: number[] = [];
   for (const seg of segments) {
-    if (seg.type === 'marker' && !citedOrder.includes(seg.n)) {
-      citedOrder.push(seg.n);
-    }
+    if (seg.type === 'marker' && !citedOrder.includes(seg.n)) citedOrder.push(seg.n);
   }
-  // Fall back to all citations if the model didn't use any brackets.
   const sourcesToShow =
     citedOrder.length > 0
       ? citedOrder.map((n) => ({ n, citation: citations[n - 1] }))
       : citations.map((citation, i) => ({ n: i + 1, citation }));
 
+  const showStart = !response && !loading && !error;
+
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-    >
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
+    <Screen>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
-        <Text style={styles.intro}>
-          Ask a question over all your recorded meetings. The answer is generated
-          locally by your server's LLM.
-        </Text>
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Start hero + suggestions */}
+          {showStart && (
+            <View style={styles.hero}>
+              <EmberOrb size={74} variant="small" seed={2.2} />
+              <Text style={styles.heroTitle}>Ask your meetings</Text>
+              <Text style={styles.heroBody}>
+                Answers are drawn from all your recordings — every claim linked back to its
+                moment in the audio.
+              </Text>
+            </View>
+          )}
 
-        {/* Answer with inline, tappable [N] citation markers */}
-        {response && (
-          <View style={styles.answerCard}>
-            <Text style={styles.answerText}>
-              {segments.map((seg, i) =>
-                seg.type === 'text' ? (
-                  <Text key={i}>{seg.text}</Text>
-                ) : (
-                  <Text
-                    key={i}
-                    style={styles.marker}
-                    onPress={() => focusCitation(seg.n)}
-                    accessibilityRole="link"
-                    accessibilityLabel={`Citation ${seg.n}`}
-                  >
-                    {` [${seg.n}] `}
+          {showStart && (
+            <View style={styles.suggestions}>
+              <Text style={styles.suggestLabel}>TRY ASKING</Text>
+              {SUGGESTIONS.map((s) => (
+                <TouchableOpacity key={s} style={styles.suggestCard} onPress={() => runSuggestion(s)}>
+                  <Ionicons name="sparkles" size={15} color={colors.accent} />
+                  <Text style={styles.suggestText}>{s}</Text>
+                  <Text style={styles.suggestChevron}>›</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          {loading && (
+            <View style={styles.loading}>
+              <EmberOrb size={64} variant="small" seed={4.1} />
+              <Text style={styles.loadingText}>Searching your recordings…</Text>
+            </View>
+          )}
+
+          {/* Answer */}
+          {response && (
+            <>
+              <View style={styles.questionRow}>
+                <View style={styles.questionBubble}>
+                  <Text style={styles.questionText}>{question}</Text>
+                </View>
+              </View>
+
+              <View style={styles.answerRow}>
+                <View style={styles.answerAvatar}>
+                  <EmberOrb size={30} variant="mini" seed={6.4} dir={-1} />
+                </View>
+                <View style={styles.answerBody}>
+                  <Text style={styles.answerText}>
+                    {segments.map((seg, i) =>
+                      seg.type === 'text' ? (
+                        <Text key={i}>{seg.text}</Text>
+                      ) : (
+                        <Text
+                          key={i}
+                          style={styles.marker}
+                          onPress={() => focusCitation(seg.n)}
+                          accessibilityRole="link"
+                          accessibilityLabel={`Citation ${seg.n}`}
+                        >
+                          {seg.n}
+                        </Text>
+                      ),
+                    )}
                   </Text>
-                ),
-              )}
-            </Text>
-          </View>
-        )}
 
-        {/* Sources — only the cited ones, in [N] order (or all as fallback) */}
-        {response && sourcesToShow.length > 0 && (
-          <View
-            style={styles.citationsSection}
-            onLayout={(e) => {
-              sectionYRef.current = e.nativeEvent.layout.y;
-            }}
-          >
-            <Text style={styles.citationsHeader}>Sources</Text>
-            {sourcesToShow.map(({ n, citation }) => (
-              <CitationCard
-                key={n}
-                citation={citation}
-                label={n}
-                highlighted={highlighted === n}
-                onLayout={(y) => {
-                  cardYRef.current[n] = y;
-                }}
-                onPress={() => openCitation(citation)}
-              />
-            ))}
-          </View>
-        )}
+                  {sourcesToShow.length > 0 && (
+                    <View
+                      style={styles.sourcesSection}
+                      onLayout={(e) => {
+                        sectionYRef.current = e.nativeEvent.layout.y;
+                      }}
+                    >
+                      <Text style={styles.sourcesHeader}>SOURCES</Text>
+                      {sourcesToShow.map(({ n, citation }) => (
+                        <SourceRow
+                          key={n}
+                          citation={citation}
+                          label={n}
+                          highlighted={highlighted === n}
+                          onLayout={(y) => {
+                            cardYRef.current[n] = y;
+                          }}
+                          onPress={() => openCitation(citation)}
+                        />
+                      ))}
+                    </View>
+                  )}
+                </View>
+              </View>
+            </>
+          )}
 
-        {error && (
-          <View style={styles.errorCard}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        )}
-      </ScrollView>
+          {error && (
+            <View style={styles.errorCard}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          )}
+        </ScrollView>
 
-      {/* Input bar */}
-      <View style={styles.inputBar}>
-        <TextInput
-          style={styles.input}
-          placeholder="Ask anything about your meetings…"
-          value={question}
-          onChangeText={setQuestion}
-          onSubmitEditing={ask}
-          returnKeyType="send"
-          multiline
-          maxLength={500}
-          editable={!loading}
-        />
-        {loading ? (
-          <ActivityIndicator color="#E53935" style={styles.sendButton} />
-        ) : (
+        {/* Input bar */}
+        <View style={styles.inputBar}>
+          <TextInput
+            style={styles.input}
+            placeholder={response ? 'Ask a follow-up…' : 'Ask a question…'}
+            placeholderTextColor={colors.textDim}
+            value={question}
+            onChangeText={setQuestion}
+            onSubmitEditing={submit}
+            returnKeyType="send"
+            multiline
+            maxLength={500}
+            editable={!loading}
+          />
           <TouchableOpacity
-            style={styles.sendButton}
-            onPress={ask}
+            style={[styles.sendButton, (loading || !question.trim()) && styles.sendDisabled]}
+            onPress={submit}
             disabled={loading || !question.trim()}
             accessibilityLabel="Ask"
           >
-            <Text style={styles.sendText}>Ask</Text>
+            {loading ? (
+              <ActivityIndicator color={colors.white} size="small" />
+            ) : (
+              <Ionicons name="arrow-up" size={18} color={colors.white} />
+            )}
           </TouchableOpacity>
-        )}
-      </View>
-    </KeyboardAvoidingView>
+        </View>
+      </KeyboardAvoidingView>
+    </Screen>
   );
 }
 
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
+  flex: { flex: 1 },
   scroll: {
-    padding: 16,
+    paddingHorizontal: 18,
+    paddingTop: 8,
     paddingBottom: 8,
+    flexGrow: 1,
   },
-  intro: {
+  hero: {
+    alignItems: 'center',
+    paddingTop: 40,
+    paddingHorizontal: 12,
+    gap: 15,
+  },
+  heroTitle: {
+    fontSize: 19,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    letterSpacing: -0.3,
+  },
+  heroBody: {
     fontSize: 13,
-    color: '#888',
-    marginBottom: 16,
     lineHeight: 20,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
-  answerCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+  suggestions: {
+    marginTop: 28,
+    gap: 9,
+  },
+  suggestLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: colors.textMuted,
+    fontFamily: mono,
+    paddingLeft: 4,
+    marginBottom: 2,
+  },
+  suggestCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.input,
+    padding: 13,
+  },
+  suggestText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.textLight,
+  },
+  suggestChevron: {
+    color: colors.textDim,
+    fontSize: 16,
+  },
+  loading: {
+    alignItems: 'center',
+    paddingTop: 56,
+    gap: 14,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  questionRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 8,
+  },
+  questionBubble: {
+    maxWidth: '82%',
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: colors.chipActiveBorder,
+    borderRadius: 16,
+    borderBottomRightRadius: 5,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+  },
+  questionText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textPrimary,
+  },
+  answerRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  answerAvatar: {
+    width: 30,
+    height: 30,
+  },
+  answerBody: {
+    flex: 1,
+    minWidth: 0,
   },
   answerText: {
-    fontSize: 15,
-    color: '#111',
-    lineHeight: 24,
+    fontSize: 13.5,
+    lineHeight: 22,
+    color: colors.textBody,
   },
   marker: {
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    fontSize: 12,
+    fontSize: 10,
+    lineHeight: 14,
     fontWeight: '700',
-    color: '#fff',
-    backgroundColor: '#1E88E5',
-    borderRadius: 4,
+    color: colors.accent,
+    fontFamily: mono,
+  },
+  sourcesSection: {
+    marginTop: 14,
+  },
+  sourcesHeader: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: colors.textMuted,
+    fontFamily: mono,
+    marginBottom: 8,
+  },
+  source: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 11,
+    padding: 8,
+    marginBottom: 7,
+  },
+  sourceHighlighted: {
+    borderColor: colors.chipActiveBorder,
+    backgroundColor: colors.accentSoft,
+  },
+  sourceThumb: {
+    width: 30,
+    height: 30,
+    borderRadius: radius.thumbSm,
     overflow: 'hidden',
+    backgroundColor: colors.accentFaint,
   },
-  citationsSection: {
-    marginBottom: 16,
+  sourceBody: {
+    flex: 1,
+    minWidth: 0,
   },
-  citationsHeader: {
-    fontSize: 13,
+  sourceTitle: {
+    fontSize: 12.5,
     fontWeight: '600',
-    color: '#555',
-    marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    color: colors.textPrimary,
   },
-  citation: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: '#1E88E5',
+  sourceMeta: {
+    fontSize: 10,
+    color: colors.textMuted,
+    fontFamily: mono,
+    marginTop: 2,
+    lineHeight: 14,
   },
-  citationHighlighted: {
-    backgroundColor: '#E3F2FD',
-    borderLeftWidth: 4,
-  },
-  citationLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1E88E5',
-    marginBottom: 4,
-  },
-  citationSnippet: {
+  sourcePlay: {
     fontSize: 13,
-    color: '#555',
-    lineHeight: 18,
+    color: colors.accent,
   },
   errorCard: {
-    backgroundColor: '#FFF3F3',
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: 'rgba(232,81,46,0.1)',
+    borderRadius: radius.inner,
+    padding: 13,
+    marginTop: 16,
   },
   errorText: {
-    color: '#E53935',
+    color: colors.accentDeep,
     fontSize: 13,
   },
   inputBar: {
     flexDirection: 'row',
-    padding: 12,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-    gap: 8,
     alignItems: 'flex-end',
+    gap: 9,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.bg,
   },
   input: {
     flex: 1,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 15,
-    maxHeight: 100,
-    backgroundColor: '#fafafa',
+    borderColor: colors.borderInput,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    fontSize: 13,
+    color: colors.textPrimary,
+    maxHeight: 110,
   },
   sendButton: {
-    backgroundColor: '#E53935',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    justifyContent: 'center',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: colors.accent,
     alignItems: 'center',
-    minWidth: 48,
-    minHeight: 36,
+    justifyContent: 'center',
   },
-  sendText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 14,
+  sendDisabled: {
+    opacity: 0.45,
   },
 });

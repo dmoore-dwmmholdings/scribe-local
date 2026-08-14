@@ -1,25 +1,14 @@
 /**
- * Screen 3: Recording Detail
+ * Screen 3: Recording Detail — Kiln transcript + playback.
  *
- * Speaker-labelled transcript, tap-a-line to play that moment via the audio
- * endpoint with HTTP Range seeking, LLM summary + action items, in-recording
- * search, and inline speaker-naming (calls the name endpoint).
- *
- * Design §11: "speaker-labelled transcript (tap a line → play that moment via
- * the audio endpoint with range/seek), LLM summary + action items, in-
- * recording search, and inline speaker-naming (calls the name endpoint)."
- *
- * Audio playback:
- *   expo-audio's createAudioPlayer() is used with the recording's audio URL
- *   (GET /recordings/{id}/audio).  The server supports HTTP Range requests,
- *   which the player uses automatically for seeking.  Bearer auth is sent via
- *   the `headers` field of the AudioSource object.
- *
- *   Seeking to a moment: tapping a transcript line calls
- *   player.seekTo(startMs / 1000) to jump directly to that utterance.
+ * A flowing-ember playback scrubber (PlaybackWave) that shares the orb's DNA,
+ * an LLM summary card, and a speaker color-rail transcript (tap a line to play
+ * that moment, long-press to name the speaker).  Audio streams from
+ * GET /recordings/{id}/audio with HTTP Range seeking; bearer auth is sent via
+ * the AudioSource headers.
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -30,24 +19,39 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
+  Share,
 } from 'react-native';
-import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  createAudioPlayer,
-  setAudioModeAsync,
-  useAudioPlayerStatus,
-  type AudioPlayer,
-} from 'expo-audio';
+import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
 import { api } from '../../src/api/client';
 import type {
   RecordingDetailResponse,
   Utterance,
   RecordingSpeaker,
+  SummaryTemplate,
 } from '../../src/types';
+import { Screen } from '../../src/components/ui';
+import { PlaybackWave } from '../../src/components/PlaybackWave';
+import { colors, mono, radius, speakerColor } from '../../src/theme';
+import { log } from '../../src/util/logger';
+import { buildExport, type ExportFormat } from '../../src/util/export';
+import { MindMapModal } from '../../src/components/MindMap';
+import { TranslateModal } from '../../src/components/Translate';
 
-// ---------------------------------------------------------------------------
-// Helpers
+// Playback speeds cycled by the speed button.
+const PLAYBACK_RATES = [1, 1.25, 1.5, 2];
+
+// Shown until GET /summary-templates returns; ids must match the backend.
+const FALLBACK_TEMPLATES: SummaryTemplate[] = [
+  { id: 'general', label: 'General meeting' },
+  { id: 'standup', label: 'Standup' },
+  { id: 'interview', label: 'Interview' },
+  { id: 'one_on_one', label: '1:1' },
+  { id: 'lecture', label: 'Lecture / talk' },
+  { id: 'sales', label: 'Sales call' },
+];
+
 // ---------------------------------------------------------------------------
 
 function formatMs(ms: number): string {
@@ -57,50 +61,57 @@ function formatMs(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function speakerLabel(
-  localIdx: number | null,
-  speakers: RecordingSpeaker[],
-): string {
+function formatDate(iso: string): string {
+  return new Date(iso)
+    .toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    .toUpperCase();
+}
+
+function speakerLabel(localIdx: number | null, speakers: RecordingSpeaker[]): string {
   if (localIdx == null) return 'Unknown';
   const sp = speakers.find((s) => s.local_idx === localIdx);
   return sp?.display_name ?? `Speaker ${localIdx}`;
 }
 
-// A small palette for speaker colours
-const SPEAKER_COLORS = [
-  '#1E88E5',
-  '#43A047',
-  '#FB8C00',
-  '#8E24AA',
-  '#E53935',
-  '#00ACC1',
-];
-
-function speakerColor(localIdx: number | null): string {
-  if (localIdx == null) return '#888';
-  return SPEAKER_COLORS[localIdx % SPEAKER_COLORS.length];
-}
-
-// ---------------------------------------------------------------------------
-// Player status hook wrapper
 // ---------------------------------------------------------------------------
 
-function PlayerStatus({ player, onStatus }: {
-  player: AudioPlayer;
-  onStatus: (posMs: number, playing: boolean) => void;
+/** Kiln in-screen header: back chevron · title · date · optional share. */
+function DetailHeader({
+  title,
+  date,
+  onBack,
+  onShare,
+  onMenu,
+}: {
+  title: string;
+  date?: string;
+  onBack: () => void;
+  onShare?: () => void;
+  onMenu?: () => void;
 }) {
-  const status = useAudioPlayerStatus(player);
-  useEffect(() => {
-    onStatus(
-      Math.round((status.currentTime ?? 0) * 1000),
-      status.playing ?? false,
-    );
-  }, [status, onStatus]);
-  return null;
+  return (
+    <View style={styles.header}>
+      <TouchableOpacity onPress={onBack} accessibilityLabel="Back" style={styles.backBtn}>
+        <Text style={styles.backChevron}>‹</Text>
+      </TouchableOpacity>
+      <Text style={styles.headerTitle} numberOfLines={1}>
+        {title}
+      </Text>
+      {date ? <Text style={styles.headerDate}>{date}</Text> : null}
+      {onShare ? (
+        <TouchableOpacity onPress={onShare} accessibilityLabel="Export" style={styles.shareBtn}>
+          <Ionicons name="share-outline" size={20} color={colors.accent} />
+        </TouchableOpacity>
+      ) : null}
+      {onMenu ? (
+        <TouchableOpacity onPress={onMenu} accessibilityLabel="More actions" style={styles.shareBtn}>
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.accent} />
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Sub-components
 // ---------------------------------------------------------------------------
 
 function UtteranceRow({
@@ -123,27 +134,26 @@ function UtteranceRow({
 
   return (
     <TouchableOpacity
-      style={[
-        styles.utterance,
-        isActive && styles.utteranceActive,
-        matchesSearch && styles.utteranceMatch,
-      ]}
+      style={[styles.utterance, (isActive || matchesSearch) && styles.utteranceActive]}
       onPress={onPress}
       onLongPress={onLongPress}
       accessibilityRole="button"
       accessibilityLabel={`${label}: ${utterance.text}`}
     >
-      <View style={styles.utteranceHeader}>
-        <Text style={[styles.speakerName, { color }]}>{label}</Text>
-        <Text style={styles.utteranceTime}>{formatMs(utterance.start_ms)}</Text>
+      <View style={[styles.rail, { backgroundColor: color }]} />
+      <View style={styles.utteranceBody}>
+        <View style={styles.utteranceHeader}>
+          <Text style={[styles.speakerName, { color }]}>{label}</Text>
+          <Text style={styles.utteranceTime}>{formatMs(utterance.start_ms)}</Text>
+        </View>
+        <Text style={[styles.utteranceText, isActive && styles.utteranceTextActive]}>
+          {utterance.text}
+        </Text>
       </View>
-      <Text style={styles.utteranceText}>{utterance.text}</Text>
     </TouchableOpacity>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Speaker name modal
 // ---------------------------------------------------------------------------
 
 function NameSpeakerModal({
@@ -174,17 +184,15 @@ function NameSpeakerModal({
             value={name}
             onChangeText={setName}
             placeholder="e.g. Dawson"
+            placeholderTextColor={colors.textDim}
             autoFocus
             returnKeyType="done"
           />
-          <TouchableOpacity
-            style={styles.modalEnroll}
-            onPress={() => setEnroll((e) => !e)}
-          >
-            <View style={[styles.checkbox, enroll && styles.checkboxChecked]} />
-            <Text style={styles.enrollText}>
-              Enroll voice (recognise in future recordings)
-            </Text>
+          <TouchableOpacity style={styles.modalEnroll} onPress={() => setEnroll((e) => !e)}>
+            <View style={[styles.checkbox, enroll && styles.checkboxChecked]}>
+              {enroll && <Ionicons name="checkmark" size={12} color={colors.white} />}
+            </View>
+            <Text style={styles.enrollText}>Enroll voice (recognise in future recordings)</Text>
           </TouchableOpacity>
           <View style={styles.modalActions}>
             <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
@@ -205,30 +213,315 @@ function NameSpeakerModal({
 }
 
 // ---------------------------------------------------------------------------
-// Main screen
+
+/** Bottom-sheet-style picker for the export format. */
+function ExportSheet({
+  visible,
+  onSelect,
+  onDismiss,
+}: {
+  visible: boolean;
+  onSelect: (format: ExportFormat) => void;
+  onDismiss: () => void;
+}) {
+  const options: { label: string; sub: string; value: ExportFormat }[] = [
+    { label: 'Markdown', sub: 'Summary + transcript · .md', value: 'markdown' },
+    { label: 'Plain text', sub: 'Summary + transcript · .txt', value: 'text' },
+    { label: 'Subtitles', sub: 'Timed captions · .srt', value: 'srt' },
+  ];
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onDismiss}>
+        <View style={styles.sheetCard}>
+          <Text style={styles.modalTitle}>Export & share</Text>
+          {options.map((o) => (
+            <TouchableOpacity
+              key={o.value}
+              style={styles.sheetRow}
+              onPress={() => onSelect(o.value)}
+              accessibilityRole="button"
+              accessibilityLabel={`Export as ${o.label}`}
+            >
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>{o.label}</Text>
+                <Text style={styles.sheetRowSub}>{o.sub}</Text>
+              </View>
+              <Ionicons name="share-outline" size={18} color={colors.accent} />
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
+            <Text style={styles.modalCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/** Bottom-sheet picker for the summary template. */
+function TemplateSheet({
+  visible,
+  templates,
+  current,
+  generated,
+  onSelect,
+  onDismiss,
+}: {
+  visible: boolean;
+  templates: SummaryTemplate[];
+  current?: string | null;
+  generated?: string[];
+  onSelect: (template: string) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onDismiss}>
+        <View style={styles.sheetCard}>
+          <Text style={styles.modalTitle}>Summary views</Text>
+          {templates.map((t) => {
+            const active = current === t.id;
+            const has = generated?.includes(t.id) ?? false;
+            return (
+              <TouchableOpacity
+                key={t.id}
+                style={styles.sheetRow}
+                onPress={() => onSelect(t.id)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`Summary view ${t.label}`}
+              >
+                <View style={styles.sheetRowText}>
+                  <Text style={[styles.sheetRowLabel, active && { color: colors.accent }]}>
+                    {t.label}
+                  </Text>
+                  <Text style={styles.sheetRowSub}>
+                    {has ? (active ? 'Showing' : 'Saved · tap to view') : 'Generate'}
+                  </Text>
+                </View>
+                {active ? (
+                  <Ionicons name="checkmark" size={18} color={colors.accent} />
+                ) : has ? (
+                  <Ionicons name="document-text-outline" size={16} color={colors.accent} />
+                ) : (
+                  <Ionicons name="sparkles-outline" size={16} color={colors.textMuted} />
+                )}
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
+            <Text style={styles.modalCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/** Long-press chooser: edit the line's text or rename its speaker. */
+function UtteranceActionSheet({
+  visible,
+  onEdit,
+  onRename,
+  onDismiss,
+}: {
+  visible: boolean;
+  onEdit: () => void;
+  onRename: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onDismiss}>
+        <View style={styles.sheetCard}>
+          <Text style={styles.modalTitle}>Edit line</Text>
+          <TouchableOpacity style={styles.sheetRow} onPress={onEdit} accessibilityRole="button">
+            <View style={styles.sheetRowText}>
+              <Text style={styles.sheetRowLabel}>Edit text</Text>
+              <Text style={styles.sheetRowSub}>Correct what was said</Text>
+            </View>
+            <Ionicons name="create-outline" size={18} color={colors.accent} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.sheetRow} onPress={onRename} accessibilityRole="button">
+            <View style={styles.sheetRowText}>
+              <Text style={styles.sheetRowLabel}>Rename speaker</Text>
+              <Text style={styles.sheetRowSub}>Label / enroll this voice</Text>
+            </View>
+            <Ionicons name="person-outline" size={18} color={colors.accent} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
+            <Text style={styles.modalCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+/** Multiline editor for a single transcript line. */
+function EditUtteranceModal({
+  utterance,
+  saving,
+  onSave,
+  onDismiss,
+}: {
+  utterance: Utterance | null;
+  saving: boolean;
+  onSave: (text: string) => void;
+  onDismiss: () => void;
+}) {
+  const [text, setText] = useState('');
+  useEffect(() => {
+    if (utterance) setText(utterance.text);
+  }, [utterance]);
+
+  return (
+    <Modal visible={utterance != null} transparent animationType="fade" onRequestClose={onDismiss}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Edit transcript line</Text>
+          <TextInput
+            style={styles.editInput}
+            value={text}
+            onChangeText={setText}
+            multiline
+            autoFocus
+            placeholder="Transcript text"
+            placeholderTextColor={colors.textDim}
+          />
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalSave}
+              onPress={() => onSave(text)}
+              disabled={saving || !text.trim()}
+            >
+              {saving ? (
+                <ActivityIndicator color={colors.white} />
+              ) : (
+                <Text style={styles.modalSaveText}>Save</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/** Inline tag chips with add/remove for a recording. */
+function TagsEditor({
+  tags,
+  saving,
+  onChange,
+}: {
+  tags: string[];
+  saving: boolean;
+  onChange: (next: string[]) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const commit = () => {
+    const t = draft.trim().toLowerCase();
+    setDraft('');
+    setAdding(false);
+    if (t && !tags.includes(t)) onChange([...tags, t]);
+  };
+
+  return (
+    <View style={styles.tagsCard}>
+      <Text style={styles.summaryLabel}>TAGS</Text>
+      <View style={styles.tagsWrap}>
+        {tags.map((t) => (
+          <View key={t} style={styles.tagChip}>
+            <Text style={styles.tagChipText}>{t}</Text>
+            <TouchableOpacity
+              onPress={() => onChange(tags.filter((x) => x !== t))}
+              accessibilityLabel={`Remove tag ${t}`}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={13} color={colors.accent} />
+            </TouchableOpacity>
+          </View>
+        ))}
+        {adding ? (
+          <TextInput
+            style={styles.tagInput}
+            value={draft}
+            onChangeText={setDraft}
+            onBlur={commit}
+            onSubmitEditing={commit}
+            autoFocus
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="tag"
+            placeholderTextColor={colors.textDim}
+            returnKeyType="done"
+          />
+        ) : (
+          <TouchableOpacity style={styles.tagAdd} onPress={() => setAdding(true)} disabled={saving}>
+            {saving ? (
+              <ActivityIndicator size="small" color={colors.accent} />
+            ) : (
+              <>
+                <Ionicons name="add" size={14} color={colors.accent} />
+                <Text style={styles.tagAddText}>Tag</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 export default function RecordingDetailScreen() {
   const { id, seekMs } = useLocalSearchParams<{ id: string; seekMs?: string }>();
   const navigation = useNavigation();
+  const router = useRouter();
 
   const [detail, setDetail] = useState<RecordingDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Audio playback — expo-audio v0.4 direct player
-  const playerRef = useRef<AudioPlayer | null>(null);
-  const [positionMs, setPositionMs] = useState(0);
-  const [playing, setPlaying] = useState(false);
+  // Audio — expo-audio managed player + status hook (reliable play/pause/seek).
+  const audioSource = useMemo(
+    () => (id ? { uri: api.audioUrl(id), headers: { Authorization: api.authHeader() } } : null),
+    [id],
+  );
+  const player = useAudioPlayer(audioSource);
+  const audioStatus = useAudioPlayerStatus(player);
+  const positionMs = Math.round((audioStatus?.currentTime ?? 0) * 1000);
+  const statusDurationMs = Math.round((audioStatus?.duration ?? 0) * 1000);
+  const playing = audioStatus?.playing ?? false;
+  const audioLoaded = audioStatus?.isLoaded ?? false;
+  const [waveWidth, setWaveWidth] = useState(0);
 
-  // In-recording search
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Speaker naming
   const [namingUtterance, setNamingUtterance] = useState<Utterance | null>(null);
+  const [showExport, setShowExport] = useState(false);
+  const [rate, setRate] = useState(1);
+  const [templates, setTemplates] = useState<SummaryTemplate[]>(FALLBACK_TEMPLATES);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [resummarizing, setResummarizing] = useState(false);
+  const [utteranceAction, setUtteranceAction] = useState<Utterance | null>(null);
+  const [editingUtterance, setEditingUtterance] = useState<Utterance | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [savingTags, setSavingTags] = useState(false);
+  const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
+  const [showActions, setShowActions] = useState(false);
+  const [showMindMap, setShowMindMap] = useState(false);
+  const [showTranslate, setShowTranslate] = useState(false);
 
-  // -------------------------------------------------------------------------
-  // Load detail
   // -------------------------------------------------------------------------
 
   const loadDetail = useCallback(
@@ -239,14 +532,9 @@ export default function RecordingDetailScreen() {
       try {
         const res = await api.getRecording(id);
         setDetail(res);
-        navigation.setOptions({
-          title: res.recording.title ?? 'Recording',
-        });
+        navigation.setOptions({ title: res.recording.title ?? 'Recording' });
       } catch (err) {
-        // On a background refresh, keep the stale screen rather than wiping it
-        if (!background) {
-          setError(err instanceof Error ? err.message : 'Failed to load recording');
-        }
+        if (!background) setError(err instanceof Error ? err.message : 'Failed to load recording');
       } finally {
         if (!background) setLoading(false);
       }
@@ -258,101 +546,211 @@ export default function RecordingDetailScreen() {
     loadDetail();
   }, [loadDetail]);
 
-  // While the recording is still uploading/processing, poll until it reaches a
-  // terminal status (ready/failed).  Background refreshes don't show the
-  // full-screen spinner.
   const status = detail?.recording.status;
   useEffect(() => {
     if (!id) return;
     if (status !== 'uploading' && status !== 'processing') return;
-
-    const interval = setInterval(() => {
-      loadDetail(true);
-    }, 4000);
-
+    const interval = setInterval(() => loadDetail(true), 4000);
     return () => clearInterval(interval);
   }, [id, status, loadDetail]);
 
   // -------------------------------------------------------------------------
-  // Audio
-  // -------------------------------------------------------------------------
 
-  const handleStatus = useCallback((posMs: number, isPlaying: boolean) => {
-    setPositionMs(posMs);
-    setPlaying(isPlaying);
+  // Configure the audio session once (play in silent mode, no background).
+  useEffect(() => {
+    setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+    }).catch(() => {
+      // non-fatal
+    });
   }, []);
 
   useEffect(() => {
-    if (!id) return;
+    log('audio', `player loaded=${audioLoaded} dur=${statusDurationMs}ms`);
+  }, [audioLoaded, statusDurationMs]);
 
-    const initAudio = async () => {
-      try {
-        await setAudioModeAsync({
-          allowsRecording: false,
-          playsInSilentMode: true,
-          shouldPlayInBackground: false,
-        });
+  // Deep-link seek (arriving from Search / Ask) once the audio has loaded.
+  const didSeekRef = useRef(false);
+  useEffect(() => {
+    if (!seekMs || didSeekRef.current || !audioLoaded) return;
+    didSeekRef.current = true;
+    log('audio', `deep-link seek to ${seekMs}ms`);
+    player
+      .seekTo(Number(seekMs) / 1000)
+      .then(() => player.play())
+      .catch((e) => log('audio', 'deep-link seek failed', e));
+  }, [seekMs, audioLoaded, player]);
 
-        const player = createAudioPlayer({
-          uri: api.audioUrl(id),
-          headers: { Authorization: api.authHeader() },
-        });
-
-        playerRef.current = player;
-
-        // If we arrived from search/ask with a seek target, jump there
-        if (seekMs) {
-          await player.seekTo(Number(seekMs) / 1000);
-          player.play();
-        }
-      } catch {
-        // Audio load failure is non-fatal — transcript still works
-      }
-    };
-
-    initAudio();
-
-    return () => {
-      playerRef.current?.remove();
-      playerRef.current = null;
-    };
-  }, [id, seekMs]);
-
-  const seekTo = useCallback(async (ms: number) => {
-    const player = playerRef.current;
-    if (!player) return;
-    try {
-      await player.seekTo(ms / 1000);
-      player.play();
-    } catch {
-      // Ignore seek errors
-    }
-  }, []);
+  const seekTo = useCallback(
+    (ms: number) => {
+      log('audio', `seek to ${ms}ms`);
+      player
+        .seekTo(ms / 1000)
+        .then(() => player.play())
+        .catch((e) => log('audio', 'seek failed', e));
+    },
+    [player],
+  );
 
   const togglePlayback = useCallback(() => {
-    const player = playerRef.current;
-    if (!player) return;
-    if (playing) {
-      player.pause();
-    } else {
-      player.play();
+    log('audio', playing ? 'pause' : 'play');
+    if (playing) player.pause();
+    else player.play();
+  }, [player, playing]);
+
+  const cycleRate = useCallback(() => {
+    const next = PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length];
+    setRate(next);
+    try {
+      player.setPlaybackRate(next);
+    } catch (e) {
+      log('audio', 'setPlaybackRate failed', e);
     }
-  }, [playing]);
+  }, [rate, player]);
+
+  // Re-apply the chosen rate once audio (re)loads — a fresh source resets to 1×.
+  useEffect(() => {
+    if (audioLoaded && rate !== 1) {
+      try {
+        player.setPlaybackRate(rate);
+      } catch {
+        // non-fatal
+      }
+    }
+  }, [audioLoaded, rate, player]);
 
   // -------------------------------------------------------------------------
-  // Speaker naming
-  // -------------------------------------------------------------------------
+
+  const handleExport = useCallback(
+    async (format: ExportFormat) => {
+      setShowExport(false);
+      if (!detail) return;
+      try {
+        const { content, filename } = buildExport(detail, format);
+        log('export', `sharing ${filename} (${content.length} chars)`);
+        await Share.share({ message: content, title: filename });
+      } catch (err) {
+        log('export', 'share failed', err);
+        Alert.alert('Export failed', err instanceof Error ? err.message : String(err));
+      }
+    },
+    [detail],
+  );
+
+  // Per-speaker talk-time, derived from utterance durations. Computed from
+  // `detail` (may be null) so the hook runs unconditionally before any return.
+  const talkTime = useMemo(() => {
+    const utts = detail?.utterances ?? [];
+    const sps = detail?.speakers ?? [];
+    const map = new Map<string, { label: string; ms: number; color: string }>();
+    let total = 0;
+    for (const u of utts) {
+      const d = Math.max(0, u.end_ms - u.start_ms);
+      if (d === 0) continue;
+      total += d;
+      const label = u.speaker_name ?? speakerLabel(u.local_idx, sps);
+      const prev = map.get(label);
+      if (prev) prev.ms += d;
+      else map.set(label, { label, ms: d, color: speakerColor(u.local_idx) });
+    }
+    return { rows: Array.from(map.values()).sort((a, b) => b.ms - a.ms), total };
+  }, [detail]);
+
+  // All generated summary views (newer backend: `summaries[]`; older: single `summary`).
+  const summaries = useMemo(
+    () => detail?.summaries ?? (detail?.summary ? [detail.summary] : []),
+    [detail],
+  );
+
+  // Pull the authoritative template list (falls back to the constant if the
+  // backend predates the endpoint).
+  useEffect(() => {
+    api
+      .summaryTemplates()
+      .then((res) => {
+        if (res.templates?.length) setTemplates(res.templates);
+      })
+      .catch(() => {
+        /* keep FALLBACK_TEMPLATES */
+      });
+  }, []);
+
+  const handleResummarize = useCallback(
+    async (template: string) => {
+      setShowTemplates(false);
+      if (!id) return;
+      setResummarizing(true);
+      try {
+        await api.resummarize(id, template);
+        // Poll until that template's summary view appears, then show it.
+        const deadline = Date.now() + 90_000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const res = await api.getRecording(id);
+          setDetail(res);
+          const views = res.summaries ?? (res.summary ? [res.summary] : []);
+          if (views.some((s) => (s.template ?? 'general') === template)) {
+            setActiveTemplate(template);
+            break;
+          }
+        }
+      } catch (err) {
+        Alert.alert('Could not summarize', err instanceof Error ? err.message : String(err));
+      } finally {
+        setResummarizing(false);
+      }
+    },
+    [id],
+  );
+
+  // Pick a template from the sheet: switch instantly if that view already
+  // exists, otherwise generate it.
+  const handlePickTemplate = useCallback(
+    (template: string) => {
+      setShowTemplates(false);
+      const views = detail?.summaries ?? (detail?.summary ? [detail.summary] : []);
+      if (views.some((s) => (s.template ?? 'general') === template)) {
+        setActiveTemplate(template);
+      } else {
+        handleResummarize(template);
+      }
+    },
+    [detail, handleResummarize],
+  );
+
+  const handleReprocess = useCallback(() => {
+    setShowActions(false);
+    if (!id) return;
+    Alert.alert(
+      'Reprocess recording',
+      'Re-run transcription, diarization and summary from the original audio? This replaces the current transcript.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reprocess',
+          onPress: async () => {
+            try {
+              await api.reprocess(id);
+              await loadDetail(); // status -> processing kicks the existing poll loop
+            } catch (err) {
+              Alert.alert('Could not reprocess', err instanceof Error ? err.message : String(err));
+            }
+          },
+        },
+      ],
+    );
+  }, [id, loadDetail]);
 
   const handleNameSpeaker = useCallback(
     async (name: string, enroll: boolean) => {
       if (!namingUtterance || !id) return;
       const localIdx = namingUtterance.local_idx;
       if (localIdx == null) return;
-
       setNamingUtterance(null);
       try {
         await api.nameSpeaker(id, localIdx, { name, enroll });
-        // Reload to pick up new display names
         await loadDetail();
       } catch (err) {
         Alert.alert('Error', `Could not name speaker: ${String(err)}`);
@@ -361,46 +759,96 @@ export default function RecordingDetailScreen() {
     [namingUtterance, id, loadDetail],
   );
 
-  // -------------------------------------------------------------------------
-  // Render
+  const handleEditUtterance = useCallback(
+    async (text: string) => {
+      const u = editingUtterance;
+      setEditingUtterance(null);
+      if (!u || !id) return;
+      const trimmed = text.trim();
+      if (!trimmed || trimmed === u.text) return;
+      setSavingEdit(true);
+      try {
+        const updated = await api.editUtterance(id, u.id, trimmed);
+        setDetail((d) =>
+          d ? { ...d, utterances: d.utterances.map((x) => (x.id === updated.id ? updated : x)) } : d,
+        );
+      } catch (err) {
+        Alert.alert('Could not save edit', err instanceof Error ? err.message : String(err));
+      } finally {
+        setSavingEdit(false);
+      }
+    },
+    [editingUtterance, id],
+  );
+
+  const handleSetTags = useCallback(
+    async (next: string[]) => {
+      if (!id) return;
+      setSavingTags(true);
+      try {
+        const res = await api.setTags(id, next);
+        setDetail((d) => (d ? { ...d, recording: { ...d.recording, tags: res.tags } } : d));
+      } catch (err) {
+        Alert.alert('Could not update tags', err instanceof Error ? err.message : String(err));
+      } finally {
+        setSavingTags(false);
+      }
+    },
+    [id],
+  );
+
   // -------------------------------------------------------------------------
 
   if (loading) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator color="#E53935" />
-      </View>
+      <Screen>
+        <DetailHeader title="Recording" onBack={() => router.back()} />
+        <View style={styles.centered}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
+      </Screen>
     );
   }
 
   if (error || !detail) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error ?? 'No data'}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={() => loadDetail()}>
-          <Text style={styles.retryButtonText}>Retry</Text>
-        </TouchableOpacity>
-      </View>
+      <Screen>
+        <DetailHeader title="Recording" onBack={() => router.back()} />
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>{error ?? 'No data'}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => loadDetail()}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </Screen>
     );
   }
 
-  const { recording, speakers, utterances, summary } = detail;
+  const { recording, speakers, utterances } = detail;
+  const dur = recording.duration_ms ?? statusDurationMs;
+  const progress = dur > 0 ? positionMs / dur : 0;
+  const templateLabel = (tid?: string | null) =>
+    tid ? (templates.find((t) => t.id === tid)?.label ?? null) : null;
+  const generatedTemplates = summaries.map((s) => s.template ?? 'general');
+  const activeSummary =
+    summaries.find((s) => (s.template ?? 'general') === activeTemplate) ?? summaries[0] ?? null;
 
   const filteredUtterances = searchQuery.trim()
-    ? utterances.filter((u) =>
-        u.text.toLowerCase().includes(searchQuery.toLowerCase()),
-      )
+    ? utterances.filter((u) => u.text.toLowerCase().includes(searchQuery.toLowerCase()))
     : utterances;
 
   return (
-    <>
-      {/* Attach the status listener to the player without a visible element */}
-      {playerRef.current && (
-        <PlayerStatus player={playerRef.current} onStatus={handleStatus} />
-      )}
+    <Screen>
+      <DetailHeader
+        title={recording.title ?? 'Recording'}
+        date={formatDate(recording.created_at)}
+        onBack={() => router.back()}
+        onShare={utterances.length > 0 || summaries.length > 0 ? () => setShowExport(true) : undefined}
+        onMenu={() => setShowActions(true)}
+      />
 
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        {/* Status badge */}
+      <ScrollView contentContainerStyle={styles.content}>
+        {/* Status banner */}
         {status !== 'ready' && (
           <View style={styles.statusBanner}>
             <Text style={styles.statusBannerText}>
@@ -413,7 +861,7 @@ export default function RecordingDetailScreen() {
           </View>
         )}
 
-        {/* Mini playback bar */}
+        {/* Playback bar */}
         {status === 'ready' && (
           <View style={styles.playbackBar}>
             <TouchableOpacity
@@ -421,63 +869,166 @@ export default function RecordingDetailScreen() {
               onPress={togglePlayback}
               accessibilityLabel={playing ? 'Pause' : 'Play'}
             >
-              <Ionicons name={playing ? 'pause' : 'play'} size={18} color="#fff" />
+              <Ionicons name={playing ? 'pause' : 'play'} size={15} color={colors.white} />
             </TouchableOpacity>
-            <Text style={styles.position}>{formatMs(positionMs)}</Text>
-            {recording.duration_ms != null && (
-              <Text style={styles.duration}>
-                / {formatMs(recording.duration_ms)}
-              </Text>
+            <View
+              style={styles.waveWrap}
+              onLayout={(e) => setWaveWidth(Math.round(e.nativeEvent.layout.width))}
+            >
+              {waveWidth > 0 && (
+                <PlaybackWave width={waveWidth} height={30} progress={progress} playing={playing} />
+              )}
+            </View>
+            <TouchableOpacity
+              style={styles.speedBtn}
+              onPress={cycleRate}
+              accessibilityLabel={`Playback speed ${rate}×`}
+            >
+              <Text style={styles.speedText}>{rate}×</Text>
+            </TouchableOpacity>
+            <Text style={styles.position}>{formatMs(dur || positionMs)}</Text>
+          </View>
+        )}
+
+        {/* Highlights (marks bookmarked during recording) */}
+        {status === 'ready' && (recording.marks?.length ?? 0) > 0 && (
+          <View style={styles.marksCard}>
+            <Text style={styles.summaryLabel}>HIGHLIGHTS</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.marksRow}
+            >
+              {(recording.marks ?? []).map((m, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={styles.markChip}
+                  onPress={() => seekTo(m)}
+                  accessibilityLabel={`Jump to ${formatMs(m)}`}
+                >
+                  <Ionicons name="bookmark" size={11} color={colors.accent} />
+                  <Text style={styles.markChipText}>{formatMs(m)}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Tags */}
+        {(status === 'ready' || (recording.tags?.length ?? 0) > 0) && (
+          <TagsEditor tags={recording.tags ?? []} saving={savingTags} onChange={handleSetTags} />
+        )}
+
+        {/* Summary (active view; switch/add views via the template chip) */}
+        {activeSummary && (
+          <View style={styles.summaryCard}>
+            <View style={styles.summaryHeaderRow}>
+              <Text style={styles.summaryLabel}>SUMMARY</Text>
+              <TouchableOpacity
+                style={styles.templateChip}
+                onPress={() => setShowTemplates(true)}
+                disabled={resummarizing}
+                accessibilityLabel="Switch or add a summary view"
+              >
+                {resummarizing ? (
+                  <ActivityIndicator size="small" color={colors.accent} />
+                ) : (
+                  <>
+                    <Ionicons name="options-outline" size={12} color={colors.accent} />
+                    <Text style={styles.templateChipText}>
+                      {templateLabel(activeSummary.template) ?? 'Template'}
+                      {summaries.length > 1 ? ` · ${summaries.length}` : ''}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+            {activeSummary.title && <Text style={styles.summaryTitle}>{activeSummary.title}</Text>}
+            {activeSummary.summary && <Text style={styles.summaryText}>{activeSummary.summary}</Text>}
+            {activeSummary.action_items && activeSummary.action_items.length > 0 && (
+              <>
+                <Text style={styles.summarySub}>ACTION ITEMS</Text>
+                {activeSummary.action_items.map((item, i) => (
+                  <View key={i} style={styles.bulletRow}>
+                    <View style={styles.bullet} />
+                    <Text style={styles.bulletText}>{item}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            {activeSummary.decisions && activeSummary.decisions.length > 0 && (
+              <>
+                <Text style={styles.summarySub}>DECISIONS</Text>
+                {activeSummary.decisions.map((d, i) => (
+                  <View key={i} style={styles.bulletRow}>
+                    <View style={styles.bullet} />
+                    <Text style={styles.bulletText}>{d}</Text>
+                  </View>
+                ))}
+              </>
             )}
           </View>
         )}
 
-        {/* Summary */}
-        {summary && (
-          <View style={styles.summaryCard}>
-            {summary.title && (
-              <Text style={styles.summaryTitle}>{summary.title}</Text>
-            )}
-            {summary.summary && (
-              <Text style={styles.summaryText}>{summary.summary}</Text>
-            )}
-            {summary.action_items && summary.action_items.length > 0 && (
+        {/* Generate summary when there isn't one yet */}
+        {status === 'ready' && summaries.length === 0 && (
+          <TouchableOpacity
+            style={styles.generateCard}
+            onPress={() => setShowTemplates(true)}
+            disabled={resummarizing}
+            accessibilityLabel="Generate summary"
+          >
+            {resummarizing ? (
+              <ActivityIndicator color={colors.accent} />
+            ) : (
               <>
-                <Text style={styles.summarySubheader}>Action items</Text>
-                {summary.action_items.map((item, i) => (
-                  <Text key={i} style={styles.summaryListItem}>
-                    • {item}
-                  </Text>
-                ))}
+                <Ionicons name="sparkles-outline" size={16} color={colors.accent} />
+                <Text style={styles.generateText}>Generate summary…</Text>
               </>
             )}
-            {summary.decisions && summary.decisions.length > 0 && (
-              <>
-                <Text style={styles.summarySubheader}>Decisions</Text>
-                {summary.decisions.map((d, i) => (
-                  <Text key={i} style={styles.summaryListItem}>
-                    • {d}
+          </TouchableOpacity>
+        )}
+
+        {/* Talk-time breakdown */}
+        {status === 'ready' && talkTime.rows.length >= 2 && talkTime.total > 0 && (
+          <View style={styles.analyticsCard}>
+            <Text style={styles.summaryLabel}>TALK TIME</Text>
+            {talkTime.rows.map((r) => {
+              const pct = Math.round((r.ms / talkTime.total) * 100);
+              return (
+                <View key={r.label} style={styles.ttRow}>
+                  <Text style={[styles.ttName, { color: r.color }]} numberOfLines={1}>
+                    {r.label}
                   </Text>
-                ))}
-              </>
-            )}
+                  <View style={styles.ttBarTrack}>
+                    <View
+                      style={[styles.ttBarFill, { width: `${pct}%`, backgroundColor: r.color }]}
+                    />
+                  </View>
+                  <Text style={styles.ttValue}>{pct}%</Text>
+                </View>
+              );
+            })}
           </View>
         )}
 
         {/* In-recording search */}
         {utterances.length > 0 && (
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search transcript…"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            clearButtonMode="while-editing"
-            returnKeyType="search"
-          />
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={15} color={colors.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search transcript…"
+              placeholderTextColor={colors.textDim}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              returnKeyType="search"
+            />
+          </View>
         )}
 
         {/* Transcript */}
-        {filteredUtterances.length === 0 && utterances.length === 0 && status === 'ready' && (
+        {utterances.length === 0 && status === 'ready' && (
           <Text style={styles.emptyTranscript}>
             No transcript available yet. The server may still be processing.
           </Text>
@@ -490,45 +1041,175 @@ export default function RecordingDetailScreen() {
             speakers={speakers}
             isActive={positionMs >= u.start_ms && positionMs < u.end_ms}
             matchesSearch={
-              searchQuery.trim() !== '' &&
-              u.text.toLowerCase().includes(searchQuery.toLowerCase())
+              searchQuery.trim() !== '' && u.text.toLowerCase().includes(searchQuery.toLowerCase())
             }
             onPress={() => seekTo(u.start_ms)}
-            onLongPress={() => setNamingUtterance(u)}
+            onLongPress={() => setUtteranceAction(u)}
           />
         ))}
 
         {searchQuery.trim() && filteredUtterances.length === 0 && (
-          <Text style={styles.emptySearch}>
-            No transcript lines match "{searchQuery}".
-          </Text>
+          <Text style={styles.emptySearch}>No transcript lines match “{searchQuery}”.</Text>
         )}
       </ScrollView>
 
-      {/* Speaker naming modal */}
       <NameSpeakerModal
         visible={namingUtterance != null}
-        currentName={
-          namingUtterance
-            ? (speakerLabel(namingUtterance.local_idx, speakers))
-            : ''
-        }
+        currentName={namingUtterance ? speakerLabel(namingUtterance.local_idx, speakers) : ''}
         onSave={handleNameSpeaker}
         onDismiss={() => setNamingUtterance(null)}
       />
-    </>
+
+      <ExportSheet
+        visible={showExport}
+        onSelect={handleExport}
+        onDismiss={() => setShowExport(false)}
+      />
+
+      <TemplateSheet
+        visible={showTemplates}
+        templates={templates}
+        current={activeSummary?.template ?? activeTemplate}
+        generated={generatedTemplates}
+        onSelect={handlePickTemplate}
+        onDismiss={() => setShowTemplates(false)}
+      />
+
+      <Modal
+        visible={showActions}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowActions(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowActions(false)}
+        >
+          <View style={styles.sheetCard}>
+            <Text style={styles.modalTitle}>Actions</Text>
+            <TouchableOpacity
+              style={styles.sheetRow}
+              onPress={() => {
+                setShowActions(false);
+                setShowMindMap(true);
+              }}
+              accessibilityRole="button"
+            >
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>Mind map</Text>
+                <Text style={styles.sheetRowSub}>Visual outline of the summary</Text>
+              </View>
+              <Ionicons name="git-branch-outline" size={18} color={colors.accent} />
+            </TouchableOpacity>
+            {summaries.length > 0 && (
+              <TouchableOpacity
+                style={styles.sheetRow}
+                onPress={() => {
+                  setShowActions(false);
+                  setShowTranslate(true);
+                }}
+                accessibilityRole="button"
+              >
+                <View style={styles.sheetRowText}>
+                  <Text style={styles.sheetRowLabel}>Translate summary</Text>
+                  <Text style={styles.sheetRowSub}>Into another language</Text>
+                </View>
+                <Ionicons name="language-outline" size={18} color={colors.accent} />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.sheetRow} onPress={handleReprocess} accessibilityRole="button">
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>Reprocess transcript</Text>
+                <Text style={styles.sheetRowSub}>Re-run transcription &amp; summary from the audio</Text>
+              </View>
+              <Ionicons name="refresh" size={18} color={colors.accent} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setShowActions(false)}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <UtteranceActionSheet
+        visible={utteranceAction != null}
+        onEdit={() => {
+          const u = utteranceAction;
+          setUtteranceAction(null);
+          setEditingUtterance(u);
+        }}
+        onRename={() => {
+          const u = utteranceAction;
+          setUtteranceAction(null);
+          setNamingUtterance(u);
+        }}
+        onDismiss={() => setUtteranceAction(null)}
+      />
+
+      <EditUtteranceModal
+        utterance={editingUtterance}
+        saving={savingEdit}
+        onSave={handleEditUtterance}
+        onDismiss={() => setEditingUtterance(null)}
+      />
+
+      <MindMapModal
+        visible={showMindMap}
+        summary={activeSummary}
+        title={recording.title ?? 'Recording'}
+        onDismiss={() => setShowMindMap(false)}
+      />
+
+      {id ? (
+        <TranslateModal
+          visible={showTranslate}
+          recordingId={id}
+          onDismiss={() => setShowTranslate(false)}
+        />
+      ) : null}
+    </Screen>
   );
 }
 
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  container: {
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
+  backBtn: {
+    paddingRight: 2,
+  },
+  backChevron: {
+    fontSize: 30,
+    fontWeight: '300',
+    color: colors.accent,
+    lineHeight: 32,
+  },
+  headerTitle: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  headerDate: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.textMuted,
+    fontFamily: mono,
+  },
+  shareBtn: {
+    paddingLeft: 10,
+    paddingVertical: 2,
   },
   content: {
-    padding: 12,
+    paddingHorizontal: 18,
     paddingBottom: 40,
   },
   centered: {
@@ -536,228 +1217,520 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
+    gap: 16,
   },
   errorText: {
-    color: '#E53935',
+    color: colors.accentDeep,
     fontSize: 14,
     textAlign: 'center',
-    marginBottom: 16,
   },
   retryButton: {
-    backgroundColor: '#E53935',
-    borderRadius: 8,
+    backgroundColor: colors.accent,
+    borderRadius: 10,
     paddingHorizontal: 20,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
   retryButtonText: {
-    color: '#fff',
+    color: colors.white,
     fontWeight: '600',
   },
   statusBanner: {
-    backgroundColor: '#FFF8E1',
-    borderRadius: 8,
+    backgroundColor: 'rgba(226,168,95,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(226,168,95,0.3)',
+    borderRadius: radius.inner,
     padding: 12,
     marginBottom: 12,
   },
   statusBannerText: {
     fontSize: 13,
-    color: '#F57F17',
+    lineHeight: 18,
+    color: colors.amber,
   },
   playbackBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 10,
+    gap: 11,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
+    padding: 11,
     marginBottom: 12,
-    gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
   },
   playButton: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#E53935',
+    backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  position: {
-    fontSize: 14,
-    fontVariant: ['tabular-nums'],
-    color: '#333',
+  waveWrap: {
+    flex: 1,
+    height: 30,
+    overflow: 'hidden',
   },
-  duration: {
+  position: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textMuted,
+    fontFamily: mono,
+    fontVariant: ['tabular-nums'],
+  },
+  speedBtn: {
+    borderWidth: 1,
+    borderColor: colors.borderInput,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    minWidth: 38,
+    alignItems: 'center',
+  },
+  speedText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+    fontFamily: mono,
+  },
+  summaryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  templateChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    minHeight: 22,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 7,
+    backgroundColor: colors.accentSoft,
+  },
+  templateChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.accent,
+  },
+  generateCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 48,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.chipActiveBorder,
+    borderStyle: 'dashed',
+    borderRadius: radius.inner,
+    padding: 14,
+    marginBottom: 12,
+  },
+  generateText: {
     fontSize: 14,
-    color: '#aaa',
+    fontWeight: '600',
+    color: colors.accent,
+  },
+  analyticsCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
+    padding: 14,
+    marginBottom: 12,
+  },
+  ttRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+  },
+  ttName: {
+    width: 84,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  ttBarTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.bg,
+    overflow: 'hidden',
+  },
+  ttBarFill: {
+    height: 6,
+    borderRadius: 3,
+  },
+  ttValue: {
+    width: 36,
+    textAlign: 'right',
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textMuted,
+    fontFamily: mono,
     fontVariant: ['tabular-nums'],
   },
   summaryCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
+    padding: 14,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 1,
+  },
+  summaryLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.accent,
+    fontFamily: mono,
+    letterSpacing: 2,
   },
   summaryTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#111',
-    marginBottom: 8,
+    color: colors.textPrimary,
+    marginTop: 8,
   },
   summaryText: {
-    fontSize: 14,
-    color: '#444',
-    lineHeight: 22,
-    marginBottom: 10,
+    fontSize: 12.5,
+    lineHeight: 19,
+    color: colors.textLight,
+    marginTop: 8,
   },
-  summarySubheader: {
-    fontSize: 12,
+  tagRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 11,
+  },
+  tagAccent: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.accent,
+    fontFamily: mono,
+    backgroundColor: colors.accentSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  summarySub: {
+    fontSize: 10,
     fontWeight: '700',
-    color: '#888',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 10,
-    marginBottom: 4,
-  },
-  summaryListItem: {
-    fontSize: 14,
-    color: '#333',
-    lineHeight: 20,
-    paddingLeft: 4,
-  },
-  searchInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-    backgroundColor: '#fff',
-    marginBottom: 10,
-  },
-  utterance: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
+    color: colors.textMuted,
+    fontFamily: mono,
+    letterSpacing: 1.5,
+    marginTop: 14,
     marginBottom: 6,
   },
-  utteranceActive: {
-    borderLeftWidth: 3,
-    borderLeftColor: '#E53935',
+  bulletRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 5,
   },
-  utteranceMatch: {
-    backgroundColor: '#FFFDE7',
+  bullet: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: colors.accent,
+    marginTop: 7,
+  },
+  bulletText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 20,
+    color: colors.textLight,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderInput,
+    borderRadius: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.textPrimary,
+    padding: 0,
+  },
+  emptyTranscript: {
+    fontSize: 14,
+    color: colors.textDim,
+    textAlign: 'center',
+    marginTop: 32,
+  },
+  emptySearch: {
+    fontSize: 14,
+    color: colors.textDim,
+    textAlign: 'center',
+    marginTop: 16,
+  },
+  utterance: {
+    flexDirection: 'row',
+    gap: 11,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    marginHorizontal: -10,
+    borderRadius: 10,
+    marginBottom: 2,
+  },
+  utteranceActive: {
+    backgroundColor: colors.accentFaint,
+  },
+  rail: {
+    width: 3,
+    borderRadius: 2,
+  },
+  utteranceBody: {
+    flex: 1,
   },
   utteranceHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
+    alignItems: 'baseline',
+    gap: 8,
   },
   speakerName: {
     fontSize: 12,
     fontWeight: '700',
   },
   utteranceTime: {
-    fontSize: 12,
-    color: '#aaa',
-    fontVariant: ['tabular-nums'],
+    fontSize: 10,
+    color: colors.textDim,
+    fontFamily: mono,
   },
   utteranceText: {
-    fontSize: 14,
-    color: '#222',
+    fontSize: 13,
     lineHeight: 20,
+    color: colors.textLight,
+    marginTop: 4,
   },
-  emptyTranscript: {
-    fontSize: 14,
-    color: '#aaa',
-    textAlign: 'center',
-    marginTop: 32,
-  },
-  emptySearch: {
-    fontSize: 14,
-    color: '#aaa',
-    textAlign: 'center',
-    marginTop: 16,
+  utteranceTextActive: {
+    color: colors.textPrimary,
   },
   // Modal
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: colors.scrim,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalCard: {
-    width: '80%',
-    backgroundColor: '#fff',
-    borderRadius: 16,
+    width: '82%',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderButton,
+    borderRadius: radius.card,
     padding: 20,
   },
   modalTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#111',
+    color: colors.textPrimary,
+    marginBottom: 14,
+  },
+  // Export sheet
+  sheetCard: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderColor: colors.borderButton,
+    borderTopLeftRadius: radius.card,
+    borderTopRightRadius: radius.card,
+    padding: 20,
+    paddingBottom: 34,
+  },
+  sheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 13,
+    borderTopWidth: 1,
+    borderColor: colors.borderDivider,
+  },
+  sheetRowText: {
+    flex: 1,
+  },
+  sheetRowLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  sheetRowSub: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontFamily: mono,
+    marginTop: 2,
+  },
+  // Edit-utterance modal
+  editInput: {
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.borderInput,
+    borderRadius: 11,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.textPrimary,
+    marginBottom: 14,
+    minHeight: 90,
+    textAlignVertical: 'top',
+  },
+  // Tags editor
+  tagsCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
+    padding: 14,
     marginBottom: 12,
   },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
+  tagsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  tagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.accentSoft,
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 15,
+    paddingLeft: 10,
+    paddingRight: 7,
+    paddingVertical: 5,
+  },
+  tagChipText: {
+    fontSize: 12.5,
+    fontWeight: '500',
+    color: colors.accent,
+  },
+  tagInput: {
+    minWidth: 80,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.borderInput,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    fontSize: 12.5,
+    color: colors.textPrimary,
+  },
+  tagAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderWidth: 1,
+    borderColor: colors.chipActiveBorder,
+    borderStyle: 'dashed',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    minHeight: 28,
+  },
+  tagAddText: {
+    fontSize: 12.5,
+    fontWeight: '500',
+    color: colors.accent,
+  },
+  // Highlights / marks
+  marksCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.inner,
+    padding: 14,
     marginBottom: 12,
+  },
+  marksRow: {
+    gap: 8,
+    marginTop: 10,
+    paddingRight: 4,
+  },
+  markChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: colors.accentSoft,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  markChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.accent,
+    fontFamily: mono,
+    fontVariant: ['tabular-nums'],
+  },
+  modalInput: {
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.borderInput,
+    borderRadius: 11,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    fontSize: 15,
+    color: colors.textPrimary,
+    marginBottom: 14,
   },
   modalEnroll: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
+    gap: 9,
+    marginBottom: 18,
   },
   checkbox: {
-    width: 18,
-    height: 18,
+    width: 20,
+    height: 20,
     borderWidth: 2,
-    borderColor: '#ccc',
-    borderRadius: 4,
+    borderColor: colors.borderButton,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   checkboxChecked: {
-    backgroundColor: '#E53935',
-    borderColor: '#E53935',
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   enrollText: {
-    fontSize: 13,
-    color: '#444',
     flex: 1,
+    fontSize: 13,
+    color: colors.textLight,
   },
   modalActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 8,
+    alignItems: 'center',
   },
   modalCancel: {
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
   modalCancelText: {
-    color: '#888',
+    color: colors.textMuted,
     fontSize: 14,
   },
   modalSave: {
-    backgroundColor: '#E53935',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    backgroundColor: colors.accent,
+    borderRadius: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
   },
   modalSaveText: {
-    color: '#fff',
+    color: colors.white,
     fontWeight: '600',
     fontSize: 14,
   },

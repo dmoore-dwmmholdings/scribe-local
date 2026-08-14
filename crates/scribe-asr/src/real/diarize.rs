@@ -46,16 +46,17 @@ impl SherpaDiarizer {
     fn build_diarizer(&self, expected: Option<i32>) -> Result<OfflineSpeakerDiarization> {
         let provider = provider_for(&self.device);
 
-        // Pin the cluster count when known, else discover via threshold.
-        let clustering = match expected {
-            Some(n) if n >= 1 => FastClusteringConfig {
-                num_clusters: n,
-                threshold: CLUSTER_THRESHOLD,
-            },
-            _ => FastClusteringConfig {
-                num_clusters: -1,
-                threshold: CLUSTER_THRESHOLD,
-            },
+        // `participants_expected` is treated as a soft HINT, not a hard count:
+        // always discover the speaker count via the cosine threshold so the
+        // system adapts when more people speak (someone joins) or fewer do
+        // (someone stays silent) than the user guessed. Pinning `num_clusters`
+        // to the hint would force-merge or force-split real voices.
+        if let Some(n) = expected {
+            tracing::debug!(hint = n, "diarize: speaker-count hint (advisory, threshold discovery)");
+        }
+        let clustering = FastClusteringConfig {
+            num_clusters: -1,
+            threshold: CLUSTER_THRESHOLD,
         };
 
         let config = OfflineSpeakerDiarizationConfig {

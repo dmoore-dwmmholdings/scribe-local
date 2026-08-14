@@ -1,4 +1,4 @@
-# scripts/dev-db.ps1 — start/stop the development pgvector container
+# scripts/dev-db.ps1 - start/stop the development pgvector container
 #                      and (optionally) run `scribe migrate`.
 #
 # Usage (PowerShell):
@@ -13,7 +13,7 @@
 # The script is idempotent: running 'up' when already running is safe.
 #
 # NOTE on ONNX / Windows builds
-# ─────────────────────────────
+# -----------------------------
 # The real-ML build (default features) requires the MSVC toolchain and the
 # ONNX Runtime native library. If you are on the GNU toolchain:
 #   cargo build -p scribe-cli --no-default-features

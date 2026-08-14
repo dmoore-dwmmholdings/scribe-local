@@ -107,6 +107,54 @@ impl Db {
         .map_err(db_err)?;
         rows.iter().map(utterance_from_row).collect()
     }
+
+    /// Correct the text of a single utterance. Returns the updated [`Utterance`]
+    /// (same shape as [`Db::list_utterances_by_recording`], including the resolved
+    /// `speaker_name`) or `None` if no utterance matched `(recording_id,
+    /// utterance_id)`.
+    ///
+    /// `tsv` is a GENERATED column maintained by Postgres from `text`, so we
+    /// never write it — it updates automatically. We UPDATE only `text`, then
+    /// re-select the row through the speaker join to build the response.
+    pub async fn update_utterance_text(
+        &self,
+        recording_id: Uuid,
+        utterance_id: i64,
+        text: &str,
+    ) -> Result<Option<Utterance>> {
+        let affected = sqlx::query(
+            "UPDATE utterances SET text = $1 WHERE id = $2 AND recording_id = $3",
+        )
+        .bind(text)
+        .bind(utterance_id)
+        .bind(recording_id)
+        .execute(self.pool())
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+        if affected == 0 {
+            return Ok(None);
+        }
+
+        // Re-fetch with the speaker join so the returned utterance matches the
+        // detail-endpoint shape (resolved speaker_name, defaulting to Speaker N).
+        let row = sqlx::query(
+            "SELECT u.id, u.recording_id, u.local_idx, u.start_ms, u.end_ms, u.text, u.words, \
+                    s.display_name AS speaker_name \
+             FROM utterances u \
+             LEFT JOIN recording_speakers rs \
+               ON rs.recording_id = u.recording_id AND rs.local_idx = u.local_idx \
+             LEFT JOIN speakers s ON s.id = rs.speaker_id \
+             WHERE u.id = $1 AND u.recording_id = $2",
+        )
+        .bind(utterance_id)
+        .bind(recording_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db_err)?;
+
+        row.map(|r| utterance_from_row(&r)).transpose()
+    }
 }
 
 fn utterance_from_row(row: &PgRow) -> Result<Utterance> {

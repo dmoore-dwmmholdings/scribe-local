@@ -11,6 +11,8 @@ use scribe_core::types::Word;
 use scribe_core::Result;
 use scribe_db::transcript::NewUtterance;
 use scribe_db::Db;
+use scribe_llm::{ChatMessage, OllamaClient};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::artifacts::{self, TurnArtifact};
@@ -22,7 +24,7 @@ const STAGE: &str = "merge";
 const GAP_BREAK_MS: i64 = 1_500;
 
 /// Run the merge stage for `recording_id`.
-pub async fn run(cfg: &Config, db: &Db, recording_id: Uuid) -> Result<()> {
+pub async fn run(cfg: &Config, db: &Db, ollama: &OllamaClient, recording_id: Uuid) -> Result<()> {
     let transcript = artifacts::get_transcript(db, recording_id).await?;
     let diarization = artifacts::get_diarization(db, recording_id).await?;
 
@@ -33,7 +35,17 @@ pub async fn run(cfg: &Config, db: &Db, recording_id: Uuid) -> Result<()> {
         tracing::debug!(%recording_id, removed, "merge: stripped filler words");
     }
     assign_speakers(&mut words, &diarization.turns);
-    let utterances = group_into_utterances(&words);
+    let mut utterances = group_into_utterances(&words);
+
+    // Best-effort LLM cleanup of misrecognised names / proper nouns. Never fails
+    // the stage and only ever replaces individual utterance texts.
+    if cfg.llm.correct_transcript {
+        let names = speaker_display_names(db, recording_id).await.unwrap_or_default();
+        let fixed = correct_names(ollama, &cfg.llm.summarize_model, &names, &mut utterances).await;
+        if fixed > 0 {
+            tracing::info!(%recording_id, lines = fixed, "merge: LLM corrected transcript lines");
+        }
+    }
 
     // Atomic replace: clear then bulk-insert.
     db.delete_utterances_by_recording(recording_id).await?;
@@ -54,6 +66,135 @@ pub async fn run(cfg: &Config, db: &Db, recording_id: Uuid) -> Result<()> {
     }
     tracing::info!(%recording_id, utterances = inserted, "merge complete");
     Ok(())
+}
+
+/// Resolved speaker display names for this recording (hints for the corrector).
+async fn speaker_display_names(db: &Db, recording_id: Uuid) -> Result<Vec<String>> {
+    let rows = db.list_recording_speakers(recording_id).await?;
+    Ok(rows.into_iter().filter_map(|rs| rs.display_name).collect())
+}
+
+#[derive(Deserialize)]
+struct Correction {
+    i: usize,
+    text: String,
+}
+
+/// Best-effort: ask the LLM to fix misrecognised names/proper nouns in the
+/// utterance texts. Returns the number of lines changed. NEVER errors — on any
+/// problem (LLM down, bad JSON, suspicious rewrite) it leaves the text untouched
+/// so a flaky model can't corrupt the transcript.
+async fn correct_names(
+    ollama: &OllamaClient,
+    model: &str,
+    names: &[String],
+    utts: &mut [GroupedUtterance],
+) -> usize {
+    if utts.is_empty() {
+        return 0;
+    }
+
+    let mut transcript = String::new();
+    for (i, u) in utts.iter().enumerate() {
+        let line = u.text.trim();
+        if !line.is_empty() {
+            transcript.push_str(&format!("{i}: {line}\n"));
+        }
+    }
+    if transcript.is_empty() {
+        return 0;
+    }
+
+    let names_hint = if names.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Known correct names/terms (prefer these spellings): {}.\n",
+            names.join(", ")
+        )
+    };
+    let system = ChatMessage::system(
+        "You correct speech-to-text transcription errors. Respond with only JSON.",
+    );
+    let user = ChatMessage::user(format!(
+        "{names_hint}Below are numbered transcript lines from speech-to-text. Fix ONLY clear \
+         transcription errors: misheard proper nouns, names, and obviously wrong words. Do NOT \
+         paraphrase, translate, summarise, reorder, merge, or split lines, and do not change \
+         text that is already correct. Keep the wording and length as close to the original as \
+         possible. Return ONLY a JSON array of objects {{\"i\": <line number>, \"text\": \
+         \"<corrected line>\"}} for the lines you actually changed; return [] if nothing needs \
+         fixing.\n\nLines:\n{transcript}"
+    ));
+
+    let raw = match ollama.chat(model, &[system, user]).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "merge: transcript correction skipped (LLM unavailable)");
+            return 0;
+        }
+    };
+
+    let Some(arr) = first_json_array(&raw) else {
+        return 0;
+    };
+    let parsed: Vec<Correction> = match serde_json::from_str(&arr) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    let mut applied = 0;
+    for c in parsed {
+        let Some(u) = utts.get_mut(c.i) else { continue };
+        let new = c.text.trim();
+        if new.is_empty() || new == u.text {
+            continue;
+        }
+        // Reject wholesale rewrites (summaries/garbage): the corrected line must
+        // stay close in length to the original.
+        let orig_len = u.text.chars().count() as i64;
+        let new_len = new.chars().count() as i64;
+        if (orig_len - new_len).abs() > (orig_len / 3).max(12) {
+            continue;
+        }
+        u.text = new.to_string();
+        applied += 1;
+    }
+    applied
+}
+
+/// First balanced top-level `[...]` substring of `s` (respecting JSON strings),
+/// or `None`. Lets us tolerate a model that wraps the array in prose.
+fn first_json_array(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let start = s.find('[')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escape = false;
+    for i in start..bytes.len() {
+        let c = bytes[i] as char;
+        if in_str {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(s[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Length of the overlap between `[a0,a1]` and `[b0,b1]` (0 if disjoint).

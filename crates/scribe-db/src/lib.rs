@@ -48,6 +48,38 @@ pub use error::db_err;
 /// Matches the trigger payload in `migrations/0001_init.sql`.
 pub const JOBS_CHANNEL: &str = "scribe_jobs";
 
+/// Safety guard for **destructive integration tests**.
+///
+/// The smoke / api / pipeline integration tests `DROP SCHEMA public CASCADE` and
+/// insert fixtures against whatever `DATABASE_URL` points at. If that is the live
+/// dev database the app uses (`scribe` on :5433), running `cargo test` silently
+/// wipes real recordings. Call this before any destructive test setup: it refuses
+/// to proceed unless the target database is clearly disposable — its name ends in
+/// `_test`/`-test` (e.g. `scribe_test`) — or the operator explicitly opts in with
+/// `SCRIBE_ALLOW_DESTRUCTIVE_TESTS=1`.
+pub fn assert_disposable_test_db(url: &str) {
+    // Database name = the last '/'-segment, minus any `?query`/`#fragment`.
+    let name = url
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    let disposable = name.ends_with("_test") || name.ends_with("-test");
+    let overridden = std::env::var("SCRIBE_ALLOW_DESTRUCTIVE_TESTS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    assert!(
+        disposable || overridden,
+        "refusing to run a destructive schema reset against database `{name}`: the \
+         integration tests DROP SCHEMA and would wipe it. Point DATABASE_URL at a \
+         throwaway database whose name ends in `_test` (e.g. \
+         postgres://scribe:scribe@localhost:5433/scribe_test), or set \
+         SCRIBE_ALLOW_DESTRUCTIVE_TESTS=1 to override."
+    );
+}
+
 /// Handle to the Postgres-backed store. Cheap to clone (the pool is `Arc`-shared).
 #[derive(Debug, Clone)]
 pub struct Db {

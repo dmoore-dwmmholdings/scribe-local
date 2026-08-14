@@ -59,8 +59,11 @@ pub async fn process_recording_inline(cfg: &Config, db: &Db, recording_id: Uuid)
         JobKind::Embed,
         JobKind::Summarize,
     ];
+    let empty_payload = serde_json::json!({});
     for kind in order {
-        if let Err(e) = worker::run_stage(cfg, db, &engines, kind, recording_id).await {
+        if let Err(e) =
+            worker::run_stage(cfg, db, &engines, kind, recording_id, &empty_payload).await
+        {
             let _ = db
                 .set_recording_status(recording_id, RecordingStatus::Failed)
                 .await;

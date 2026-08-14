@@ -49,6 +49,10 @@ pub enum Error {
     #[error("http error: {0}")]
     Http(String),
 
+    /// A required upstream dependency (e.g. the LLM) is unreachable (HTTP 503).
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     /// Local I/O failure.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -89,6 +93,7 @@ impl Error {
             Error::Pipeline { .. } => "pipeline",
             Error::Model(_) => "model",
             Error::Http(_) => "http",
+            Error::ServiceUnavailable(_) => "service_unavailable",
             Error::Io(_) => "io",
             Error::Serde(_) => "serde",
             Error::Internal(_) => "internal",
@@ -102,6 +107,7 @@ impl Error {
             Error::BadRequest(_) => 400,
             Error::Unauthorized(_) => 401,
             Error::Conflict(_) => 409,
+            Error::ServiceUnavailable(_) => 503,
             _ => 500,
         }
     }

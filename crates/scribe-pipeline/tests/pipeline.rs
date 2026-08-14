@@ -5,7 +5,7 @@
 //!
 //! Run (stub engines, from the repo root):
 //! ```text
-//! DATABASE_URL=postgres://scribe:scribe@localhost:5433/scribe \
+//! DATABASE_URL=postgres://scribe:scribe@localhost:5433/scribe_test \
 //!   cargo test -p scribe-pipeline --no-default-features --test pipeline -- --nocapture
 //! ```
 //!
@@ -69,7 +69,10 @@ fn write_test_wav(path: &Path, secs: f32) {
 }
 
 /// Drop and recreate the `public` schema, then re-apply all migrations.
-async fn reset_schema(db: &Db) {
+async fn reset_schema(db: &Db, url: &str) {
+    // Never DROP SCHEMA on a non-disposable database (e.g. the live dev `scribe`).
+    scribe_db::assert_disposable_test_db(url);
+
     sqlx::query("DROP SCHEMA public CASCADE")
         .execute(db.pool())
         .await
@@ -106,7 +109,7 @@ async fn pipeline_runs_end_to_end_with_stub_engines() {
     cfg.llm.base_url = "http://127.0.0.1:1".to_string();
 
     let db = Db::connect(&cfg.database).await.expect("connect db");
-    reset_schema(&db).await;
+    reset_schema(&db, &cfg.database.url).await;
 
     // Create a recording with 2 expected participants (drives stub diarization).
     let recording = db

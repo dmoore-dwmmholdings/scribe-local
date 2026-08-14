@@ -9,7 +9,7 @@
 
     1. Microsoft's onnxruntime-win-x64-gpu (matched to the onnxruntime version
        sherpa-onnx ships, so it stays ABI-compatible with sherpa-onnx-c-api.dll
-       AND with `ort`/fastembed) — provides onnxruntime.dll + providers_cuda.
+       AND with `ort`/fastembed) - provides onnxruntime.dll + providers_cuda.
     2. The CUDA 12 + cuDNN 9 runtime DLLs (via pip nvidia-* wheels) that the
        provider dlopens at runtime.
 
@@ -40,7 +40,7 @@ $work = Join-Path $repo "data\cuda-setup"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
 $bin = Join-Path $rel "scribe.exe"
-if (-not (Test-Path $bin)) { throw "real binary not found at $bin — build it first (launch-local.ps1 -Real)" }
+if (-not (Test-Path $bin)) { throw "real binary not found at $bin - build it first (launch-local.ps1 -Real)" }
 if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { Write-Warning "nvidia-smi not found; is the NVIDIA driver installed?" }
 
 Write-Host "== Scribe GPU setup ==" -ForegroundColor Cyan

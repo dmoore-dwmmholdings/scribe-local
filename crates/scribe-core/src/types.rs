@@ -70,6 +70,13 @@ pub struct Recording {
     pub audio_format: Option<String>,
     pub sample_rate: Option<i32>,
     pub storage_key: Option<String>,
+    /// Free-form organization tags (Postgres `text[]`), normalized lowercase.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Bookmark timestamps (millisecond offsets into the audio) captured when the
+    /// user tapped "Mark" while recording. Postgres `integer[]`; empty by default.
+    #[serde(default)]
+    pub marks: Vec<i32>,
 }
 
 /// One chunked-upload piece (`segments` table).
@@ -337,6 +344,9 @@ pub struct Summary {
     pub topics: serde_json::Value,
     pub decisions: serde_json::Value,
     pub model: Option<String>,
+    /// Summary template id that framed this summary (`general`, `interview`, …).
+    /// `None` for summaries written before templates existed.
+    pub template: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

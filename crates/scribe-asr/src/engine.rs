@@ -110,12 +110,17 @@ impl SpeechEngine {
         use crate::real::{SherpaDiarizer, SherpaEmbedder, SherpaTranscriber};
         use scribe_core::Error;
 
-        let asr_paths = AsrModelPaths::discover(models_dir)
+        // `[asr].model` containing "whisper" selects the Whisper layout even when
+        // transducer files are also present (otherwise transducer is preferred).
+        let prefer_whisper = cfg.model.to_lowercase().contains("whisper");
+        let asr_paths = AsrModelPaths::discover_preferring(models_dir, prefer_whisper)
             .ok_or_else(|| Error::Model("ASR model files not found in models_dir".into()))?;
         let transcriber: Arc<dyn Transcriber> = Arc::new(SherpaTranscriber::load(
             asr_paths,
             &cfg.device,
             DEFAULT_NUM_THREADS,
+            cfg.hotwords_file.as_deref(),
+            cfg.hotwords_score,
         )?);
 
         let diar_paths = DiarizationModelPaths::discover(models_dir).ok_or_else(|| {

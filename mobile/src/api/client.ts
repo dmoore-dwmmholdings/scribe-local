@@ -30,11 +30,17 @@ import type {
   NameSpeakerRequest,
   NameSpeakerResponse,
   RecordingDetailResponse,
+  ReprocessResponse,
+  ResummarizeResponse,
   RollbackResponse,
   SearchResponse,
+  SetTagsResponse,
+  SummaryTemplatesResponse,
+  TranslateResponse,
   UpdateInfoResponse,
   UpdateResponse,
   UploadSegmentResponse,
+  Utterance,
 } from '../types';
 import { useSettingsStore } from '../state/settingsStore';
 
@@ -157,6 +163,27 @@ export const api = {
   },
 
   // -------------------------------------------------------------------------
+  // Summary templates
+  // -------------------------------------------------------------------------
+
+  /** GET /summary-templates — the selectable summary templates. */
+  summaryTemplates(): Promise<SummaryTemplatesResponse> {
+    return apiFetch<SummaryTemplatesResponse>('/summary-templates');
+  },
+
+  /**
+   * POST /recordings/{id}/summarize — (re)generate the summary with a template.
+   * Enqueues a summarize job; poll GET /recordings/{id} until `summary.template`
+   * reflects the requested template.
+   */
+  resummarize(id: string, template: string): Promise<ResummarizeResponse> {
+    return apiFetch<ResummarizeResponse>(`/recordings/${id}/summarize`, {
+      method: 'POST',
+      body: JSON.stringify({ template }),
+    });
+  },
+
+  // -------------------------------------------------------------------------
   // Segment upload
   // -------------------------------------------------------------------------
 
@@ -217,6 +244,53 @@ export const api = {
     return response.json() as Promise<UploadSegmentResponse>;
   },
 
+  /**
+   * Import an existing audio file as a single segment (seq 0) of a recording,
+   * for transcription of audio not captured in-app (voice memos, prior
+   * recordings, other apps' exports).
+   *
+   * Uses expo-file-system's binary upload so the file streams from disk — large
+   * imports don't get buffered into memory like the blob-based `uploadSegment`.
+   * The server's segment route has its body limit disabled, so size is bounded
+   * only by storage/time. `ext` is the file's extension (mp3/m4a/wav/…) so the
+   * server's ffmpeg transcode picks the right demuxer.
+   */
+  async importAudioSegment(params: {
+    recordingId: string;
+    fileUri: string;
+    ext: string;
+    contentType: string;
+    durationMs?: number;
+  }): Promise<UploadSegmentResponse> {
+    const { baseUrl, deviceKey } = useSettingsStore.getState();
+    if (!baseUrl) {
+      throw new Error('Scribe server URL is not configured. Go to Settings.');
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${deviceKey}`,
+      'Content-Type': params.contentType,
+      'X-Segment-Start-Ms': '0',
+    };
+    if (params.durationMs != null) {
+      headers['X-Segment-Duration-Ms'] = String(params.durationMs);
+    }
+
+    const path = `/recordings/${params.recordingId}/segments/0?ext=${encodeURIComponent(params.ext)}`;
+    const task = FileSystem.createUploadTask(url(baseUrl, path), params.fileUri, {
+      httpMethod: 'PUT',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers,
+    });
+
+    const result = await task.uploadAsync();
+    if (!result) throw new Error('Upload returned no response');
+    if (result.status < 200 || result.status >= 300) {
+      throw new ApiError(result.status, result.body || 'Upload failed', path);
+    }
+    return JSON.parse(result.body) as UploadSegmentResponse;
+  },
+
   // -------------------------------------------------------------------------
   // Speakers
   // -------------------------------------------------------------------------
@@ -233,6 +307,43 @@ export const api = {
         body: JSON.stringify(req),
       },
     );
+  },
+
+  // -------------------------------------------------------------------------
+  // Tags & transcript editing
+  // -------------------------------------------------------------------------
+
+  /** PUT /recordings/{id}/tags — replace the recording's tag set. */
+  setTags(id: string, tags: string[]): Promise<SetTagsResponse> {
+    return apiFetch<SetTagsResponse>(`/recordings/${id}/tags`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
+    });
+  },
+
+  /** PATCH /recordings/{id}/utterances/{utteranceId} — correct an utterance's text. */
+  editUtterance(recordingId: string, utteranceId: number, text: string): Promise<Utterance> {
+    return apiFetch<Utterance>(`/recordings/${recordingId}/utterances/${utteranceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ text }),
+    });
+  },
+
+  /**
+   * POST /recordings/{id}/reprocess — re-run the whole pipeline on an existing
+   * recording (transcription/diarization/summary). Useful to recover recordings
+   * processed before a fix. Poll GET /recordings/{id} until status is `ready`.
+   */
+  reprocess(id: string): Promise<ReprocessResponse> {
+    return apiFetch<ReprocessResponse>(`/recordings/${id}/reprocess`, { method: 'POST' });
+  },
+
+  /** POST /recordings/{id}/translate — translate the summary into `lang` (LLM). */
+  translate(id: string, lang: string): Promise<TranslateResponse> {
+    return apiFetch<TranslateResponse>(`/recordings/${id}/translate`, {
+      method: 'POST',
+      body: JSON.stringify({ lang }),
+    });
   },
 
   // -------------------------------------------------------------------------

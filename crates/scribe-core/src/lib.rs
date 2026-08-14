@@ -15,6 +15,7 @@
 pub mod config;
 pub mod error;
 pub mod storage;
+pub mod summary_template;
 pub mod types;
 
 pub use error::{Error, Result};

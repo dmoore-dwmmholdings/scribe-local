@@ -24,6 +24,8 @@ devices.toml
 *.key
 release.key*
 scribe-*.tar.gz
+# Packaged server bundle produced by scripts/package-release.ps1.
+/dist
 
 # Node / Expo (mobile)
 mobile/node_modules

@@ -88,6 +88,16 @@ pub struct AsrConfig {
     /// The filler words removed when `remove_fillers` is on (matched
     /// case-insensitively, surrounding punctuation ignored).
     pub filler_words: Vec<String>,
+    /// Optional hotwords file (one phrase per line) that biases recognition
+    /// toward known names / domain terms — the targeted fix for the ASR
+    /// mis-hearing proper nouns. When set, decoding switches to
+    /// `modified_beam_search` (required for hotwords to take effect on the
+    /// transducer). Leave unset to keep the default greedy decode unchanged.
+    /// Transducer (Parakeet) models only — ignored by Whisper.
+    pub hotwords_file: Option<String>,
+    /// Boost applied to hotwords (typical range 1.5–3.0; higher = stronger bias
+    /// but more risk of false positives). Only used when `hotwords_file` is set.
+    pub hotwords_score: f32,
 }
 
 /// Default non-lexical fillers stripped from transcripts. Deliberately
@@ -148,10 +158,19 @@ pub struct LlmConfig {
     /// Model used for summaries / Q&A. For LM Studio this is the loaded model's
     /// identifier (as shown in LM Studio / `GET /v1/models`).
     pub summarize_model: String,
+    /// Summary template id used by the automatic pipeline run (`general`,
+    /// `standup`, `interview`, `one_on_one`, `lecture`, `sales`). A recording can
+    /// be re-summarized with a different template via the API. Unknown/empty
+    /// falls back to `general`.
+    pub summary_template: String,
     /// Embedding model id (dimension is a schema commitment — design §9).
     pub embed_model: String,
     /// Embedding dimension; must match the `chunks.embedding` column width.
     pub embed_dim: usize,
+    /// Run a best-effort LLM pass over the merged transcript to fix
+    /// misrecognised names / proper nouns. Degrades gracefully (keeps the raw
+    /// text) if the LLM is unreachable or returns anything unexpected.
+    pub correct_transcript: bool,
 }
 
 /// How `serve` restarts itself into a freshly-installed binary (design: §5
@@ -274,6 +293,8 @@ impl Default for AsrConfig {
             device: "cpu".to_string(),
             remove_fillers: true,
             filler_words: default_filler_words(),
+            hotwords_file: None,
+            hotwords_score: 2.0,
         }
     }
 }
@@ -298,8 +319,10 @@ impl Default for LlmConfig {
             base_url: "http://127.0.0.1:11434".to_string(),
             api_key: None,
             summarize_model: "gemma3:27b".to_string(),
+            summary_template: "general".to_string(),
             embed_model: "nomic-embed-text".to_string(),
             embed_dim: 768,
+            correct_transcript: true,
         }
     }
 }

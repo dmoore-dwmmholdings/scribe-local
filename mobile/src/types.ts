@@ -26,6 +26,16 @@ export interface Recording {
   audio_format: string | null;
   sample_rate: number | null;
   storage_key: string | null;
+  /** Free-form organization tags. Optional: absent on older backends. */
+  tags?: string[];
+  /** Bookmarked moments (ms offsets) captured during recording. */
+  marks?: number[];
+}
+
+/** Response from `PUT /recordings/{id}/tags`. */
+export interface SetTagsResponse {
+  id: string;
+  tags: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +117,26 @@ export interface Summary {
   action_items: string[] | null;
   topics: string[] | null;
   decisions: string[] | null;
+  /** Which summary template produced this (null for legacy/auto rows). */
+  template?: string | null;
+}
+
+/** A selectable summary template (`GET /summary-templates`). */
+export interface SummaryTemplate {
+  id: string;
+  label: string;
+}
+
+/** Response from `GET /summary-templates`. */
+export interface SummaryTemplatesResponse {
+  templates: SummaryTemplate[];
+}
+
+/** Response from `POST /recordings/{id}/summarize`. */
+export interface ResummarizeResponse {
+  id: string;
+  template: string;
+  status: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +198,8 @@ export interface UploadSegmentResponse {
 /** Body for `POST /recordings/{id}/complete`. */
 export interface CompleteRecordingRequest {
   duration_ms?: number;
+  /** Bookmarked moments (ms offsets) captured during recording. */
+  marks?: number[];
 }
 
 /** Response from `POST /recordings/{id}/complete`. */
@@ -186,7 +218,22 @@ export interface RecordingDetailResponse {
   recording: Recording;
   speakers: RecordingSpeaker[];
   utterances: Utterance[];
-  summary: Summary | null;
+  /** Legacy single summary (older backends). Prefer `summaries`. */
+  summary?: Summary | null;
+  /** All generated summary views, one per template (newer backends). */
+  summaries?: Summary[];
+}
+
+/** Response from `POST /recordings/{id}/reprocess`. */
+export interface ReprocessResponse {
+  id: string;
+  status: string;
+}
+
+/** Response from `POST /recordings/{id}/translate`. */
+export interface TranslateResponse {
+  lang: string;
+  text: string;
 }
 
 /** Response from `GET /health`. */
@@ -260,6 +307,8 @@ export interface AppSettings {
   audioQuality: 'low' | 'medium' | 'high'; // maps to bitrate
   defaultParticipants: number;
   updateToken: string; // Admin bearer token for /admin/* endpoints
+  /** Disable the animated ember orb (diagnostic / battery / motion-sensitivity). */
+  reduceMotion: boolean;
 }
 
 // ---------------------------------------------------------------------------
