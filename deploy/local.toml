@@ -36,10 +36,12 @@ require_device_token = false
 [asr]
 model       = "whisper-large-v3-turbo"
 diarization = true
-# CPU: the GPU's VRAM is occupied by LM Studio (~15 GB used), so Whisper-large
-# runs on CPU here. Switch back to "cuda" if you free GPU memory (e.g. unload /
-# shrink the LM Studio model). Affects ASR + diarization + speaker embedding.
-device      = "cpu"
+# CUDA: LM Studio now leaves ~7.6 GB of the 16 GB free, which fits Whisper-large
+# turbo. Drop back to "cpu" if a bigger LLM fills the card again and the encoder
+# fails to load. Affects ASR + diarization + speaker embedding.
+# NOTE: a clean `cargo build` re-copies the CPU-only onnxruntime.dll, so re-run
+# scripts/setup-gpu.ps1 after one or this silently falls back to CPU.
+device      = "cuda"
 # Strip non-lexical fillers (uh, um, …) from transcripts. Override the list with
 # filler_words = ["uh","um","like",...] — defaults cover common hesitation sounds.
 remove_fillers = true
