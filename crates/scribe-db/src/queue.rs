@@ -265,6 +265,22 @@ impl Db {
         Ok(affected)
     }
 
+    /// Every job belonging to `recording_id`, oldest first.
+    ///
+    /// Used to report pipeline progress to the client: stages are enqueued
+    /// lazily (each one's successors only appear once it finishes), so the
+    /// caller must treat an absent kind as "not started yet" rather than
+    /// assuming the full DAG is present.
+    pub async fn list_jobs_by_recording(&self, recording_id: Uuid) -> Result<Vec<Job>> {
+        let sql = format!("SELECT {COLS} FROM jobs WHERE recording_id = $1 ORDER BY id");
+        let rows = sqlx::query(&sql)
+            .bind(recording_id)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_err)?;
+        rows.iter().map(job_from_row).collect()
+    }
+
     /// Fetch a job by id (mostly for tests / observability).
     pub async fn get_job(&self, job_id: i64) -> Result<Option<Job>> {
         let sql = format!("SELECT {COLS} FROM jobs WHERE id = $1");

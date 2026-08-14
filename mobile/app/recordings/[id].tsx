@@ -33,6 +33,7 @@ import type {
 } from '../../src/types';
 import { Screen } from '../../src/components/ui';
 import { PlaybackWave } from '../../src/components/PlaybackWave';
+import { PipelineProgressCard } from '../../src/components/PipelineProgress';
 import { colors, mono, radius, speakerColor } from '../../src/theme';
 import { log } from '../../src/util/logger';
 import { buildExport, type ExportFormat } from '../../src/util/export';
@@ -848,18 +849,24 @@ export default function RecordingDetailScreen() {
       />
 
       <ScrollView contentContainerStyle={styles.content}>
-        {/* Status banner */}
-        {status !== 'ready' && (
-          <View style={styles.statusBanner}>
-            <Text style={styles.statusBannerText}>
-              {status === 'uploading'
-                ? 'Recording — transcribing live; speaker labels are assigned when you stop.'
-                : status === 'processing'
-                  ? 'Finalizing transcript and speaker labels…'
-                  : 'Processing failed. Check server logs.'}
-            </Text>
-          </View>
-        )}
+        {/* Status banner. Prefer the per-stage checklist when the server sends
+            one — on a long recording a single "processing…" line is
+            indistinguishable from a hang. Older backends omit `progress`, so
+            fall back to the plain line. */}
+        {status !== 'ready' &&
+          (detail?.progress && status !== 'uploading' ? (
+            <PipelineProgressCard progress={detail.progress} />
+          ) : (
+            <View style={styles.statusBanner}>
+              <Text style={styles.statusBannerText}>
+                {status === 'uploading'
+                  ? 'Recording — transcribing live; speaker labels are assigned when you stop.'
+                  : status === 'processing'
+                    ? 'Finalizing transcript and speaker labels…'
+                    : 'Processing failed. Check server logs.'}
+              </Text>
+            </View>
+          ))}
 
         {/* Playback bar */}
         {status === 'ready' && (

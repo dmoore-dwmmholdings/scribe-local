@@ -15,8 +15,9 @@ use uuid::Uuid;
 
 use scribe_core::storage;
 use scribe_core::summary_template;
+use chrono::{DateTime, Utc};
 use scribe_core::types::{
-    JobKind, Recording, RecordingSpeaker, RecordingStatus, Summary, Utterance,
+    Job, JobKind, JobState, Recording, RecordingSpeaker, RecordingStatus, Summary, Utterance,
 };
 use scribe_core::Error;
 use scribe_llm::ChatMessage;
@@ -112,6 +113,100 @@ pub struct RecordingDetail {
     /// Every generated summary view — one per template — each carrying its
     /// `template`. Empty until the first summarize runs (Feature C).
     pub summaries: Vec<Summary>,
+    /// Per-stage pipeline progress, so the client can show what is actually
+    /// happening instead of an opaque "processing". `None` once the recording
+    /// is `ready` and for recordings that never entered the pipeline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<PipelineProgress>,
+}
+
+/// The `complete`-time DAG in display order. `TranscribeSegment` is deliberately
+/// absent: it is a side-channel live-transcription job, not a pipeline stage,
+/// and showing it would make an import look like it runs ASR twice.
+const PIPELINE_STAGES: [JobKind; 6] = [
+    JobKind::Transcode,
+    JobKind::Diarize,
+    JobKind::Transcribe,
+    JobKind::Merge,
+    JobKind::Embed,
+    JobKind::Summarize,
+];
+
+/// One stage of the pipeline as reported to the client.
+#[derive(Debug, Serialize)]
+pub struct StageProgress {
+    pub kind: JobKind,
+    /// `queued` / `running` / `done` / `failed`, or `pending` when the stage has
+    /// not been enqueued yet (its predecessors are still running).
+    pub state: String,
+    /// When a worker claimed it — lets the client show elapsed time on the
+    /// stage that is currently running.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+    pub attempts: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Pipeline progress for a recording that is still being processed.
+#[derive(Debug, Serialize)]
+pub struct PipelineProgress {
+    pub stages: Vec<StageProgress>,
+    /// The stage currently running, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<JobKind>,
+    pub completed: usize,
+    pub total: usize,
+}
+
+/// Fold this recording's jobs into a fixed six-stage checklist.
+///
+/// Stages are enqueued lazily, so a kind missing from `jobs` has simply not
+/// started yet — it is reported as `pending` rather than omitted, which keeps
+/// the client's list a stable length instead of one that grows as work starts.
+fn build_progress(jobs: &[Job]) -> PipelineProgress {
+    let stages: Vec<StageProgress> = PIPELINE_STAGES
+        .iter()
+        .map(|kind| {
+            // Last job wins: a retried or reprocessed stage has several rows.
+            match jobs.iter().filter(|j| j.kind == *kind).next_back() {
+                Some(job) => StageProgress {
+                    kind: *kind,
+                    state: job.state.as_str().to_string(),
+                    started_at: job.locked_at,
+                    finished_at: match job.state {
+                        JobState::Done | JobState::Failed => Some(job.updated_at),
+                        _ => None,
+                    },
+                    attempts: job.attempts,
+                    error: job.error.clone(),
+                },
+                None => StageProgress {
+                    kind: *kind,
+                    state: "pending".to_string(),
+                    started_at: None,
+                    finished_at: None,
+                    attempts: 0,
+                    error: None,
+                },
+            }
+        })
+        .collect();
+
+    let completed = stages.iter().filter(|s| s.state == "done").count();
+    let current = stages
+        .iter()
+        .find(|s| s.state == "running")
+        .map(|s| s.kind);
+
+    PipelineProgress {
+        stages,
+        current,
+        completed,
+        total: PIPELINE_STAGES.len(),
+    }
 }
 
 /// `GET /recordings/{id}` → recording + diarized speakers + transcript +
@@ -124,11 +219,23 @@ pub async fn get_recording(
     let speakers = state.db.list_recording_speakers(id).await?;
     let utterances = state.db.list_utterances_by_recording(id).await?;
     let summaries = state.db.list_summaries_by_recording(id).await?;
+
+    // Only meaningful while work is outstanding; a `ready` recording would just
+    // report six done stages on every poll.
+    let progress = match recording.status {
+        RecordingStatus::Processing | RecordingStatus::Failed => {
+            let jobs = state.db.list_jobs_by_recording(id).await?;
+            Some(build_progress(&jobs))
+        }
+        _ => None,
+    };
+
     Ok(Json(RecordingDetail {
         recording,
         speakers,
         utterances,
         summaries,
+        progress,
     }))
 }
 
@@ -470,5 +577,99 @@ fn json_strings(value: &serde_json::Value) -> Vec<String> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(kind: JobKind, state: JobState) -> Job {
+        let now = Utc::now();
+        Job {
+            id: 1,
+            recording_id: None,
+            kind,
+            state,
+            priority: 0,
+            attempts: 0,
+            run_after: now,
+            locked_by: None,
+            locked_at: None,
+            payload: serde_json::Value::Null,
+            error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Stages are enqueued lazily, so early in a run most kinds have no row at
+    /// all. They must still appear, as `pending`, or the client's checklist
+    /// would grow from one item to six as work progresses.
+    #[test]
+    fn stages_not_yet_enqueued_are_reported_as_pending() {
+        let jobs = vec![
+            job(JobKind::Transcode, JobState::Done),
+            job(JobKind::Diarize, JobState::Running),
+        ];
+
+        let p = build_progress(&jobs);
+
+        assert_eq!(p.total, 6);
+        assert_eq!(p.stages.len(), 6);
+        assert_eq!(p.completed, 1);
+        assert_eq!(p.current, Some(JobKind::Diarize));
+        let by_kind = |k: JobKind| {
+            p.stages.iter().find(|s| s.kind == k).unwrap().state.clone()
+        };
+        assert_eq!(by_kind(JobKind::Transcode), "done");
+        assert_eq!(by_kind(JobKind::Diarize), "running");
+        assert_eq!(by_kind(JobKind::Merge), "pending");
+        assert_eq!(by_kind(JobKind::Summarize), "pending");
+    }
+
+    /// A reprocess leaves several rows for the same kind; the newest one is the
+    /// live state, so an old `done` row must not mask a fresh `running` one.
+    #[test]
+    fn latest_job_per_kind_wins() {
+        let mut old = job(JobKind::Transcribe, JobState::Done);
+        old.id = 1;
+        let mut new = job(JobKind::Transcribe, JobState::Running);
+        new.id = 2;
+
+        let p = build_progress(&[old, new]);
+
+        let stage = p.stages.iter().find(|s| s.kind == JobKind::Transcribe).unwrap();
+        assert_eq!(stage.state, "running");
+        assert_eq!(p.current, Some(JobKind::Transcribe));
+        assert_eq!(p.completed, 0);
+    }
+
+    /// The live side-channel job is not a pipeline stage and must never appear
+    /// in the checklist — otherwise an import looks like it transcribes twice.
+    #[test]
+    fn transcribe_segment_is_excluded() {
+        let jobs = vec![job(JobKind::TranscribeSegment, JobState::Done)];
+
+        let p = build_progress(&jobs);
+
+        assert_eq!(p.stages.len(), 6);
+        assert!(p.stages.iter().all(|s| s.kind != JobKind::TranscribeSegment));
+        assert_eq!(p.completed, 0);
+    }
+
+    /// A failed stage surfaces its error so the client can show why, rather
+    /// than a bare "processing failed".
+    #[test]
+    fn failed_stage_carries_its_error() {
+        let mut failed = job(JobKind::Diarize, JobState::Failed);
+        failed.error = Some("model load failed".to_string());
+
+        let p = build_progress(&[job(JobKind::Transcode, JobState::Done), failed]);
+
+        let stage = p.stages.iter().find(|s| s.kind == JobKind::Diarize).unwrap();
+        assert_eq!(stage.state, "failed");
+        assert_eq!(stage.error.as_deref(), Some("model load failed"));
+        assert_eq!(p.current, None);
     }
 }

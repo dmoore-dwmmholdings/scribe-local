@@ -222,6 +222,40 @@ export interface RecordingDetailResponse {
   summary?: Summary | null;
   /** All generated summary views, one per template (newer backends). */
   summaries?: Summary[];
+  /** Per-stage pipeline progress while processing (newer backends only). */
+  progress?: PipelineProgress;
+}
+
+/** A pipeline stage the server reports while a recording is processing. */
+export type StageKind =
+  | 'transcode'
+  | 'diarize'
+  | 'transcribe'
+  | 'merge'
+  | 'embed'
+  | 'summarize';
+
+/**
+ * `pending` means the stage has not been enqueued yet — stages are enqueued
+ * lazily as their predecessors finish, so this is normal, not an error.
+ */
+export type StageState = 'pending' | 'queued' | 'running' | 'done' | 'failed';
+
+export interface StageProgress {
+  kind: StageKind;
+  state: StageState;
+  /** When a worker claimed the stage — the basis for the elapsed timer. */
+  started_at?: string;
+  finished_at?: string;
+  attempts: number;
+  error?: string;
+}
+
+export interface PipelineProgress {
+  stages: StageProgress[];
+  current?: StageKind;
+  completed: number;
+  total: number;
 }
 
 /** Response from `POST /recordings/{id}/reprocess`. */
