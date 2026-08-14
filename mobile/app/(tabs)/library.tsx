@@ -66,6 +66,12 @@ function mimeForExt(ext: string): string {
       return 'audio/flac';
     case 'webm':
       return 'audio/webm';
+    case 'mov':
+      return 'video/quicktime';
+    case 'mkv':
+      return 'video/x-matroska';
+    case 'm4v':
+      return 'video/x-m4v';
     default:
       return 'application/octet-stream';
   }
@@ -177,8 +183,11 @@ export default function LibraryScreen() {
       return;
     }
     try {
+      // Video containers too: meeting recordings from Zoom/Teams/Meet arrive as
+      // .mp4/.mov, and the server's transcode stage pulls the audio track out
+      // with ffmpeg just the same.
       const picked = await DocumentPicker.getDocumentAsync({
-        type: 'audio/*',
+        type: ['audio/*', 'video/*'],
         copyToCacheDirectory: true,
         multiple: false,
       });
@@ -261,7 +270,7 @@ export default function LibraryScreen() {
               {importing ? (
                 <ActivityIndicator size="small" color={colors.accent} />
               ) : (
-                <Text style={styles.importLinkText}>or import an audio file</Text>
+                <Text style={styles.importLinkText}>or import an audio or video file</Text>
               )}
             </TouchableOpacity>
           )}
@@ -279,7 +288,7 @@ export default function LibraryScreen() {
             <TouchableOpacity
               onPress={handleImport}
               disabled={importing}
-              accessibilityLabel="Import audio file"
+              accessibilityLabel="Import an audio or video file"
               style={styles.importBtn}
             >
               {importing ? (
