@@ -120,11 +120,18 @@ impl SherpaTranscriber {
             .get_result()
             .ok_or_else(|| Error::Model("OfflineRecognizer produced no result".into()))?;
 
+        // Clip length, so the no-timestamp fallback can spread words across it.
+        let clip_ms = if sample_rate > 0 {
+            (samples.len() as i64 * 1000) / sample_rate as i64
+        } else {
+            0
+        };
         let mut words = build_words(
             &result.text,
             &result.tokens,
             &result.timestamps,
             &result.durations,
+            clip_ms,
         );
         if offset_ms != 0 {
             for w in &mut words {
@@ -198,36 +205,21 @@ fn path_str(p: &Path) -> Result<String> {
 /// mark word boundaries by a leading space (`▁` / a real space) on the token
 /// that starts a new word; we group tokens into words on that boundary. When
 /// token-level timing is unavailable we fall back to whitespace-splitting the
-/// flat text and spreading timings evenly.
+/// flat text and spreading timings evenly over `clip_ms`.
 fn build_words(
     text: &str,
     tokens: &[String],
     timestamps: &Option<Vec<f32>>,
     durations: &Option<Vec<f32>>,
+    clip_ms: i64,
 ) -> Vec<AsrWord> {
-    // Fast path: no token timing → split text, no timings.
+    // Fast path: no token timing → split text and spread evenly.
     let Some(ts) = timestamps.as_ref() else {
-        return text
-            .split_whitespace()
-            .map(|w| AsrWord {
-                text: w.to_string(),
-                start_ms: 0,
-                end_ms: 0,
-                conf: 1.0,
-            })
-            .collect();
+        return spread_evenly(text, clip_ms);
     };
     if tokens.is_empty() || tokens.len() != ts.len() {
         // Misaligned token/timestamp arrays — don't trust them.
-        return text
-            .split_whitespace()
-            .map(|w| AsrWord {
-                text: w.to_string(),
-                start_ms: 0,
-                end_ms: 0,
-                conf: 1.0,
-            })
-            .collect();
+        return spread_evenly(text, clip_ms);
     }
 
     let sec_to_ms = |s: f32| (s as f64 * 1000.0).round() as i64;
@@ -301,4 +293,83 @@ fn build_words(
     }
 
     words
+}
+
+/// Whitespace-split `text` and spread the words evenly over `clip_ms`.
+///
+/// Used when the model gives no usable token timing — notably sherpa's Whisper
+/// models, which return tokens without parallel timestamps. Zeroing the timings
+/// instead would strand every word at `[0, 0]`, which makes the merge stage find
+/// no overlap with the diarization turns (so no utterance ever gets a speaker)
+/// and collapses the whole recording into a single unseekable block. Evenly
+/// spread timings are approximate but keep speaker assignment and playback
+/// seeking working.
+fn spread_evenly(text: &str, clip_ms: i64) -> Vec<AsrWord> {
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    let n = parts.len() as i64;
+    let step = if n > 0 { clip_ms.max(0) / n } else { 0 };
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let s = step * i as i64;
+            AsrWord {
+                text: (*w).to_string(),
+                start_ms: s,
+                // Last word absorbs any rounding remainder up to the clip end.
+                end_ms: if i as i64 == n - 1 { clip_ms.max(s) } else { s + step },
+                conf: 1.0,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// sherpa's Whisper models return tokens with no parallel timestamps. The
+    /// fallback must still produce advancing word timings spanning the clip:
+    /// zeroed timings strand every word at [0, 0], which leaves the merge stage
+    /// with no overlap against the diarization turns and collapses the whole
+    /// recording into one unseekable block.
+    #[test]
+    fn missing_timestamps_spread_words_across_the_clip() {
+        let words = build_words("one two three four", &[], &None, &None, 4_000);
+
+        assert_eq!(words.len(), 4);
+        assert_eq!(words[0].start_ms, 0);
+        // Strictly advancing — never all-zero.
+        for pair in words.windows(2) {
+            assert!(
+                pair[1].start_ms > pair[0].start_ms,
+                "word timings must advance: {:?}",
+                words.iter().map(|w| w.start_ms).collect::<Vec<_>>()
+            );
+        }
+        // The last word runs to the end of the clip.
+        assert_eq!(words.last().unwrap().end_ms, 4_000);
+    }
+
+    /// Token/timestamp arrays of differing lengths are untrustworthy, so that
+    /// path takes the same evenly-spread fallback rather than trusting them.
+    #[test]
+    fn misaligned_timestamps_fall_back_to_spreading() {
+        let tokens = vec!["▁one".to_string(), "▁two".to_string()];
+        let ts = Some(vec![0.0f32]); // deliberately shorter than `tokens`
+        let words = build_words("one two", &tokens, &ts, &None, 2_000);
+
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].start_ms, 0);
+        assert_eq!(words[1].start_ms, 1_000);
+        assert_eq!(words[1].end_ms, 2_000);
+    }
+
+    /// A zero-length clip must not panic or produce negative timings.
+    #[test]
+    fn zero_length_clip_is_safe() {
+        let words = build_words("hello world", &[], &None, &None, 0);
+        assert_eq!(words.len(), 2);
+        assert!(words.iter().all(|w| w.start_ms == 0 && w.end_ms == 0));
+    }
 }
