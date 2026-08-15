@@ -19,8 +19,19 @@ use crate::models::DiarizationModelPaths;
 use crate::types::{Diarization, Diarizer, SpeakerTurn};
 use crate::wav::{self, WavData};
 
-/// Cosine-similarity threshold used when the speaker count is unknown.
+/// Cosine-similarity threshold used when the speaker count is unknown. Also
+/// reused to re-identify a speaker across windows in the chunked path.
 const CLUSTER_THRESHOLD: f32 = 0.5;
+
+/// Diarize at most this much audio in one `process` call.
+///
+/// sherpa's diarization holds the whole clip's segments and embeddings in
+/// native memory and overruns its stack on very long input — a 2h49m recording
+/// aborted the worker with `0xc0000409` (STATUS_STACK_BUFFER_OVERRUN) after
+/// ~40 minutes of work. Ten minutes is comfortably inside the range that has
+/// run reliably, and is still long enough for clustering to separate voices
+/// within a window; identity is then carried across windows by embedding.
+const DIARIZE_WINDOW_MS: i64 = 10 * 60 * 1000;
 
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
@@ -86,7 +97,20 @@ impl SherpaDiarizer {
 impl Diarizer for SherpaDiarizer {
     fn diarize(&self, wav_path: &Path, expected_speakers: Option<i32>) -> Result<Diarization> {
         let audio = wav::read_wav(wav_path)?;
-        let diarizer = self.build_diarizer(expected_speakers)?;
+        let sr = audio.sample_rate;
+        let window = ((DIARIZE_WINDOW_MS * sr as i64) / 1000) as usize;
+
+        if window == 0 || audio.samples.len() <= window {
+            return self.diarize_whole(&audio, expected_speakers);
+        }
+        self.diarize_chunked(&audio, expected_speakers, window)
+    }
+}
+
+impl SherpaDiarizer {
+    /// Single-pass diarization — the whole clip goes to sherpa at once.
+    fn diarize_whole(&self, audio: &WavData, expected: Option<i32>) -> Result<Diarization> {
+        let diarizer = self.build_diarizer(expected)?;
 
         let result = diarizer
             .process(&audio.samples)
@@ -110,7 +134,8 @@ impl Diarizer for SherpaDiarizer {
         // re-extract an embedding over each speaker's concatenated segment audio
         // and average. This reuses the same embedding model the clusterer used.
         let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
-        let embeddings = compute_speaker_embeddings(&extractor, &audio, &turns)?;
+        let embeddings =
+            compute_speaker_embeddings(&extractor, &audio.samples, audio.sample_rate, &turns)?;
 
         let num_speakers = if result.num_speakers() > 0 {
             result.num_speakers() as usize
@@ -124,6 +149,153 @@ impl Diarizer for SherpaDiarizer {
             num_speakers,
         })
     }
+
+    /// Diarize a long recording one window at a time, stitching the per-window
+    /// speaker sets back together by voice similarity.
+    ///
+    /// Handing sherpa a multi-hour clip in one `process` call overruns its stack
+    /// and aborts the process (Windows `0xc0000409`), so long audio has to be
+    /// windowed. Each window is clustered independently, which means window 2's
+    /// "speaker 0" is unrelated to window 1's, so we re-identify speakers across
+    /// windows with the same cosine test the clusterer itself uses: a window
+    /// speaker joins the global speaker whose running mean embedding it matches,
+    /// or becomes a new one.
+    fn diarize_chunked(
+        &self,
+        audio: &WavData,
+        expected: Option<i32>,
+        window: usize,
+    ) -> Result<Diarization> {
+        let diarizer = self.build_diarizer(expected)?;
+        let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
+        let sr = audio.sample_rate;
+
+        let mut turns: Vec<SpeakerTurn> = Vec::new();
+        // Running mean embedding per global speaker, with the number of window
+        // speakers folded into it so later merges stay weighted correctly.
+        let mut centroids: Vec<(Vec<f32>, usize)> = Vec::new();
+
+        let mut start = 0usize;
+        while start < audio.samples.len() {
+            let end = (start + window).min(audio.samples.len());
+            let offset_ms = (start as i64 * 1000) / sr as i64;
+            let slice = &audio.samples[start..end];
+
+            // A window with no speech yields no result; that is not an error.
+            let Some(result) = diarizer.process(slice) else {
+                tracing::debug!(offset_ms, "diarize: window produced no segments");
+                start = end;
+                continue;
+            };
+
+            let mut local_turns: Vec<SpeakerTurn> = result
+                .sort_by_start_time()
+                .iter()
+                .map(|seg| SpeakerTurn {
+                    local_idx: seg.speaker,
+                    start_ms: (seg.start as f64 * 1000.0).round() as i64,
+                    end_ms: (seg.end as f64 * 1000.0).round() as i64,
+                })
+                .collect();
+            if local_turns.is_empty() {
+                start = end;
+                continue;
+            }
+
+            let local_embs = compute_speaker_embeddings(&extractor, slice, sr, &local_turns)?;
+
+            // Resolve every window speaker to a global one before rewriting the
+            // turns, so two window speakers can't collapse onto each other.
+            let mut local_ids: Vec<i32> = local_turns.iter().map(|t| t.local_idx).collect();
+            local_ids.sort_unstable();
+            local_ids.dedup();
+
+            let mut mapping: HashMap<i32, i32> = HashMap::new();
+            for local_id in local_ids {
+                // No embedding (turns too short to extract one) → it cannot be
+                // matched now or later, so give it its own global speaker.
+                let emb = local_embs.get(&local_id).cloned().unwrap_or_default();
+                let global = assign_global_speaker(&mut centroids, &emb);
+                mapping.insert(local_id, global);
+            }
+
+            for turn in &mut local_turns {
+                let global = mapping.get(&turn.local_idx).copied().unwrap_or(turn.local_idx);
+                turns.push(SpeakerTurn {
+                    local_idx: global,
+                    start_ms: turn.start_ms + offset_ms,
+                    end_ms: turn.end_ms + offset_ms,
+                });
+            }
+
+            start = end;
+        }
+
+        turns.sort_by_key(|t| (t.start_ms, t.end_ms));
+
+        let mut embeddings = HashMap::new();
+        for (idx, (centroid, _)) in centroids.iter().enumerate() {
+            if centroid.iter().any(|x| *x != 0.0) {
+                embeddings.insert(idx as i32, centroid.clone());
+            }
+        }
+
+        let num_speakers = centroids.len();
+        tracing::info!(
+            windows = audio.samples.len().div_ceil(window),
+            speakers = num_speakers,
+            turns = turns.len(),
+            "diarize: chunked long recording"
+        );
+
+        Ok(Diarization {
+            turns,
+            embeddings,
+            num_speakers,
+        })
+    }
+}
+
+/// Match `emb` to an existing global speaker or append a new one, returning its
+/// index. On a match the global centroid absorbs `emb` as a weighted mean, so a
+/// speaker's identity sharpens as more windows contribute to it.
+fn assign_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) -> i32 {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, (centroid, _)) in centroids.iter().enumerate() {
+        let sim = cosine(centroid, emb);
+        if sim >= CLUSTER_THRESHOLD && best.map(|(_, b)| sim > b).unwrap_or(true) {
+            best = Some((i, sim));
+        }
+    }
+
+    if let Some((i, _)) = best {
+        let (centroid, count) = &mut centroids[i];
+        let n = *count as f32;
+        for (c, e) in centroid.iter_mut().zip(emb.iter()) {
+            *c = (*c * n + *e) / (n + 1.0);
+        }
+        l2_normalize(centroid);
+        *count += 1;
+        return i as i32;
+    }
+
+    centroids.push((emb.to_vec(), 1));
+    (centroids.len() - 1) as i32
+}
+
+/// Cosine similarity. Returns 0 for empty/zero vectors, so a speaker with no
+/// usable embedding never matches anything.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na <= f32::EPSILON || nb <= f32::EPSILON {
+        return 0.0;
+    }
+    dot / (na * nb)
 }
 
 /// Build a standalone embedding extractor from the diarization embedding model.
@@ -144,27 +316,31 @@ fn build_extractor(
 
 /// Compute one mean embedding per speaker by extracting an embedding over the
 /// audio of each of that speaker's turns and averaging (then L2-normalizing).
+///
+/// `turns` are relative to `samples`, so this works equally on a whole file or
+/// on one window of a chunked run.
 fn compute_speaker_embeddings(
     extractor: &SpeakerEmbeddingExtractor,
-    audio: &WavData,
+    samples: &[f32],
+    sample_rate: u32,
     turns: &[SpeakerTurn],
 ) -> Result<HashMap<i32, Vec<f32>>> {
-    let sr = audio.sample_rate as i64;
+    let sr = sample_rate as i64;
     let mut acc: HashMap<i32, (Vec<f32>, usize)> = HashMap::new();
 
     for turn in turns {
         let start = ((turn.start_ms.max(0) * sr) / 1000) as usize;
         let end = (((turn.end_ms.max(turn.start_ms)) * sr) / 1000) as usize;
-        let end = end.min(audio.samples.len());
+        let end = end.min(samples.len());
         if end <= start {
             continue;
         }
-        let slice = &audio.samples[start..end];
+        let slice = &samples[start..end];
 
         let Some(stream) = extractor.create_stream() else {
             continue;
         };
-        stream.accept_waveform(audio.sample_rate as i32, slice);
+        stream.accept_waveform(sample_rate as i32, slice);
         stream.input_finished();
         if !extractor.is_ready(&stream) {
             continue;
@@ -220,4 +396,81 @@ fn path_str(p: &Path) -> Result<String> {
     p.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| Error::Model(format!("non-UTF-8 model path: {}", p.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit(v: &[f32]) -> Vec<f32> {
+        let mut v = v.to_vec();
+        l2_normalize(&mut v);
+        v
+    }
+
+    /// The same voice appearing in a later window must resolve to the speaker
+    /// it already established, not to a new one — otherwise a two-person call
+    /// split over six windows would report a dozen speakers.
+    #[test]
+    fn a_returning_voice_rejoins_its_global_speaker() {
+        let mut centroids = Vec::new();
+        let alice = unit(&[1.0, 0.0, 0.0]);
+        let bob = unit(&[0.0, 1.0, 0.0]);
+
+        assert_eq!(assign_global_speaker(&mut centroids, &alice), 0);
+        assert_eq!(assign_global_speaker(&mut centroids, &bob), 1);
+
+        // Window 2: Alice again, slightly different but well within threshold.
+        let alice_again = unit(&[0.96, 0.28, 0.0]);
+        assert_eq!(assign_global_speaker(&mut centroids, &alice_again), 0);
+        assert_eq!(centroids.len(), 2, "must not invent a third speaker");
+    }
+
+    /// A genuinely different voice must not be folded into an existing speaker.
+    #[test]
+    fn a_new_voice_becomes_a_new_speaker() {
+        let mut centroids = Vec::new();
+        assign_global_speaker(&mut centroids, &unit(&[1.0, 0.0, 0.0]));
+
+        let orthogonal = unit(&[0.0, 0.0, 1.0]);
+        assert_eq!(assign_global_speaker(&mut centroids, &orthogonal), 1);
+        assert_eq!(centroids.len(), 2);
+    }
+
+    /// When several existing speakers are above threshold, the closest wins.
+    ///
+    /// The two seed voices must be mutually *below* threshold or they would
+    /// (correctly) merge into one speaker before the probe is ever tested.
+    #[test]
+    fn matching_picks_the_closest_speaker() {
+        let mut centroids = Vec::new();
+        assert_eq!(assign_global_speaker(&mut centroids, &unit(&[1.0, 0.0, 0.0])), 0);
+        assert_eq!(assign_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), 1);
+
+        // cos 0.8 with speaker 0 and 0.6 with speaker 1 — both clear 0.5, so
+        // the tie must be broken by similarity rather than by iteration order.
+        let probe = unit(&[0.8, 0.6, 0.0]);
+        assert_eq!(assign_global_speaker(&mut centroids, &probe), 0);
+        assert_eq!(centroids.len(), 2);
+    }
+
+    /// A window speaker whose turns were too short to embed has an empty vector.
+    /// It must get its own speaker rather than silently joining speaker 0.
+    #[test]
+    fn an_unembeddable_speaker_never_matches() {
+        let mut centroids = Vec::new();
+        assign_global_speaker(&mut centroids, &unit(&[1.0, 0.0, 0.0]));
+
+        assert_eq!(assign_global_speaker(&mut centroids, &[]), 1);
+        // And the zero-length centroid must not swallow a later real voice.
+        assert_eq!(assign_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), 2);
+    }
+
+    #[test]
+    fn cosine_is_zero_for_degenerate_input() {
+        assert_eq!(cosine(&[], &[]), 0.0);
+        assert_eq!(cosine(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
+        assert_eq!(cosine(&[1.0, 0.0], &[1.0]), 0.0, "length mismatch");
+        assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
+    }
 }
