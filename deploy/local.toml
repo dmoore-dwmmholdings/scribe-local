@@ -34,7 +34,17 @@ require_device_token = false
 # device_keys = "./deploy/devices.toml"
 
 [asr]
-model       = "whisper-large-v3-turbo"
+# Names a subdirectory of `{models_dir}/asr`, so several models stay installed
+# and you switch by editing this line + restarting the worker (no rebuild).
+# Installed:
+#   parakeet-tdt-0.6b-v3   transducer, ~640 MB. One decode pass at any length,
+#                          real word timestamps, supports hotword biasing.
+#   whisper-large-v3-turbo ~3.1 GB. Decodes in 30s windows; sherpa returns no
+#                          token timestamps for it, so word timings are
+#                          approximated by spreading them across the clip.
+# The layout (transducer vs whisper) is detected from the files present, not
+# from this name — a transducer is the one with a joiner.
+model       = "parakeet-tdt-0.6b-v3"
 diarization = true
 # CUDA: LM Studio now leaves ~7.6 GB of the 16 GB free, which fits Whisper-large
 # turbo. Drop back to "cpu" if a bigger LLM fills the card again and the encoder

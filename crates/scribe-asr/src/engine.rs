@@ -58,7 +58,7 @@ impl SpeechEngine {
     pub fn load(models_dir: &Path, cfg: &AsrConfig) -> Result<SpeechEngine> {
         #[cfg(feature = "onnx")]
         {
-            if crate::models::real_models_present(models_dir, cfg.diarization) {
+            if crate::models::real_models_present(models_dir, &cfg.model, cfg.diarization) {
                 match Self::load_real(models_dir, cfg) {
                     Ok(engine) => {
                         tracing::info!(
@@ -110,11 +110,22 @@ impl SpeechEngine {
         use crate::real::{SherpaDiarizer, SherpaEmbedder, SherpaTranscriber};
         use scribe_core::Error;
 
-        // `[asr].model` containing "whisper" selects the Whisper layout even when
-        // transducer files are also present (otherwise transducer is preferred).
-        let prefer_whisper = cfg.model.to_lowercase().contains("whisper");
-        let asr_paths = AsrModelPaths::discover_preferring(models_dir, prefer_whisper)
-            .ok_or_else(|| Error::Model("ASR model files not found in models_dir".into()))?;
+        // `[asr].model` names a subdirectory of `{models_dir}/asr` when one
+        // exists, so Whisper and Parakeet can be installed side by side; the
+        // layout itself is detected from the files, not from the name.
+        let asr_paths = AsrModelPaths::discover_for(models_dir, &cfg.model).ok_or_else(|| {
+            Error::Model(format!(
+                "ASR model files for `{}` not found under {}/asr",
+                cfg.model,
+                models_dir.display()
+            ))
+        })?;
+        tracing::info!(
+            model = %cfg.model,
+            layout = asr_paths.layout_name(),
+            dir = %asr_paths.dir().display(),
+            "resolved ASR model"
+        );
         let transcriber: Arc<dyn Transcriber> = Arc::new(SherpaTranscriber::load(
             asr_paths,
             &cfg.device,
