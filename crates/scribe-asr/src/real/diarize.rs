@@ -33,6 +33,15 @@ const CLUSTER_THRESHOLD: f32 = 0.5;
 /// within a window; identity is then carried across windows by embedding.
 const DIARIZE_WINDOW_MS: i64 = 10 * 60 * 1000;
 
+/// Speech a window speaker must have before it may found a *new* global speaker.
+///
+/// Matching an existing speaker has no such floor — a recognised voice counts
+/// however briefly it speaks. This only stops sub-second noise bursts from
+/// inventing participants. The cost is that someone whose entire contribution to
+/// a window is under this gets folded into the nearest speaker; that is the
+/// better error, since the alternative produced 150 phantom participants.
+const MIN_NEW_SPEAKER_MS: i64 = 3_000;
+
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
 pub struct SherpaDiarizer {
@@ -188,7 +197,7 @@ impl SherpaDiarizer {
                 continue;
             };
 
-            let mut local_turns: Vec<SpeakerTurn> = result
+            let local_turns: Vec<SpeakerTurn> = result
                 .sort_by_start_time()
                 .iter()
                 .map(|seg| SpeakerTurn {
@@ -210,18 +219,30 @@ impl SherpaDiarizer {
             local_ids.sort_unstable();
             local_ids.dedup();
 
+            // Total speech per window speaker. Clustering inside a window splits
+            // out brief noise and crosstalk as their own "speakers"; an
+            // embedding taken from a fraction of a second is unreliable, so it
+            // matches nothing and would found a new participant every time. A
+            // 2h49m meeting produced 156 speakers that way — five real voices
+            // and ~150 fragments of well under a second each.
+            let mut speech_ms: HashMap<i32, i64> = HashMap::new();
+            for t in &local_turns {
+                *speech_ms.entry(t.local_idx).or_insert(0) += (t.end_ms - t.start_ms).max(0);
+            }
+
             let mut mapping: HashMap<i32, i32> = HashMap::new();
             for local_id in local_ids {
-                // A speaker with no embedding cannot be matched — its turns were
-                // too short for the extractor. Giving it a global speaker of its
-                // own would invent a phantom participant per fragment (a 2h49m
-                // meeting produced ~150 of them, one to three turns each), so
-                // leave it unmapped and attach its turns by time below.
                 let Some(emb) = local_embs.get(&local_id) else {
                     continue;
                 };
-                let global = assign_global_speaker(&mut centroids, emb);
-                mapping.insert(local_id, global);
+                if let Some(global) = match_global_speaker(&mut centroids, emb) {
+                    // Recognised: join that speaker however brief this turn was.
+                    mapping.insert(local_id, global);
+                } else if speech_ms.get(&local_id).copied().unwrap_or(0) >= MIN_NEW_SPEAKER_MS {
+                    mapping.insert(local_id, push_global_speaker(&mut centroids, emb));
+                }
+                // Otherwise: unrecognised *and* too brief to be a new
+                // participant — attributed to the nearest speaker below.
             }
 
             // Nothing in this window could be identified — drop it rather than
@@ -298,9 +319,18 @@ fn nearest_mapped_speaker(
 }
 
 /// Match `emb` to an existing global speaker or append a new one, returning its
-/// index. On a match the global centroid absorbs `emb` as a weighted mean, so a
-/// speaker's identity sharpens as more windows contribute to it.
+/// index.
 fn assign_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) -> i32 {
+    match match_global_speaker(centroids, emb) {
+        Some(i) => i,
+        None => push_global_speaker(centroids, emb),
+    }
+}
+
+/// Find the global speaker `emb` belongs to, if any. On a match the centroid
+/// absorbs `emb` as a weighted mean, so an identity sharpens as more windows
+/// contribute to it.
+fn match_global_speaker(centroids: &mut [(Vec<f32>, usize)], emb: &[f32]) -> Option<i32> {
     let mut best: Option<(usize, f32)> = None;
     for (i, (centroid, _)) in centroids.iter().enumerate() {
         let sim = cosine(centroid, emb);
@@ -309,17 +339,19 @@ fn assign_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) ->
         }
     }
 
-    if let Some((i, _)) = best {
-        let (centroid, count) = &mut centroids[i];
-        let n = *count as f32;
-        for (c, e) in centroid.iter_mut().zip(emb.iter()) {
-            *c = (*c * n + *e) / (n + 1.0);
-        }
-        l2_normalize(centroid);
-        *count += 1;
-        return i as i32;
+    let (i, _) = best?;
+    let (centroid, count) = &mut centroids[i];
+    let n = *count as f32;
+    for (c, e) in centroid.iter_mut().zip(emb.iter()) {
+        *c = (*c * n + *e) / (n + 1.0);
     }
+    l2_normalize(centroid);
+    *count += 1;
+    Some(i as i32)
+}
 
+/// Append `emb` as a brand-new global speaker.
+fn push_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) -> i32 {
     centroids.push((emb.to_vec(), 1));
     (centroids.len() - 1) as i32
 }
@@ -534,6 +566,49 @@ mod tests {
         // A fragment adjacent to the later turn resolves to global 4 instead.
         let late = turn(9, 29_000, 29_200);
         assert_eq!(nearest_mapped_speaker(&turns, &mapping, &late), 4);
+    }
+
+    /// `match_global_speaker` must not create anything — the duration gate in
+    /// the chunked path depends on being able to test for a match separately
+    /// from committing to a new speaker.
+    #[test]
+    fn matching_alone_never_creates_a_speaker() {
+        let mut centroids = vec![(unit(&[1.0, 0.0, 0.0]), 1)];
+
+        // An unrecognised voice reports no match and leaves the set untouched.
+        assert_eq!(match_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), None);
+        assert_eq!(centroids.len(), 1);
+
+        // A recognised one matches, still without growing the set.
+        assert_eq!(match_global_speaker(&mut centroids, &unit(&[0.99, 0.14, 0.0])), Some(0));
+        assert_eq!(centroids.len(), 1);
+    }
+
+    /// The duration gate: a brief unrecognised burst is below the floor and must
+    /// not found a participant, while a substantial one must.
+    #[test]
+    fn only_substantial_speech_founds_a_new_speaker() {
+        let brief = MIN_NEW_SPEAKER_MS - 1;
+        let substantial = MIN_NEW_SPEAKER_MS;
+
+        assert!(brief < MIN_NEW_SPEAKER_MS, "guard: brief is under the floor");
+        assert!(substantial >= MIN_NEW_SPEAKER_MS, "guard: substantial clears it");
+
+        // Mirrors the chunked path's decision for an unrecognised speaker.
+        let mut centroids = vec![(unit(&[1.0, 0.0, 0.0]), 1)];
+        let stranger = unit(&[0.0, 1.0, 0.0]);
+
+        if match_global_speaker(&mut centroids, &stranger).is_none() && brief >= MIN_NEW_SPEAKER_MS {
+            push_global_speaker(&mut centroids, &stranger);
+        }
+        assert_eq!(centroids.len(), 1, "a brief burst must not add a speaker");
+
+        if match_global_speaker(&mut centroids, &stranger).is_none()
+            && substantial >= MIN_NEW_SPEAKER_MS
+        {
+            push_global_speaker(&mut centroids, &stranger);
+        }
+        assert_eq!(centroids.len(), 2, "substantial speech must add one");
     }
 
     #[test]

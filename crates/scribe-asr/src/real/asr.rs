@@ -21,12 +21,21 @@ const WHISPER_WINDOW_MS: i64 = 28_000;
 
 /// Longest clip handed to a transducer in one `accept_waveform` call.
 ///
-/// Transducers decode arbitrary length *algorithmically*, but sherpa still
-/// buffers the whole clip natively: a 2h49m recording aborted the worker with
-/// `0xc0000409` (STATUS_STACK_BUFFER_OVERRUN) the moment transcription started.
-/// This window exists purely as a native-stability guard, so it is far larger
-/// than Whisper's — which is a hard model constraint, not a safety margin.
-const TRANSDUCER_WINDOW_MS: i64 = 10 * 60 * 1000;
+/// Transducers decode arbitrary length *algorithmically*, but the exported ONNX
+/// graph does not: Parakeet TDT 0.6b v3 carries a fixed-size self-attention mask
+/// of 2500 encoder frames. At 8× subsampling of 10 ms frames (80 ms per encoder
+/// frame) that is exactly 200 seconds of audio. Exceed it and the encoder aborts
+/// the process mid-run — ONNX Runtime raises a C++ exception that unwinds into
+/// Rust, which cannot catch foreign exceptions:
+///
+/// ```text
+/// '/layers.0/self_attn/Add_2': right operand cannot broadcast on dim 3
+/// LeftShape: {1,8,7500,7500}, RightShape: {1,8,7500,2500}
+/// fatal runtime error: Rust cannot catch foreign exceptions, aborting
+/// ```
+///
+/// 150 s (1875 frames) leaves clear headroom under the 2500-frame ceiling.
+const TRANSDUCER_WINDOW_MS: i64 = 150_000;
 
 /// Wraps an `OfflineRecognizer` configured for the discovered ASR model.
 pub struct SherpaTranscriber {
