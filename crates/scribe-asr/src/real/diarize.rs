@@ -212,15 +212,34 @@ impl SherpaDiarizer {
 
             let mut mapping: HashMap<i32, i32> = HashMap::new();
             for local_id in local_ids {
-                // No embedding (turns too short to extract one) → it cannot be
-                // matched now or later, so give it its own global speaker.
-                let emb = local_embs.get(&local_id).cloned().unwrap_or_default();
-                let global = assign_global_speaker(&mut centroids, &emb);
+                // A speaker with no embedding cannot be matched — its turns were
+                // too short for the extractor. Giving it a global speaker of its
+                // own would invent a phantom participant per fragment (a 2h49m
+                // meeting produced ~150 of them, one to three turns each), so
+                // leave it unmapped and attach its turns by time below.
+                let Some(emb) = local_embs.get(&local_id) else {
+                    continue;
+                };
+                let global = assign_global_speaker(&mut centroids, emb);
                 mapping.insert(local_id, global);
             }
 
-            for turn in &mut local_turns {
-                let global = mapping.get(&turn.local_idx).copied().unwrap_or(turn.local_idx);
+            // Nothing in this window could be identified — drop it rather than
+            // attribute speech to an arbitrary speaker.
+            if mapping.is_empty() {
+                tracing::debug!(offset_ms, "diarize: no identifiable speaker in window");
+                start = end;
+                continue;
+            }
+
+            for turn in &local_turns {
+                let global = match mapping.get(&turn.local_idx) {
+                    Some(g) => *g,
+                    // Unidentifiable fragment: attribute it to whoever holds the
+                    // nearest identified turn in this window, which is far more
+                    // likely to be right than a brand-new speaker.
+                    None => nearest_mapped_speaker(&local_turns, &mapping, turn),
+                };
                 turns.push(SpeakerTurn {
                     local_idx: global,
                     start_ms: turn.start_ms + offset_ms,
@@ -254,6 +273,28 @@ impl SherpaDiarizer {
             num_speakers,
         })
     }
+}
+
+/// Global speaker of the identified turn closest in time to `turn`.
+///
+/// Distance is measured between turn midpoints, so a fragment sitting inside a
+/// long turn attaches to that turn's speaker. Callers must only invoke this when
+/// `mapping` is non-empty.
+fn nearest_mapped_speaker(
+    turns: &[SpeakerTurn],
+    mapping: &HashMap<i32, i32>,
+    turn: &SpeakerTurn,
+) -> i32 {
+    let mid = |t: &SpeakerTurn| (t.start_ms + t.end_ms) / 2;
+    let target = mid(turn);
+    turns
+        .iter()
+        .filter_map(|t| mapping.get(&t.local_idx).map(|g| ((mid(t) - target).abs(), *g)))
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, g)| g)
+        // Unreachable while `mapping` is non-empty; fall back to the first
+        // known speaker rather than fabricating an index.
+        .unwrap_or_else(|| mapping.values().copied().min().unwrap_or(0))
 }
 
 /// Match `emb` to an existing global speaker or append a new one, returning its
@@ -454,8 +495,9 @@ mod tests {
         assert_eq!(centroids.len(), 2);
     }
 
-    /// A window speaker whose turns were too short to embed has an empty vector.
-    /// It must get its own speaker rather than silently joining speaker 0.
+    /// An empty embedding must never be *matched* to an existing speaker.
+    /// (The chunked path no longer feeds these in — it routes them through
+    /// `nearest_mapped_speaker` — but the guard must hold regardless.)
     #[test]
     fn an_unembeddable_speaker_never_matches() {
         let mut centroids = Vec::new();
@@ -464,6 +506,34 @@ mod tests {
         assert_eq!(assign_global_speaker(&mut centroids, &[]), 1);
         // And the zero-length centroid must not swallow a later real voice.
         assert_eq!(assign_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), 2);
+    }
+
+    fn turn(local_idx: i32, start_ms: i64, end_ms: i64) -> SpeakerTurn {
+        SpeakerTurn {
+            local_idx,
+            start_ms,
+            end_ms,
+        }
+    }
+
+    /// A fragment too short to embed is attributed to the nearest identified
+    /// speaker instead of becoming a phantom participant. Before this, a long
+    /// meeting reported ~150 speakers that each spoke once.
+    #[test]
+    fn unidentifiable_fragment_takes_the_nearest_speaker() {
+        let turns = vec![
+            turn(0, 0, 10_000),      // identified -> global 7
+            turn(9, 10_100, 10_300), // fragment, no embedding
+            turn(1, 20_000, 30_000), // identified -> global 4
+        ];
+        let mapping = HashMap::from([(0, 7), (1, 4)]);
+
+        // Sits just after speaker 0's turn, so it belongs to global 7.
+        assert_eq!(nearest_mapped_speaker(&turns, &mapping, &turns[1]), 7);
+
+        // A fragment adjacent to the later turn resolves to global 4 instead.
+        let late = turn(9, 29_000, 29_200);
+        assert_eq!(nearest_mapped_speaker(&turns, &mapping, &late), 4);
     }
 
     #[test]

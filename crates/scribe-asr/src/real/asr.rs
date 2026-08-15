@@ -19,13 +19,22 @@ use crate::wav;
 /// leaves headroom so the encoder never truncates a window.
 const WHISPER_WINDOW_MS: i64 = 28_000;
 
+/// Longest clip handed to a transducer in one `accept_waveform` call.
+///
+/// Transducers decode arbitrary length *algorithmically*, but sherpa still
+/// buffers the whole clip natively: a 2h49m recording aborted the worker with
+/// `0xc0000409` (STATUS_STACK_BUFFER_OVERRUN) the moment transcription started.
+/// This window exists purely as a native-stability guard, so it is far larger
+/// than Whisper's — which is a hard model constraint, not a safety margin.
+const TRANSDUCER_WINDOW_MS: i64 = 10 * 60 * 1000;
+
 /// Wraps an `OfflineRecognizer` configured for the discovered ASR model.
 pub struct SherpaTranscriber {
     recognizer: OfflineRecognizer,
-    /// Transcribe long audio in <30s chunks (true for Whisper, whose offline
-    /// encoder is limited to a 30s window). Transducer models decode arbitrary
-    /// length in one pass, so this stays false for them.
-    chunk_long_audio: bool,
+    /// Longest clip fed to sherpa in one call. Whisper's is a hard model
+    /// constraint (its encoder only sees 30s); a transducer's is a much larger
+    /// guard against sherpa's native buffering blowing up on multi-hour audio.
+    max_clip_ms: i64,
 }
 
 impl SherpaTranscriber {
@@ -48,8 +57,8 @@ impl SherpaTranscriber {
             ..Default::default()
         };
 
-        // Whisper needs windowed transcription for clips > 30s; transducers don't.
-        let mut chunk_long_audio = false;
+        // Every layout is windowed; only the window size differs.
+        let mut max_clip_ms = TRANSDUCER_WINDOW_MS;
 
         match paths {
             AsrModelPaths::Transducer {
@@ -78,7 +87,7 @@ impl SherpaTranscriber {
                     enable_token_timestamps: true,
                     ..Default::default()
                 };
-                chunk_long_audio = true;
+                max_clip_ms = WHISPER_WINDOW_MS;
             }
         }
 
@@ -105,7 +114,7 @@ impl SherpaTranscriber {
 
         Ok(SherpaTranscriber {
             recognizer,
-            chunk_long_audio,
+            max_clip_ms,
         })
     }
 
@@ -152,15 +161,17 @@ impl Transcriber for SherpaTranscriber {
         let audio = wav::read_wav(wav_path)?;
         let sr = audio.sample_rate;
 
-        // Single-pass for transducers and for clips that fit one Whisper window.
-        let window = ((WHISPER_WINDOW_MS * sr as i64) / 1000) as usize;
-        if !self.chunk_long_audio || window == 0 || audio.samples.len() <= window {
+        // Single pass whenever the clip already fits the model's window.
+        let window = ((self.max_clip_ms * sr as i64) / 1000) as usize;
+        if window == 0 || audio.samples.len() <= window {
             return self.decode_clip(sr, &audio.samples, 0);
         }
 
-        // Whisper + long audio: transcribe in <30s windows, offsetting each
-        // window's word timings onto the global timeline, then concatenate.
-        // Without this, Whisper transcribes only the first 30s of the recording.
+        // Long audio: decode a window at a time, offsetting each window's word
+        // timings onto the global timeline, then concatenate. Whisper needs this
+        // for correctness (it would otherwise transcribe only the first 30s);
+        // transducers need it so sherpa doesn't abort on a multi-hour buffer.
+        // A window boundary can split a word, which is the accepted cost.
         let mut text = String::new();
         let mut words: Vec<AsrWord> = Vec::new();
         let mut start = 0usize;
