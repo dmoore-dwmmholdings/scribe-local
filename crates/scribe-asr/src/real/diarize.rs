@@ -320,6 +320,12 @@ fn nearest_mapped_speaker(
 
 /// Match `emb` to an existing global speaker or append a new one, returning its
 /// index.
+///
+/// The chunked path deliberately no longer calls this: it needs to test for a
+/// match *without* committing to a new speaker, so that an unrecognised voice
+/// can be held to [`MIN_NEW_SPEAKER_MS`] first. Kept for tests, which cover the
+/// match-or-create behaviour that `match_global_speaker` still implements.
+#[cfg(test)]
 fn assign_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) -> i32 {
     match match_global_speaker(centroids, emb) {
         Some(i) => i,
