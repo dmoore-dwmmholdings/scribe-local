@@ -26,6 +26,11 @@ import { api } from '../api/client';
 import { useRecordingsStore } from '../state/recordingsStore';
 import { useSettingsStore } from '../state/settingsStore';
 import { log } from '../util/logger';
+import {
+  startLiveActivity,
+  updateLiveActivity,
+  endLiveActivity,
+} from '../../modules/scribe-live-activity';
 import type { Recording } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +69,8 @@ export class RecordingSession {
   private _tickTimer: ReturnType<typeof setInterval> | null = null;
   /** Bookmarked moments (ms into the captured audio). */
   private _marks: number[] = [];
+  /** Segments confirmed uploaded — surfaced on the Live Activity. */
+  private _uploadedCount = 0;
 
   private recorder: SegmentedRecorder = new SegmentedRecorder({
     onSegmentReady: (seg) => this._handleSegmentReady(seg),
@@ -149,12 +156,28 @@ export class RecordingSession {
 
       this._setState('recording');
       this._startTick();
+
+      // Fire-and-forget: the Live Activity is decoration around recording and
+      // must never be able to fail the capture that already started.
+      void startLiveActivity(options.title ?? 'Recording', this._startTimeMs).then((started) =>
+        log('rec', `live activity ${started ? 'started' : 'unavailable'}`),
+      );
     } catch (err) {
       this._setState('error');
       const error = err instanceof Error ? err : new Error(String(err));
       this._emit({ type: 'error', error });
       throw error;
     }
+  }
+
+  /** Push current progress to the Live Activity. Never throws. */
+  private _syncLiveActivity(): void {
+    void updateLiveActivity({
+      startedAtMs: this._startTimeMs,
+      pausedMs: this.recorder.pausedMs,
+      isPaused: this._state === 'paused',
+      segmentsUploaded: this._uploadedCount,
+    });
   }
 
   /** Stop capturing and finalise the recording on the server. */
@@ -194,6 +217,7 @@ export class RecordingSession {
       }
     }
 
+    void endLiveActivity();
     this._setState('done');
   }
 
@@ -204,6 +228,7 @@ export class RecordingSession {
       await this.recorder.pause();
       this._stopTick();
       this._setState('paused');
+      this._syncLiveActivity();
       this._emit({ type: 'tick', elapsedMs: this.recorder.elapsedMs });
     } catch (err) {
       this._handleError(err instanceof Error ? err : new Error(String(err)));
@@ -217,6 +242,7 @@ export class RecordingSession {
       await this.recorder.resume();
       this._setState('recording');
       this._startTick();
+      this._syncLiveActivity();
     } catch (err) {
       this._handleError(err instanceof Error ? err : new Error(String(err)));
     }
@@ -252,7 +278,12 @@ export class RecordingSession {
         durationMs: seg.durationMs,
       })
       .then(() => {
+        this._uploadedCount += 1;
         this._emit({ type: 'segment', seq: seg.seq, uploaded: true });
+        // Segment boundaries are the only moments worth an ActivityKit update:
+        // elapsed time renders itself, so this is the one fact the Lock Screen
+        // cannot derive on its own.
+        this._syncLiveActivity();
       })
       .catch((err) => {
         console.warn('[RecordingSession] enqueue failed:', err);
@@ -263,6 +294,9 @@ export class RecordingSession {
     log('rec', 'ERROR', error);
     this._setState('error');
     this._stopTick();
+    // Otherwise a dead "recording" pill stays on the Lock Screen with nothing
+    // behind it, which reads as though capture is still running.
+    void endLiveActivity();
     this._emit({ type: 'error', error });
   }
 

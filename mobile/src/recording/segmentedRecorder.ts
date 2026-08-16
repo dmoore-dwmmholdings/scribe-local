@@ -147,6 +147,16 @@ export class SegmentedRecorder {
     return this._paused;
   }
 
+  /**
+   * Total wall-clock ms excluded from the audio timeline because of pauses,
+   * including any pause currently in progress. The Live Activity needs this to
+   * offset its self-counting timer.
+   */
+  get pausedMs(): number {
+    if (!this._running) return 0;
+    return this._pausedAccumMs + (this._paused ? Date.now() - this._pauseStartMs : 0);
+  }
+
   /** Elapsed milliseconds of captured audio (frozen while paused). */
   get elapsedMs(): number {
     if (!this._running) return 0;

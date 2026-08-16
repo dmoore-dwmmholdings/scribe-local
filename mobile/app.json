@@ -20,8 +20,10 @@
           "audio"
         ],
         "NSMicrophoneUsageDescription": "Scribe records meetings; microphone access is required.",
-        "NSSpeechRecognitionUsageDescription": "Scribe transcribes meetings locally."
-      }
+        "NSSpeechRecognitionUsageDescription": "Scribe transcribes meetings locally.",
+        "NSSupportsLiveActivities": true
+      },
+      "appleTeamId": "H2JKUP2Q7Z"
     },
     "android": {
       "adaptiveIcon": {
@@ -43,7 +45,8 @@
         {}
       ],
       "expo-font",
-      "expo-asset"
+      "expo-asset",
+      "@bacons/apple-targets"
     ],
     "experiments": {
       "typedRoutes": true
