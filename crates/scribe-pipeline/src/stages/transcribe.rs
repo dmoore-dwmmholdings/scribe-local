@@ -33,9 +33,13 @@ pub async fn run(
         ));
     }
 
-    let transcript = speech
-        .transcriber()
-        .transcribe(&wav)
+    // On a blocking thread: see the note in the diarize stage — a long native
+    // call on a runtime thread stops the timers the heartbeat runs on.
+    let transcriber = speech.transcriber_handle();
+    let wav_owned = wav.clone();
+    let transcript = tokio::task::spawn_blocking(move || transcriber.transcribe(&wav_owned))
+        .await
+        .map_err(|e| stage_err(STAGE, format!("transcribe task failed: {e}")))?
         .map_err(|e| stage_err(STAGE, e))?;
 
     // Map ASR words → core `Word` (no speaker yet; `local_idx` is None).

@@ -24,6 +24,24 @@ use crate::Db;
 const COLS: &str = "id, recording_id, kind, state, priority, attempts, run_after, \
                     locked_by, locked_at, payload, error, created_at, updated_at";
 
+/// Recorded against a job whose worker stopped renewing its lease.
+///
+/// Distinct from a stage error on purpose: a stage that returns `Err` reports
+/// what went wrong, while this is what is left when the worker never got to
+/// report anything at all.
+pub const LEASE_EXPIRED: &str =
+    "worker lease expired: the worker stopped renewing it (crashed, killed, or lost the database)";
+
+/// A job the reaper took back from a worker that stopped renewing its lease.
+#[derive(Debug, Clone)]
+pub struct ReapedJob {
+    pub id: i64,
+    pub recording_id: Option<Uuid>,
+    /// True when this reap used the last attempt, so the job is now `failed`
+    /// rather than queued for another try.
+    pub exhausted: bool,
+}
+
 impl Db {
     /// Enqueue a job for `recording_id`/`kind`.
     ///
@@ -210,22 +228,51 @@ impl Db {
     }
 
     /// Requeue `running` jobs whose `locked_at` is older than `older_than`
-    /// (a worker died mid-job). Returns the number of jobs reaped. The requeue
-    /// fires the NOTIFY trigger so another worker picks them up immediately.
-    pub async fn reap_stuck(&self, older_than: Duration) -> Result<u64> {
+    /// (a worker died mid-job). The requeue fires the NOTIFY trigger so another
+    /// worker picks them up immediately.
+    ///
+    /// **The reap counts as an attempt.** A stage that returns `Err` is counted
+    /// by [`Db::fail`], but a stage that takes the whole worker process down
+    /// never reaches that code — and a native abort does exactly this, since a
+    /// C++ exception from onnxruntime cannot be caught in Rust. Without counting
+    /// the reap, such a job is immortal: every worker that claims it dies, the
+    /// reaper hands it to the next one, `attempts` stays at 0, and the job
+    /// starves every other job in the queue for as long as anyone keeps
+    /// restarting the worker. Counting the reap gives that loop the same
+    /// `max_attempts` bound every other failure has.
+    ///
+    /// Returns one [`ReapedJob`] per job taken back, flagged with whether this
+    /// reap was its last attempt.
+    pub async fn reap_stuck(&self, older_than: Duration, max_attempts: i32) -> Result<Vec<ReapedJob>> {
         let secs = older_than.as_secs_f64();
-        let affected = sqlx::query(
-            "UPDATE jobs SET state = 'queued', locked_by = NULL, locked_at = NULL \
+        let rows = sqlx::query(
+            "UPDATE jobs SET \
+               attempts  = attempts + 1, \
+               state     = CASE WHEN attempts + 1 >= $2 THEN 'failed' ELSE 'queued' END, \
+               error     = $3, \
+               locked_by = NULL, \
+               locked_at = NULL \
              WHERE state = 'running' \
                AND locked_at IS NOT NULL \
-               AND locked_at < now() - make_interval(secs => $1)",
+               AND locked_at < now() - make_interval(secs => $1) \
+             RETURNING id, recording_id, state = 'failed' AS exhausted",
         )
         .bind(secs)
-        .execute(self.pool())
+        .bind(max_attempts)
+        .bind(LEASE_EXPIRED)
+        .fetch_all(self.pool())
         .await
-        .map_err(db_err)?
-        .rows_affected();
-        Ok(affected)
+        .map_err(db_err)?;
+
+        rows.iter()
+            .map(|r| {
+                Ok(ReapedJob {
+                    id: r.try_get("id").map_err(db_err)?,
+                    recording_id: r.try_get("recording_id").map_err(db_err)?,
+                    exhausted: r.try_get("exhausted").map_err(db_err)?,
+                })
+            })
+            .collect()
     }
 
     /// True if every predecessor stage of `kind` (per [`JobKind::predecessors`])

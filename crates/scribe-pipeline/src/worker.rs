@@ -253,17 +253,47 @@ async fn enqueue_successors(db: &Db, kind: JobKind, recording_id: Uuid) -> Resul
 
 /// Spawn the reaper: every heartbeat interval, requeue jobs whose lease is older
 /// than 3× the heartbeat (a worker that died mid-job — design §7).
+///
+/// A reap counts as an attempt, so a stage that kills the worker outright rather
+/// than returning an error is bounded by `max_attempts` like any other failure.
+/// When a reap uses the last attempt the job is parked `failed`, and the
+/// recording goes with it — otherwise the recording would sit in its old status
+/// forever, showing the user a stage that nothing is working on.
 fn spawn_reaper(db: Db, cfg: Arc<Config>) {
     let heartbeat = Duration::from_secs(cfg.worker.heartbeat_secs.max(1));
     let lease = heartbeat * 3;
+    let max_attempts = cfg.worker.max_attempts;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(heartbeat);
         loop {
             ticker.tick().await;
-            match db.reap_stuck(lease).await {
-                Ok(n) if n > 0 => tracing::warn!(reaped = n, "requeued stuck jobs"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "reaper scan failed"),
+            let reaped = match db.reap_stuck(lease, max_attempts).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reaper scan failed");
+                    continue;
+                }
+            };
+            if reaped.is_empty() {
+                continue;
+            }
+            tracing::warn!(reaped = reaped.len(), "took back jobs with an expired lease");
+
+            for job in reaped.iter().filter(|j| j.exhausted) {
+                tracing::error!(
+                    job_id = job.id,
+                    recording_id = ?job.recording_id,
+                    "job exhausted its attempts without a worker ever reporting back"
+                );
+                let Some(recording_id) = job.recording_id else {
+                    continue;
+                };
+                if let Err(e) = db
+                    .set_recording_status(recording_id, RecordingStatus::Failed)
+                    .await
+                {
+                    tracing::warn!(error = %e, %recording_id, "could not mark recording failed");
+                }
             }
         }
     });

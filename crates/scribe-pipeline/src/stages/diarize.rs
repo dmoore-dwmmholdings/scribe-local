@@ -39,9 +39,15 @@ pub async fn run(
     let recording = db.get_recording(recording_id).await?;
     let expected = recording.participants_expected;
 
-    let diarization = speech
-        .diarizer()
-        .diarize(&wav, expected)
+    // Off the runtime threads: diarizing a long recording is minutes of native
+    // CPU work, and holding a worker thread that long stops tokio's timers —
+    // which stops the job heartbeat, and the reaper then takes the job back
+    // from a worker that is still busy with it.
+    let diarizer = speech.diarizer_handle();
+    let wav_owned = wav.clone();
+    let diarization = tokio::task::spawn_blocking(move || diarizer.diarize(&wav_owned, expected))
+        .await
+        .map_err(|e| stage_err(STAGE, format!("diarize task failed: {e}")))?
         .map_err(|e| stage_err(STAGE, e))?;
 
     // Persist each speaker's embedding, matching to an enrolled voice if close.
