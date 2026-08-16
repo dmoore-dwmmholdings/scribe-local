@@ -46,6 +46,7 @@ import {
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { log } from '../util/logger';
+import { startBackgroundInterval } from '../../modules/scribe-bg-timer';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,7 +110,15 @@ export class SegmentedRecorder {
   private readonly segmentDurationMs: number;
 
   private activeRecorder: AudioRecorder | null = null;
-  private segmentTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Cancels the rotation interval. This is a native (DispatchSourceTimer)
+   * interval rather than setTimeout: RN's JS timers are CADisplayLink-driven
+   * and stop firing when the screen locks, which stalled rotation — and
+   * therefore upload and transcription — for as long as the phone was locked.
+   */
+  private stopRotationTimer: (() => void) | null = null;
+  /** Guards against a tick arriving while the previous rotation is in flight. */
+  private _rotating = false;
   private seq = 0;
   private _recordingId = '';
   private _startTimeMs = 0;
@@ -183,6 +192,7 @@ export class SegmentedRecorder {
     this._pauseStartMs = 0;
 
     await this._startSegment();
+    this._startRotationTimer();
   }
 
   /**
@@ -217,6 +227,7 @@ export class SegmentedRecorder {
     this._paused = false;
     this._pauseStartMs = 0;
     await this._startSegment();
+    this._startRotationTimer();
   }
 
   /** Stop recording. Closes and emits the final (partial) segment. */
@@ -258,15 +269,6 @@ export class SegmentedRecorder {
       recorder.record();
       this.activeRecorder = recorder;
       log('audio', `startSegment #${this.seq}: recording`);
-
-      // Schedule rotation after the segment duration
-      if (this._running && !this._paused) {
-        this.segmentTimer = setTimeout(() => {
-          this._rotateSegment().catch((err) =>
-            this.onError(err instanceof Error ? err : new Error(String(err))),
-          );
-        }, this.segmentDurationMs);
-      }
     } catch (err) {
       log('audio', 'startSegment FAILED', err);
       // Release the recorder if prepare/record threw after construction —
@@ -364,10 +366,37 @@ export class SegmentedRecorder {
     return uri;
   }
 
+  /**
+   * Start the rotation interval. One interval runs for the whole session
+   * (restarted across pause/resume) rather than a fresh timeout per segment,
+   * so rotation cadence does not drift with per-segment setup cost.
+   */
+  private _startRotationTimer(): void {
+    this._clearTimer();
+    if (!this._running || this._paused) return;
+
+    this.stopRotationTimer = startBackgroundInterval(
+      `scribe-segment-${this._recordingId}`,
+      this.segmentDurationMs,
+      () => {
+        // Ticks keep arriving while a rotation is in flight (rotation does
+        // async native work); skip rather than queue, or a slow rotation
+        // would cascade into overlapping recorders.
+        if (!this._running || this._paused || this._rotating) return;
+        this._rotating = true;
+        this._rotateSegment()
+          .catch((err) => this.onError(err instanceof Error ? err : new Error(String(err))))
+          .finally(() => {
+            this._rotating = false;
+          });
+      },
+    );
+  }
+
   private _clearTimer(): void {
-    if (this.segmentTimer != null) {
-      clearTimeout(this.segmentTimer);
-      this.segmentTimer = null;
+    if (this.stopRotationTimer) {
+      this.stopRotationTimer();
+      this.stopRotationTimer = null;
     }
   }
 
