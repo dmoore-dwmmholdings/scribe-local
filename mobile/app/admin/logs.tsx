@@ -11,6 +11,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Share } from 'react-native';
 import { readLog, clearLog, logFilePath } from '../../src/util/logger';
+import { Screen, ScreenHeader } from '../../src/components/ui';
 import { colors, mono } from '../../src/theme';
 
 export default function LogsScreen() {
@@ -38,7 +39,8 @@ export default function LogsScreen() {
   }, [refresh]);
 
   return (
-    <View style={styles.root}>
+    <Screen>
+      <ScreenHeader title="Diagnostics" />
       <View style={styles.bar}>
         <TouchableOpacity style={styles.btn} onPress={refresh}>
           <Text style={styles.btnText}>Refresh</Text>
@@ -56,7 +58,7 @@ export default function LogsScreen() {
           {text}
         </Text>
       </ScrollView>
-    </View>
+    </Screen>
   );
 }
 

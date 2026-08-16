@@ -235,6 +235,21 @@ export default function SettingsScreen() {
             placeholderTextColor={colors.textDim}
           />
           <Text style={styles.hint}>Pre-fills the Record screen; improves speaker diarisation.</Text>
+
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={styles.linkRow}
+            onPress={() => router.push('/speakers')}
+            accessibilityRole="button"
+          >
+            <View style={styles.toggleText}>
+              <Text style={styles.rowLabel}>Speakers</Text>
+              <Text style={styles.toggleHint}>
+                Names and voiceprints reused across recordings
+              </Text>
+            </View>
+            <Text style={styles.chevron}>›</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Diagnostics */}

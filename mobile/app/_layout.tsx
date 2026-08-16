@@ -39,16 +39,13 @@ export default function RootLayout() {
         }}
       >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        {/* Recording Detail renders its own Kiln header (back chevron + date). */}
+        {/* Every pushed screen renders its own Kiln header (back chevron +
+            title) instead of the native stack header — one back control, in one
+            place, with a hit area we control. */}
         <Stack.Screen name="recordings/[id]" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="admin/update"
-          options={{ title: 'Backend Update', headerBackTitle: 'Settings' }}
-        />
-        <Stack.Screen
-          name="admin/logs"
-          options={{ title: 'Diagnostics', headerBackTitle: 'Settings' }}
-        />
+        <Stack.Screen name="speakers" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/update" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/logs" options={{ headerShown: false }} />
       </Stack>
     </ErrorBoundary>
   );

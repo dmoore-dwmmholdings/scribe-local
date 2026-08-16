@@ -5,8 +5,9 @@
  */
 
 import type { ReactNode } from 'react';
-import { View, Text, StyleSheet, type ViewStyle } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, type ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { colors, mono, radius, statusBadge, statusColor } from '../theme';
 
 export function Screen({
@@ -43,6 +44,48 @@ export function ScreenTitle({
 
 export function MonoCount({ children }: { children: ReactNode }) {
   return <Text style={styles.monoCount}>{children}</Text>;
+}
+
+/**
+ * In-screen header with a back chevron — the same one the Recording Detail
+ * screen uses, so every pushed screen gets an identical, reliably tappable
+ * control instead of the native stack header.
+ *
+ * `onBack` defaults to popping the stack, falling back to the Settings tab when
+ * there is nothing to pop (a deep link straight into this screen).
+ */
+export function ScreenHeader({
+  title,
+  onBack,
+  right,
+}: {
+  title: string;
+  onBack?: () => void;
+  right?: ReactNode;
+}) {
+  const router = useRouter();
+  const goBack = () => {
+    if (onBack) return onBack();
+    if (router.canGoBack()) router.back();
+    else router.replace('/settings');
+  };
+  return (
+    <View style={styles.header}>
+      <TouchableOpacity
+        onPress={goBack}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+        style={styles.backBtn}
+        hitSlop={12}
+      >
+        <Text style={styles.backChevron}>‹</Text>
+      </TouchableOpacity>
+      <Text style={styles.headerTitle} numberOfLines={1}>
+        {title}
+      </Text>
+      {right}
+    </View>
+  );
 }
 
 /** Mono section label, e.g. "SERVER", "TRANSCRIPTION". */
@@ -97,6 +140,30 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontFamily: mono,
     letterSpacing: 0.5,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
+  backBtn: {
+    paddingRight: 6,
+    paddingVertical: 2,
+  },
+  backChevron: {
+    fontSize: 30,
+    fontWeight: '300',
+    color: colors.accent,
+    lineHeight: 32,
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.textPrimary,
   },
 });
 

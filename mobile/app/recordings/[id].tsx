@@ -2,13 +2,22 @@
  * Screen 3: Recording Detail — Kiln transcript + playback.
  *
  * A flowing-ember playback scrubber (PlaybackWave) that shares the orb's DNA,
- * an LLM summary card, and a speaker color-rail transcript (tap a line to play
- * that moment, long-press to name the speaker).  Audio streams from
+ * an LLM summary card, and a speaker color-rail transcript.  Audio streams from
  * GET /recordings/{id}/audio with HTTP Range seeking; bearer auth is sent via
  * the AudioSource headers.
+ *
+ * The transcript is word-addressable: tap any word to play from it, tap the
+ * line elsewhere to play from its start, long-press to edit the text or tag the
+ * speaker.  While audio plays, the spoken word is highlighted and the view
+ * follows along — see src/playback/karaoke.ts for the timing and the store that
+ * keeps that from re-rendering the whole list.
+ *
+ * Moments bookmarked during recording are MARKS (⚑), shown both as jump chips
+ * and on the word that was being spoken when the mark was made.  The word
+ * "highlight" is reserved for the karaoke highlight.
  */
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo, memo } from 'react';
 import {
   View,
   Text,
@@ -20,12 +29,14 @@ import {
   ActivityIndicator,
   Alert,
   Share,
+  FlatList,
 } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
 import { api } from '../../src/api/client';
 import type {
+  NameSpeakerRequest,
   RecordingDetailResponse,
   Utterance,
   RecordingSpeaker,
@@ -34,6 +45,15 @@ import type {
 import { Screen } from '../../src/components/ui';
 import { PlaybackWave } from '../../src/components/PlaybackWave';
 import { PipelineProgressCard } from '../../src/components/PipelineProgress';
+import { SpeakerTagSheet } from '../../src/components/SpeakerTagSheet';
+import {
+  anchorMarks,
+  NOT_SPEAKING,
+  useActiveWordIndex,
+  useKaraoke,
+  type KaraokeStore,
+  type TimedToken,
+} from '../../src/playback/karaoke';
 import { colors, mono, radius, speakerColor } from '../../src/theme';
 import { log } from '../../src/util/logger';
 import { buildExport, type ExportFormat } from '../../src/util/export';
@@ -42,6 +62,12 @@ import { TranslateModal } from '../../src/components/Translate';
 
 // Playback speeds cycled by the speed button.
 const PLAYBACK_RATES = [1, 1.25, 1.5, 2];
+
+// Stable empty transcript: the karaoke timeline is memoized on this array's
+// identity, so a fresh `[]` each render would rebuild it every time.
+const NO_UTTERANCES: Utterance[] = [];
+const NO_MARKS: number[] = [];
+const NO_SPEAKERS: RecordingSpeaker[] = [];
 
 // Shown until GET /summary-templates returns; ids must match the backend.
 const FALLBACK_TEMPLATES: SummaryTemplate[] = [
@@ -115,29 +141,51 @@ function DetailHeader({
 
 // ---------------------------------------------------------------------------
 
-function UtteranceRow({
+/**
+ * One transcript line.
+ *
+ * Memoized, and it reads the spoken-word index from the karaoke store itself
+ * rather than taking it as a prop: a word only changes what *this* row looks
+ * like, so a tick must not re-render the rest of the transcript.
+ *
+ * Every word is its own `Text` with an `onPress`, so a tap plays from that
+ * word. Nested `Text` handlers win over the row's, and the row still catches
+ * taps on the padding — so tapping the line anywhere else plays from its start,
+ * and a long press anywhere still opens the line's actions.
+ */
+const UtteranceRow = memo(function UtteranceRow({
   utterance,
   speakers,
-  isActive,
+  tokens,
+  markedTokens,
+  store,
   matchesSearch,
   onPress,
+  onWordPress,
   onLongPress,
 }: {
   utterance: Utterance;
   speakers: RecordingSpeaker[];
-  isActive: boolean;
+  tokens: TimedToken[] | undefined;
+  /** Indices of words a mark was placed on during recording. */
+  markedTokens: number[] | undefined;
+  store: KaraokeStore;
   matchesSearch: boolean;
-  onPress: () => void;
-  onLongPress: () => void;
+  onPress: (utterance: Utterance) => void;
+  onWordPress: (token: TimedToken) => void;
+  onLongPress: (utterance: Utterance) => void;
 }) {
+  const wordIdx = useActiveWordIndex(store, utterance.id);
+  const isActive = wordIdx !== NOT_SPEAKING;
   const label = utterance.speaker_name ?? speakerLabel(utterance.local_idx, speakers);
   const color = speakerColor(utterance.local_idx);
+  const markCount = markedTokens?.length ?? 0;
 
   return (
     <TouchableOpacity
       style={[styles.utterance, (isActive || matchesSearch) && styles.utteranceActive]}
-      onPress={onPress}
-      onLongPress={onLongPress}
+      onPress={() => onPress(utterance)}
+      onLongPress={() => onLongPress(utterance)}
       accessibilityRole="button"
       accessibilityLabel={`${label}: ${utterance.text}`}
     >
@@ -146,72 +194,44 @@ function UtteranceRow({
         <View style={styles.utteranceHeader}>
           <Text style={[styles.speakerName, { color }]}>{label}</Text>
           <Text style={styles.utteranceTime}>{formatMs(utterance.start_ms)}</Text>
+          {markCount > 0 && (
+            <Text style={styles.rowMarkChip}>
+              ⚑{markCount > 1 ? ` ${markCount}` : ''}
+            </Text>
+          )}
         </View>
-        <Text style={[styles.utteranceText, isActive && styles.utteranceTextActive]}>
-          {utterance.text}
-        </Text>
+        {tokens && tokens.length > 0 ? (
+          <Text style={[styles.utteranceText, isActive && styles.utteranceTextActive]}>
+            {tokens.map((t, i) => {
+              const marked = markedTokens?.includes(i) ?? false;
+              return (
+                <Text
+                  key={i}
+                  onPress={() => onWordPress(t)}
+                  onLongPress={() => onLongPress(utterance)}
+                  suppressHighlighting
+                  style={[
+                    i === wordIdx && styles.wordActive,
+                    marked && styles.wordMarked,
+                  ]}
+                >
+                  {i > 0 ? ' ' : ''}
+                  {marked ? <Text style={styles.markGlyph}>⚑</Text> : null}
+                  {t.text}
+                </Text>
+              );
+            })}
+          </Text>
+        ) : (
+          // No usable word timings: the line stays one block, still tappable.
+          <Text style={[styles.utteranceText, isActive && styles.utteranceTextActive]}>
+            {utterance.text}
+          </Text>
+        )}
       </View>
     </TouchableOpacity>
   );
-}
-
-// ---------------------------------------------------------------------------
-
-function NameSpeakerModal({
-  visible,
-  currentName,
-  onSave,
-  onDismiss,
-}: {
-  visible: boolean;
-  currentName: string;
-  onSave: (name: string, enroll: boolean) => void;
-  onDismiss: () => void;
-}) {
-  const [name, setName] = useState(currentName);
-  const [enroll, setEnroll] = useState(true);
-
-  useEffect(() => {
-    if (visible) setName(currentName);
-  }, [visible, currentName]);
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>Name speaker</Text>
-          <TextInput
-            style={styles.modalInput}
-            value={name}
-            onChangeText={setName}
-            placeholder="e.g. Dawson"
-            placeholderTextColor={colors.textDim}
-            autoFocus
-            returnKeyType="done"
-          />
-          <TouchableOpacity style={styles.modalEnroll} onPress={() => setEnroll((e) => !e)}>
-            <View style={[styles.checkbox, enroll && styles.checkboxChecked]}>
-              {enroll && <Ionicons name="checkmark" size={12} color={colors.white} />}
-            </View>
-            <Text style={styles.enrollText}>Enroll voice (recognise in future recordings)</Text>
-          </TouchableOpacity>
-          <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalSave}
-              onPress={() => onSave(name.trim(), enroll)}
-              disabled={!name.trim()}
-            >
-              <Text style={styles.modalSaveText}>Save</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
+});
 
 // ---------------------------------------------------------------------------
 
@@ -323,14 +343,21 @@ function TemplateSheet({
 
 // ---------------------------------------------------------------------------
 
-/** Long-press chooser: edit the line's text or rename its speaker. */
+/**
+ * Long-press chooser: edit the line's text or tag its speaker.
+ *
+ * `canTag` is false for provisional live-transcription lines, which have no
+ * diarized speaker to attach a name to yet.
+ */
 function UtteranceActionSheet({
   visible,
+  canTag,
   onEdit,
   onRename,
   onDismiss,
 }: {
   visible: boolean;
+  canTag: boolean;
   onEdit: () => void;
   onRename: () => void;
   onDismiss: () => void;
@@ -347,18 +374,102 @@ function UtteranceActionSheet({
             </View>
             <Ionicons name="create-outline" size={18} color={colors.accent} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.sheetRow} onPress={onRename} accessibilityRole="button">
-            <View style={styles.sheetRowText}>
-              <Text style={styles.sheetRowLabel}>Rename speaker</Text>
-              <Text style={styles.sheetRowSub}>Label / enroll this voice</Text>
-            </View>
-            <Ionicons name="person-outline" size={18} color={colors.accent} />
-          </TouchableOpacity>
+          {canTag && (
+            <TouchableOpacity style={styles.sheetRow} onPress={onRename} accessibilityRole="button">
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>Tag speaker</Text>
+                <Text style={styles.sheetRowSub}>Reuse a name across recordings</Text>
+              </View>
+              <Ionicons name="person-outline" size={18} color={colors.accent} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
             <Text style={styles.modalCancelText}>Cancel</Text>
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
+    </Modal>
+  );
+}
+
+/**
+ * How many people are in the recording.
+ *
+ * Imported audio arrives with no count, and that is the case where diarization
+ * goes furthest wrong — so this is the correction, not a preference.
+ */
+function ParticipantsModal({
+  visible,
+  current,
+  saving,
+  onSave,
+  onDismiss,
+}: {
+  visible: boolean;
+  current: number | null;
+  saving: boolean;
+  onSave: (count: number) => void;
+  onDismiss: () => void;
+}) {
+  const [value, setValue] = useState('');
+  useEffect(() => {
+    if (visible) setValue(current != null ? String(current) : '');
+  }, [visible, current]);
+
+  const count = Number(value);
+  const valid = Number.isInteger(count) && count >= 1 && count <= 64;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Speaker count</Text>
+          <Text style={styles.modalHint}>
+            How many people speak in this recording? Diarization pins its clustering to this
+            number instead of guessing, which is what splits one voice into many on a long
+            recording.
+          </Text>
+          <View style={styles.countRow}>
+            {[2, 3, 4, 5, 6].map((n) => (
+              <TouchableOpacity
+                key={n}
+                style={[styles.countChip, count === n && styles.countChipActive]}
+                onPress={() => setValue(String(n))}
+                accessibilityLabel={`${n} speakers`}
+              >
+                <Text style={[styles.countChipText, count === n && styles.countChipTextActive]}>
+                  {n}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TextInput
+            style={styles.modalInputCompact}
+            value={value}
+            onChangeText={setValue}
+            keyboardType="number-pad"
+            placeholder="or type a number"
+            placeholderTextColor={colors.textDim}
+            returnKeyType="done"
+          />
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modalSave, (!valid || saving) && styles.dimmedAction]}
+              onPress={() => onSave(count)}
+              disabled={!valid || saving}
+            >
+              {saving ? (
+                <ActivityIndicator color={colors.white} />
+              ) : (
+                <Text style={styles.modalSaveText}>Save</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -509,6 +620,7 @@ export default function RecordingDetailScreen() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [namingUtterance, setNamingUtterance] = useState<Utterance | null>(null);
+  const [savingSpeaker, setSavingSpeaker] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [rate, setRate] = useState(1);
   const [templates, setTemplates] = useState<SummaryTemplate[]>(FALLBACK_TEMPLATES);
@@ -520,8 +632,81 @@ export default function RecordingDetailScreen() {
   const [savingTags, setSavingTags] = useState(false);
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
   const [showActions, setShowActions] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
+  const [savingParticipants, setSavingParticipants] = useState(false);
   const [showMindMap, setShowMindMap] = useState(false);
   const [showTranslate, setShowTranslate] = useState(false);
+
+  // -------------------------------------------------------------------------
+  // Karaoke highlighting + follow-along scrolling
+  // -------------------------------------------------------------------------
+
+  const utterances = detail?.utterances ?? NO_UTTERANCES;
+  const { store: karaoke, tokensById, timeline } = useKaraoke({
+    player,
+    utterances,
+    playing,
+    positionMs,
+    rate,
+    enabled: audioLoaded,
+  });
+
+  // Marks captured during recording, tied to the word being spoken at the time.
+  const marks = detail?.recording.marks ?? NO_MARKS;
+  const marksByUtterance = useMemo(() => anchorMarks(timeline, marks), [timeline, marks]);
+
+  const listRef = useRef<FlatList<Utterance>>(null);
+  const [following, setFollowing] = useState(true);
+  // The scroll callback fires outside React's render, so it reads the ref.
+  const followingRef = useRef(true);
+  const setFollow = useCallback((next: boolean) => {
+    followingRef.current = next;
+    setFollowing(next);
+  }, []);
+
+  // Row index by utterance id, for follow-along scrolling. Rebuilt whenever the
+  // visible list changes (a search filter changes what index a line sits at).
+  const rowIndexById = useRef(new Map<number, number>());
+
+  const scrollToUtterance = useCallback((utteranceId: number | null) => {
+    if (utteranceId == null) return;
+    const index = rowIndexById.current.get(utteranceId);
+    if (index == null) return; // filtered out of the current view
+    // Park the spoken line a quarter of the way down rather than against the
+    // top edge, so the lines leading up to it stay readable.
+    listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.25 });
+  }, []);
+
+  // A virtualized list cannot always scroll straight to a far-off row: it has
+  // to render its way there first. Retry once the list has measured more.
+  const handleScrollToIndexFailed = useCallback(
+    (info: { index: number; averageItemLength: number }) => {
+      listRef.current?.scrollToOffset({
+        offset: info.averageItemLength * info.index,
+        animated: false,
+      });
+      setTimeout(() => {
+        listRef.current?.scrollToIndex({
+          index: info.index,
+          animated: true,
+          viewPosition: 0.25,
+        });
+      }, 120);
+    },
+    [],
+  );
+
+  // Follow the spoken line. Driven by a store callback instead of state so a
+  // new line scrolls the view without re-rendering the transcript.
+  useEffect(() => {
+    karaoke.onUtteranceChange = (utteranceId) => {
+      if (followingRef.current) scrollToUtterance(utteranceId);
+    };
+    return () => {
+      karaoke.onUtteranceChange = null;
+    };
+  }, [karaoke, scrollToUtterance]);
+
 
   // -------------------------------------------------------------------------
 
@@ -587,12 +772,14 @@ export default function RecordingDetailScreen() {
   const seekTo = useCallback(
     (ms: number) => {
       log('audio', `seek to ${ms}ms`);
+      // Jumping to a moment is a request to follow it again.
+      setFollow(true);
       player
         .seekTo(ms / 1000)
         .then(() => player.play())
         .catch((e) => log('audio', 'seek failed', e));
     },
-    [player],
+    [player, setFollow],
   );
 
   const togglePlayback = useCallback(() => {
@@ -721,6 +908,53 @@ export default function RecordingDetailScreen() {
     [detail, handleResummarize],
   );
 
+  /**
+   * Save the speaker count, then re-run the pipeline with it.
+   *
+   * Diarization discovering the count by itself is exactly what goes wrong on a
+   * long recording — it split four voices into dozens. Stating the number pins
+   * the clustering to it.
+   */
+  const handleSetParticipants = useCallback(
+    async (count: number) => {
+      if (!id) return;
+      setShowParticipants(false);
+      setSavingParticipants(true);
+      try {
+        await api.setParticipants(id, count);
+        setDetail((d) =>
+          d ? { ...d, recording: { ...d.recording, participants_expected: count } } : d,
+        );
+        Alert.alert(
+          'Speaker count saved',
+          `Set to ${count}. Re-run the transcript now so diarization uses it?`,
+          [
+            { text: 'Later', style: 'cancel' },
+            {
+              text: 'Re-run',
+              onPress: async () => {
+                try {
+                  await api.reprocess(id);
+                  await loadDetail();
+                } catch (err) {
+                  Alert.alert(
+                    'Could not reprocess',
+                    err instanceof Error ? err.message : String(err),
+                  );
+                }
+              },
+            },
+          ],
+        );
+      } catch (err) {
+        Alert.alert('Could not save', err instanceof Error ? err.message : String(err));
+      } finally {
+        setSavingParticipants(false);
+      }
+    },
+    [id, loadDetail],
+  );
+
   const handleReprocess = useCallback(() => {
     setShowActions(false);
     if (!id) return;
@@ -744,20 +978,84 @@ export default function RecordingDetailScreen() {
     );
   }, [id, loadDetail]);
 
-  const handleNameSpeaker = useCallback(
-    async (name: string, enroll: boolean) => {
+  /**
+   * Tag the diarized speaker behind the long-pressed line, either with someone
+   * already in the library (`speaker_id`) or a new name. With `enroll` set the
+   * server keeps the voiceprint, which is what carries the name into recordings
+   * uploaded later.
+   */
+  const handleTagSpeaker = useCallback(
+    async (req: NameSpeakerRequest) => {
       if (!namingUtterance || !id) return;
       const localIdx = namingUtterance.local_idx;
       if (localIdx == null) return;
-      setNamingUtterance(null);
+      setSavingSpeaker(true);
       try {
-        await api.nameSpeaker(id, localIdx, { name, enroll });
+        await api.nameSpeaker(id, localIdx, req);
+        setNamingUtterance(null);
         await loadDetail();
       } catch (err) {
-        Alert.alert('Error', `Could not name speaker: ${String(err)}`);
+        Alert.alert('Could not tag speaker', err instanceof Error ? err.message : String(err));
+      } finally {
+        setSavingSpeaker(false);
       }
     },
     [namingUtterance, id, loadDetail],
+  );
+
+  /** Drop the name from this recording's speaker; the library entry stays. */
+  const handleUntagSpeaker = useCallback(async () => {
+    if (!namingUtterance || !id) return;
+    const localIdx = namingUtterance.local_idx;
+    if (localIdx == null) return;
+    setSavingSpeaker(true);
+    try {
+      await api.unnameSpeaker(id, localIdx);
+      setNamingUtterance(null);
+      await loadDetail();
+    } catch (err) {
+      Alert.alert('Could not remove name', err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingSpeaker(false);
+    }
+  }, [namingUtterance, id, loadDetail]);
+
+  // Stable row callbacks — the rows are memoized, so fresh closures per render
+  // would defeat the point of only re-rendering the line being spoken.
+  const handleRowPress = useCallback((u: Utterance) => seekTo(u.start_ms), [seekTo]);
+  const handleRowLongPress = useCallback((u: Utterance) => setUtteranceAction(u), []);
+  /** Tap a word: play from that word. */
+  const handleWordPress = useCallback((t: TimedToken) => seekTo(t.startMs), [seekTo]);
+
+  const keyExtractor = useCallback((u: Utterance) => String(u.id), []);
+
+  const renderRow = useCallback(
+    ({ item }: { item: Utterance }) => (
+      <UtteranceRow
+        utterance={item}
+        speakers={detail?.speakers ?? NO_SPEAKERS}
+        tokens={tokensById.get(item.id)}
+        markedTokens={marksByUtterance.get(item.id)}
+        store={karaoke}
+        matchesSearch={
+          searchQuery.trim() !== '' &&
+          item.text.toLowerCase().includes(searchQuery.toLowerCase())
+        }
+        onPress={handleRowPress}
+        onWordPress={handleWordPress}
+        onLongPress={handleRowLongPress}
+      />
+    ),
+    [
+      detail?.speakers,
+      tokensById,
+      marksByUtterance,
+      karaoke,
+      searchQuery,
+      handleRowPress,
+      handleWordPress,
+      handleRowLongPress,
+    ],
   );
 
   const handleEditUtterance = useCallback(
@@ -825,7 +1123,9 @@ export default function RecordingDetailScreen() {
     );
   }
 
-  const { recording, speakers, utterances } = detail;
+  // `utterances` is already bound above (the karaoke timeline needs it before
+  // the early returns).
+  const { recording, speakers } = detail;
   const dur = recording.duration_ms ?? statusDurationMs;
   const progress = dur > 0 ? positionMs / dur : 0;
   const templateLabel = (tid?: string | null) =>
@@ -838,6 +1138,9 @@ export default function RecordingDetailScreen() {
     ? utterances.filter((u) => u.text.toLowerCase().includes(searchQuery.toLowerCase()))
     : utterances;
 
+  // Keep the id → row index map in step with what is actually listed.
+  rowIndexById.current = new Map(filteredUtterances.map((u, i) => [u.id, i]));
+
   return (
     <Screen>
       <DetailHeader
@@ -848,7 +1151,26 @@ export default function RecordingDetailScreen() {
         onMenu={() => setShowActions(true)}
       />
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <FlatList
+        ref={listRef}
+        data={filteredUtterances}
+        keyExtractor={keyExtractor}
+        renderItem={renderRow}
+        contentContainerStyle={styles.content}
+        // Dragging the transcript means the reader wants to look somewhere
+        // else; stop yanking the view back to the playhead until they ask.
+        onScrollBeginDrag={() => setFollow(false)}
+        onScrollToIndexFailed={handleScrollToIndexFailed}
+        keyboardShouldPersistTaps="handled"
+        // A long meeting is a thousand lines and tens of thousands of word
+        // spans. Only what is on screen may be mounted.
+        initialNumToRender={12}
+        maxToRenderPerBatch={8}
+        windowSize={9}
+        // NOT removeClippedSubviews: on Android it is known to swallow touches
+        // on recycled rows, and every word here is a touch target.
+        ListHeaderComponent={
+          <>
         {/* Status banner. Prefer the per-stage checklist when the server sends
             one — on a long recording a single "processing…" line is
             indistinguishable from a hang. Older backends omit `progress`, so
@@ -897,23 +1219,24 @@ export default function RecordingDetailScreen() {
           </View>
         )}
 
-        {/* Highlights (marks bookmarked during recording) */}
-        {status === 'ready' && (recording.marks?.length ?? 0) > 0 && (
+        {/* Marks captured during recording. Called MARKS, not "highlights" —
+            the transcript's own highlight is the word being spoken. */}
+        {status === 'ready' && marks.length > 0 && (
           <View style={styles.marksCard}>
-            <Text style={styles.summaryLabel}>HIGHLIGHTS</Text>
+            <Text style={styles.summaryLabel}>MARKS</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.marksRow}
             >
-              {(recording.marks ?? []).map((m, i) => (
+              {marks.map((m, i) => (
                 <TouchableOpacity
                   key={i}
                   style={styles.markChip}
                   onPress={() => seekTo(m)}
-                  accessibilityLabel={`Jump to ${formatMs(m)}`}
+                  accessibilityLabel={`Play from mark at ${formatMs(m)}`}
                 >
-                  <Ionicons name="bookmark" size={11} color={colors.accent} />
+                  <Text style={styles.markChipGlyph}>⚑</Text>
                   <Text style={styles.markChipText}>{formatMs(m)}</Text>
                 </TouchableOpacity>
               ))}
@@ -1033,38 +1356,59 @@ export default function RecordingDetailScreen() {
             />
           </View>
         )}
+          </>
+        }
+        ListEmptyComponent={
+          searchQuery.trim() ? (
+            <Text style={styles.emptySearch}>No transcript lines match “{searchQuery}”.</Text>
+          ) : status === 'ready' ? (
+            <Text style={styles.emptyTranscript}>
+              No transcript available yet. The server may still be processing.
+            </Text>
+          ) : null
+        }
+      />
 
-        {/* Transcript */}
-        {utterances.length === 0 && status === 'ready' && (
-          <Text style={styles.emptyTranscript}>
-            No transcript available yet. The server may still be processing.
-          </Text>
-        )}
+      {/* Offered only once the reader has scrolled away during playback. */}
+      {playing && !following && utterances.length > 0 && (
+        <TouchableOpacity
+          style={styles.followPill}
+          onPress={() => {
+            setFollow(true);
+            scrollToUtterance(karaoke.activeUtteranceId);
+          }}
+          accessibilityLabel="Follow playback"
+        >
+          <Ionicons name="arrow-down" size={13} color={colors.white} />
+          <Text style={styles.followPillText}>Follow playback</Text>
+        </TouchableOpacity>
+      )}
 
-        {filteredUtterances.map((u) => (
-          <UtteranceRow
-            key={u.id}
-            utterance={u}
-            speakers={speakers}
-            isActive={positionMs >= u.start_ms && positionMs < u.end_ms}
-            matchesSearch={
-              searchQuery.trim() !== '' && u.text.toLowerCase().includes(searchQuery.toLowerCase())
-            }
-            onPress={() => seekTo(u.start_ms)}
-            onLongPress={() => setUtteranceAction(u)}
-          />
-        ))}
-
-        {searchQuery.trim() && filteredUtterances.length === 0 && (
-          <Text style={styles.emptySearch}>No transcript lines match “{searchQuery}”.</Text>
-        )}
-      </ScrollView>
-
-      <NameSpeakerModal
+      <SpeakerTagSheet
         visible={namingUtterance != null}
-        currentName={namingUtterance ? speakerLabel(namingUtterance.local_idx, speakers) : ''}
-        onSave={handleNameSpeaker}
+        currentLabel={
+          namingUtterance
+            ? (namingUtterance.speaker_name ??
+              speakerLabel(namingUtterance.local_idx, speakers))
+            : ''
+        }
+        currentSpeakerId={
+          namingUtterance
+            ? (speakers.find((s) => s.local_idx === namingUtterance.local_idx)?.speaker_id ?? null)
+            : null
+        }
+        saving={savingSpeaker}
+        onTag={handleTagSpeaker}
+        onUntag={handleUntagSpeaker}
         onDismiss={() => setNamingUtterance(null)}
+      />
+
+      <ParticipantsModal
+        visible={showParticipants}
+        current={recording.participants_expected ?? null}
+        saving={savingParticipants}
+        onSave={handleSetParticipants}
+        onDismiss={() => setShowParticipants(false)}
       />
 
       <ExportSheet
@@ -1125,6 +1469,24 @@ export default function RecordingDetailScreen() {
                 <Ionicons name="language-outline" size={18} color={colors.accent} />
               </TouchableOpacity>
             )}
+            <TouchableOpacity
+              style={styles.sheetRow}
+              onPress={() => {
+                setShowActions(false);
+                setShowParticipants(true);
+              }}
+              accessibilityRole="button"
+            >
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>Speaker count</Text>
+                <Text style={styles.sheetRowSub}>
+                  {recording.participants_expected != null
+                    ? `Set to ${recording.participants_expected} — fixes wrong speaker splits`
+                    : 'Not set — tell it how many people are in the room'}
+                </Text>
+              </View>
+              <Ionicons name="people-outline" size={18} color={colors.accent} />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.sheetRow} onPress={handleReprocess} accessibilityRole="button">
               <View style={styles.sheetRowText}>
                 <Text style={styles.sheetRowLabel}>Reprocess transcript</Text>
@@ -1141,6 +1503,7 @@ export default function RecordingDetailScreen() {
 
       <UtteranceActionSheet
         visible={utteranceAction != null}
+        canTag={utteranceAction?.local_idx != null}
         onEdit={() => {
           const u = utteranceAction;
           setUtteranceAction(null);
@@ -1520,6 +1883,51 @@ const styles = StyleSheet.create({
   utteranceTextActive: {
     color: colors.textPrimary,
   },
+  /** The word being spoken — the same wash the in-transcript search uses. */
+  wordActive: {
+    color: colors.markText,
+    backgroundColor: colors.markBg,
+    fontWeight: '700',
+  },
+  /** A word a mark was placed on: underlined, so it reads even when unplayed. */
+  wordMarked: {
+    color: colors.amber,
+    textDecorationLine: 'underline',
+    textDecorationColor: colors.amber,
+  },
+  /** The ⚑ that sits immediately before a marked word. */
+  markGlyph: {
+    color: colors.amber,
+    fontSize: 11,
+  },
+  /** ⚑ badge in a transcript line's header, for scanning without playback. */
+  rowMarkChip: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.amber,
+    fontFamily: mono,
+  },
+  markChipGlyph: {
+    fontSize: 11,
+    color: colors.accent,
+  },
+  followPill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    bottom: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.accent,
+    borderRadius: radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  followPillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.white,
+  },
   // Modal
   modalOverlay: {
     flex: 1,
@@ -1681,40 +2089,53 @@ const styles = StyleSheet.create({
     fontFamily: mono,
     fontVariant: ['tabular-nums'],
   },
-  modalInput: {
+  modalHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textMuted,
+    marginTop: 6,
+  },
+  countRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+  },
+  countChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: radius.inner,
+    borderWidth: 1,
+    borderColor: colors.borderInput,
+    backgroundColor: colors.bg,
+  },
+  countChipActive: {
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.chipActiveBorder,
+  },
+  countChipText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textMuted,
+    fontFamily: mono,
+  },
+  countChipTextActive: {
+    color: colors.accent,
+  },
+  modalInputCompact: {
     backgroundColor: colors.bg,
     borderWidth: 1,
     borderColor: colors.borderInput,
-    borderRadius: 11,
-    paddingHorizontal: 13,
-    paddingVertical: 11,
-    fontSize: 15,
+    borderRadius: radius.inner,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
     color: colors.textPrimary,
+    marginTop: 10,
     marginBottom: 14,
   },
-  modalEnroll: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 9,
-    marginBottom: 18,
-  },
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderWidth: 2,
-    borderColor: colors.borderButton,
-    borderRadius: 5,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxChecked: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
-  },
-  enrollText: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.textLight,
+  dimmedAction: {
+    opacity: 0.5,
   },
   modalActions: {
     flexDirection: 'row',

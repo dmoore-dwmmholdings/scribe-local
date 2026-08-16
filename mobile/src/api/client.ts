@@ -25,8 +25,10 @@ import type {
   CompleteRecordingResponse,
   CreateRecordingRequest,
   CreateRecordingResponse,
+  EnrolledSpeaker,
   HealthResponse,
   ListRecordingsResponse,
+  ListSpeakersResponse,
   NameSpeakerRequest,
   NameSpeakerResponse,
   RecordingDetailResponse,
@@ -295,6 +297,13 @@ export const api = {
   // Speakers
   // -------------------------------------------------------------------------
 
+  /**
+   * POST /recordings/{id}/speakers/{local_idx}/name — tag a diarized speaker.
+   *
+   * Pass `speaker_id` to reuse someone already tagged in an earlier recording,
+   * or `name` to reuse-by-name / create a new identity. `enroll` stores the
+   * voiceprint, which is what makes the tag apply to recordings uploaded later.
+   */
   nameSpeaker(
     recordingId: string,
     localIdx: number,
@@ -309,6 +318,35 @@ export const api = {
     );
   },
 
+  /**
+   * DELETE /recordings/{id}/speakers/{local_idx}/name — untag this recording's
+   * speaker. The enrolled speaker stays in the library; the line reverts to
+   * "Speaker N".
+   */
+  unnameSpeaker(recordingId: string, localIdx: number): Promise<void> {
+    return apiFetch<void>(`/recordings/${recordingId}/speakers/${localIdx}/name`, {
+      method: 'DELETE',
+    });
+  },
+
+  /** GET /speakers — the enrolled speaker library, shared across recordings. */
+  listSpeakers(): Promise<ListSpeakersResponse> {
+    return apiFetch<ListSpeakersResponse>('/speakers');
+  },
+
+  /** PATCH /speakers/{id} — rename a speaker in every recording at once. */
+  renameSpeaker(speakerId: string, name: string): Promise<EnrolledSpeaker> {
+    return apiFetch<EnrolledSpeaker>(`/speakers/${speakerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  /** DELETE /speakers/{id} — forget a speaker; tagged recordings go anonymous. */
+  deleteSpeaker(speakerId: string): Promise<void> {
+    return apiFetch<void>(`/speakers/${speakerId}`, { method: 'DELETE' });
+  },
+
   // -------------------------------------------------------------------------
   // Tags & transcript editing
   // -------------------------------------------------------------------------
@@ -318,6 +356,19 @@ export const api = {
     return apiFetch<SetTagsResponse>(`/recordings/${id}/tags`, {
       method: 'PUT',
       body: JSON.stringify({ tags }),
+    });
+  },
+
+  /**
+   * PUT /recordings/{id}/participants — state how many people speak in this
+   * recording. Diarization pins its clustering to this count, so it is the
+   * strongest correction for a recording that came back with the wrong number
+   * of speakers. Takes effect on the next reprocess.
+   */
+  setParticipants(id: string, participantsExpected: number | null): Promise<void> {
+    return apiFetch<void>(`/recordings/${id}/participants`, {
+      method: 'PUT',
+      body: JSON.stringify({ participants_expected: participantsExpected }),
     });
   },
 

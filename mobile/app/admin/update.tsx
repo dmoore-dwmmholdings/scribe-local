@@ -32,6 +32,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import { api, ApiError } from '../../src/api/client';
 import type { UpdateInfoResponse } from '../../src/types';
+import { Screen, ScreenHeader } from '../../src/components/ui';
 import { colors, mono, radius } from '../../src/theme';
 
 // ---------------------------------------------------------------------------
@@ -254,10 +255,12 @@ export default function BackendUpdateScreen() {
     phase === 'uploading' || phase === 'restarting' || phase === 'rolling_back';
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.container}
-      keyboardShouldPersistTaps="handled"
-    >
+    <Screen>
+      <ScreenHeader title="Backend Update" />
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
       {/* Info card */}
       <Text style={styles.sectionHeader}>Current backend</Text>
       {infoLoading ? (
@@ -406,7 +409,8 @@ export default function BackendUpdateScreen() {
           )}
         </>
       )}
-    </ScrollView>
+      </ScrollView>
+    </Screen>
   );
 }
 

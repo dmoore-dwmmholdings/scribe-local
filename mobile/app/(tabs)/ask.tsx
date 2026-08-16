@@ -1,16 +1,17 @@
 /**
- * Screen 5: Ask — Kiln RAG over the corpus.
+ * Screen 5: Ask — a conversation with the corpus.
  *
  * Start state: an ember-orb hero, framing copy, and "TRY ASKING" suggestion
- * cards.  Answer state: the question as a warm bubble, the answer led by a mini
- * ember avatar with inline tappable citation superscripts, and a SOURCES list
- * whose rows carry ember thumbnails and deep-link to the cited moment.
+ * cards.  After that it is a thread: questions as warm bubbles, answers led by
+ * a mini ember avatar with inline tappable citation superscripts, and a SOURCES
+ * list whose rows carry ember thumbnails and deep-link to the cited moment.
  *
- * The server embeds the question, retrieves top-k chunks from pgvector, and
- * returns an answer with citations.
+ * Every turn is kept and sent back as `history`, so follow-ups resolve against
+ * what was already asked. Each turn owns its own text and citations — the
+ * screen never renders the live input as a past message.
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -26,7 +27,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { api } from '../../src/api/client';
-import type { AskResponse, Citation } from '../../src/types';
+import type { AskTurn, Citation } from '../../src/types';
 import { EmberOrb, seedFromString } from '../../src/components/EmberOrb';
 import { Screen } from '../../src/components/ui';
 import { colors, mono, radius } from '../../src/theme';
@@ -73,25 +74,40 @@ const SUGGESTIONS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Thread model
+// ---------------------------------------------------------------------------
+
+/** One message in the conversation. */
+interface ChatTurn {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  /** Sources for an assistant turn; each turn keeps its own. */
+  citations?: Citation[];
+  /** A request that failed — shown in place, and never sent back as history. */
+  failed?: boolean;
+}
+
+let turnSeq = 0;
+const nextTurnId = () => `t${++turnSeq}`;
+
+// ---------------------------------------------------------------------------
 
 function SourceRow({
   citation,
   label,
   highlighted,
   onPress,
-  onLayout,
 }: {
   citation: Citation;
   label: number;
   highlighted: boolean;
   onPress: () => void;
-  onLayout: (y: number) => void;
 }) {
   return (
     <TouchableOpacity
       style={[styles.source, highlighted && styles.sourceHighlighted]}
       onPress={onPress}
-      onLayout={(e) => onLayout(e.nativeEvent.layout.y)}
       accessibilityRole="link"
     >
       <View style={styles.sourceThumb}>
@@ -113,50 +129,136 @@ function SourceRow({
 
 // ---------------------------------------------------------------------------
 
+/** One assistant turn: the answer, its inline citation markers, its sources. */
+function AnswerTurn({
+  turn,
+  highlighted,
+  onFocusCitation,
+  onOpenCitation,
+}: {
+  turn: ChatTurn;
+  highlighted: string | null;
+  onFocusCitation: (key: string) => void;
+  onOpenCitation: (c: Citation) => void;
+}) {
+  const citations = turn.citations ?? [];
+  const segments = parseAnswer(turn.text, citations.length);
+
+  // Show the sources the answer actually cited, in citation order. An answer
+  // that cites nothing (chit-chat, arithmetic, "I did not find that") gets no
+  // SOURCES block — listing every retrieved chunk under it implies the answer
+  // rests on them.
+  const citedOrder: number[] = [];
+  for (const seg of segments) {
+    if (seg.type === 'marker' && !citedOrder.includes(seg.n)) citedOrder.push(seg.n);
+  }
+  const sourcesToShow = citedOrder.map((n) => ({ n, citation: citations[n - 1] }));
+
+  return (
+    <View style={styles.answerRow}>
+      <View style={styles.answerAvatar}>
+        <EmberOrb size={30} variant="mini" seed={6.4} dir={-1} />
+      </View>
+      <View style={styles.answerBody}>
+        <Text style={[styles.answerText, turn.failed && styles.answerFailed]}>
+          {segments.map((seg, i) =>
+            seg.type === 'text' ? (
+              <Text key={i}>{seg.text}</Text>
+            ) : (
+              <Text
+                key={i}
+                style={styles.marker}
+                onPress={() => onFocusCitation(`${turn.id}:${seg.n}`)}
+                accessibilityRole="link"
+                accessibilityLabel={`Citation ${seg.n}`}
+              >
+                {seg.n}
+              </Text>
+            ),
+          )}
+        </Text>
+
+        {sourcesToShow.length > 0 && (
+          <View style={styles.sourcesSection}>
+            <Text style={styles.sourcesHeader}>SOURCES</Text>
+            {sourcesToShow.map(({ n, citation }) => (
+              <SourceRow
+                key={n}
+                citation={citation}
+                label={n}
+                highlighted={highlighted === `${turn.id}:${n}`}
+                onPress={() => onOpenCitation(citation)}
+              />
+            ))}
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
 export default function AskScreen() {
   const router = useRouter();
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [question, setQuestion] = useState('');
-  const [response, setResponse] = useState<AskResponse | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [highlighted, setHighlighted] = useState<number | null>(null);
+  /** Briefly lit citation, keyed `${turnId}:${n}` so turns do not collide. */
+  const [highlighted, setHighlighted] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
-  const sectionYRef = useRef(0);
-  const cardYRef = useRef<Record<number, number>>({});
 
-  const ask = useCallback(
-    async (q: string) => {
-      const query = q.trim();
-      if (!query) return;
+  const send = useCallback(
+    async (raw: string) => {
+      const q = raw.trim();
+      if (!q || loading) return;
       Keyboard.dismiss();
-      setLoading(true);
-      setError(null);
-      setResponse(null);
-      setHighlighted(null);
-      cardYRef.current = {};
 
+      // Snapshot the thread BEFORE this question — that is the history the
+      // server needs to resolve follow-ups. Failed turns are left out; they are
+      // client-side errors, not something the assistant said.
+      const history: AskTurn[] = turns
+        .filter((t) => !t.failed)
+        .map((t) => ({ role: t.role, content: t.text }));
+
+      setTurns((prev) => [...prev, { id: nextTurnId(), role: 'user', text: q }]);
+      setQuestion('');
+      setLoading(true);
       try {
-        const res = await api.ask({ question: query, top_k: 6 });
-        setResponse(res);
-        setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+        const res = await api.ask({ question: q, history, top_k: 6 });
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: nextTurnId(),
+            role: 'assistant',
+            text: res.answer,
+            citations: res.citations ?? [],
+          },
+        ]);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Request failed');
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: nextTurnId(),
+            role: 'assistant',
+            text: err instanceof Error ? err.message : 'Request failed',
+            failed: true,
+          },
+        ]);
       } finally {
         setLoading(false);
       }
     },
-    [],
+    [turns, loading],
   );
 
-  const submit = useCallback(() => ask(question), [ask, question]);
+  const submit = useCallback(() => send(question), [send, question]);
 
-  const runSuggestion = useCallback(
-    (s: string) => {
-      setQuestion(s);
-      ask(s);
-    },
-    [ask],
-  );
+  const newChat = useCallback(() => {
+    setTurns([]);
+    setQuestion('');
+    setHighlighted(null);
+  }, []);
 
   const openCitation = useCallback(
     (c: Citation) => {
@@ -168,27 +270,19 @@ export default function AskScreen() {
     [router],
   );
 
-  const focusCitation = useCallback((n: number) => {
-    setHighlighted(n);
-    const cardY = cardYRef.current[n];
-    if (cardY != null) {
-      scrollRef.current?.scrollTo({ y: Math.max(sectionYRef.current + cardY - 12, 0), animated: true });
-    }
-    setTimeout(() => setHighlighted((cur) => (cur === n ? null : cur)), 1500);
+  const focusCitation = useCallback((key: string) => {
+    setHighlighted(key);
+    setTimeout(() => setHighlighted((cur) => (cur === key ? null : cur)), 1500);
   }, []);
 
-  const citations = response?.citations ?? [];
-  const segments = response ? parseAnswer(response.answer, citations.length) : [];
-  const citedOrder: number[] = [];
-  for (const seg of segments) {
-    if (seg.type === 'marker' && !citedOrder.includes(seg.n)) citedOrder.push(seg.n);
-  }
-  const sourcesToShow =
-    citedOrder.length > 0
-      ? citedOrder.map((n) => ({ n, citation: citations[n - 1] }))
-      : citations.map((citation, i) => ({ n: i + 1, citation }));
+  // Keep the newest turn in view as the thread grows.
+  useEffect(() => {
+    if (turns.length === 0) return;
+    const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
+    return () => clearTimeout(t);
+  }, [turns, loading]);
 
-  const showStart = !response && !loading && !error;
+  const showStart = turns.length === 0 && !loading;
 
   return (
     <Screen>
@@ -197,6 +291,15 @@ export default function AskScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
+        {turns.length > 0 && (
+          <View style={styles.threadBar}>
+            <Text style={styles.threadLabel}>CONVERSATION</Text>
+            <TouchableOpacity onPress={newChat} accessibilityLabel="Start a new conversation">
+              <Text style={styles.newChat}>New chat</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <ScrollView
           ref={scrollRef}
           contentContainerStyle={styles.scroll}
@@ -208,8 +311,8 @@ export default function AskScreen() {
               <EmberOrb size={74} variant="small" seed={2.2} />
               <Text style={styles.heroTitle}>Ask your meetings</Text>
               <Text style={styles.heroBody}>
-                Answers are drawn from all your recordings — every claim linked back to its
-                moment in the audio.
+                Ask anything about your recordings, then keep talking — follow-ups remember what
+                you already asked. Claims from a transcript link back to the moment in the audio.
               </Text>
             </View>
           )}
@@ -218,7 +321,7 @@ export default function AskScreen() {
             <View style={styles.suggestions}>
               <Text style={styles.suggestLabel}>TRY ASKING</Text>
               {SUGGESTIONS.map((s) => (
-                <TouchableOpacity key={s} style={styles.suggestCard} onPress={() => runSuggestion(s)}>
+                <TouchableOpacity key={s} style={styles.suggestCard} onPress={() => send(s)}>
                   <Ionicons name="sparkles" size={15} color={colors.accent} />
                   <Text style={styles.suggestText}>{s}</Text>
                   <Text style={styles.suggestChevron}>›</Text>
@@ -227,75 +330,31 @@ export default function AskScreen() {
             </View>
           )}
 
-          {loading && (
-            <View style={styles.loading}>
-              <EmberOrb size={64} variant="small" seed={4.1} />
-              <Text style={styles.loadingText}>Searching your recordings…</Text>
-            </View>
-          )}
-
-          {/* Answer */}
-          {response && (
-            <>
-              <View style={styles.questionRow}>
+          {/* The thread */}
+          {turns.map((turn) =>
+            turn.role === 'user' ? (
+              <View key={turn.id} style={styles.questionRow}>
                 <View style={styles.questionBubble}>
-                  <Text style={styles.questionText}>{question}</Text>
+                  {/* The turn's own text — never the live input, which would
+                      rewrite this bubble as the next question is typed. */}
+                  <Text style={styles.questionText}>{turn.text}</Text>
                 </View>
               </View>
-
-              <View style={styles.answerRow}>
-                <View style={styles.answerAvatar}>
-                  <EmberOrb size={30} variant="mini" seed={6.4} dir={-1} />
-                </View>
-                <View style={styles.answerBody}>
-                  <Text style={styles.answerText}>
-                    {segments.map((seg, i) =>
-                      seg.type === 'text' ? (
-                        <Text key={i}>{seg.text}</Text>
-                      ) : (
-                        <Text
-                          key={i}
-                          style={styles.marker}
-                          onPress={() => focusCitation(seg.n)}
-                          accessibilityRole="link"
-                          accessibilityLabel={`Citation ${seg.n}`}
-                        >
-                          {seg.n}
-                        </Text>
-                      ),
-                    )}
-                  </Text>
-
-                  {sourcesToShow.length > 0 && (
-                    <View
-                      style={styles.sourcesSection}
-                      onLayout={(e) => {
-                        sectionYRef.current = e.nativeEvent.layout.y;
-                      }}
-                    >
-                      <Text style={styles.sourcesHeader}>SOURCES</Text>
-                      {sourcesToShow.map(({ n, citation }) => (
-                        <SourceRow
-                          key={n}
-                          citation={citation}
-                          label={n}
-                          highlighted={highlighted === n}
-                          onLayout={(y) => {
-                            cardYRef.current[n] = y;
-                          }}
-                          onPress={() => openCitation(citation)}
-                        />
-                      ))}
-                    </View>
-                  )}
-                </View>
-              </View>
-            </>
+            ) : (
+              <AnswerTurn
+                key={turn.id}
+                turn={turn}
+                highlighted={highlighted}
+                onFocusCitation={focusCitation}
+                onOpenCitation={openCitation}
+              />
+            ),
           )}
 
-          {error && (
-            <View style={styles.errorCard}>
-              <Text style={styles.errorText}>{error}</Text>
+          {loading && (
+            <View style={turns.length > 0 ? styles.loadingInline : styles.loading}>
+              <EmberOrb size={turns.length > 0 ? 30 : 64} variant={turns.length > 0 ? 'mini' : 'small'} seed={4.1} />
+              <Text style={styles.loadingText}>Thinking…</Text>
             </View>
           )}
         </ScrollView>
@@ -304,21 +363,21 @@ export default function AskScreen() {
         <View style={styles.inputBar}>
           <TextInput
             style={styles.input}
-            placeholder={response ? 'Ask a follow-up…' : 'Ask a question…'}
+            placeholder={turns.length > 0 ? 'Ask a follow-up…' : 'Ask a question…'}
             placeholderTextColor={colors.textDim}
             value={question}
             onChangeText={setQuestion}
             onSubmitEditing={submit}
             returnKeyType="send"
             multiline
-            maxLength={500}
+            maxLength={2000}
             editable={!loading}
           />
           <TouchableOpacity
             style={[styles.sendButton, (loading || !question.trim()) && styles.sendDisabled]}
             onPress={submit}
             disabled={loading || !question.trim()}
-            accessibilityLabel="Ask"
+            accessibilityLabel="Send"
           >
             {loading ? (
               <ActivityIndicator color={colors.white} size="small" />
@@ -398,9 +457,38 @@ const styles = StyleSheet.create({
     paddingTop: 56,
     gap: 14,
   },
+  loadingInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+  },
   loadingText: {
     fontSize: 13,
     color: colors.textMuted,
+  },
+  threadBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingTop: 6,
+    paddingBottom: 8,
+  },
+  threadLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: colors.textMuted,
+    fontFamily: mono,
+  },
+  newChat: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.accent,
+  },
+  answerFailed: {
+    color: colors.accentDeep,
   },
   questionRow: {
     flexDirection: 'row',

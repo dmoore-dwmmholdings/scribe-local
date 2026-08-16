@@ -66,6 +66,24 @@ export interface Speaker {
 }
 
 /**
+ * An enrolled speaker as `GET /speakers` returns it.
+ *
+ * `has_voiceprint` is the difference between a name that was only ever typed on
+ * one recording and one the server can recognise by voice in recordings
+ * uploaded later. The embedding itself never leaves the server.
+ */
+export interface EnrolledSpeaker extends Speaker {
+  has_voiceprint: boolean;
+  /** How many recordings this speaker is tagged in. */
+  recording_count: number;
+}
+
+/** Response from `GET /speakers`. */
+export interface ListSpeakersResponse {
+  speakers: EnrolledSpeaker[];
+}
+
+/**
  * Per-recording diarised speaker, optionally matched to a known Speaker.
  * Mirrors `RecordingSpeaker` in types.rs plus the `display_name` convenience
  * field the API adds.
@@ -282,9 +300,20 @@ export interface SearchResponse {
   hits: SearchHit[];
 }
 
+/** One earlier turn of an Ask conversation. */
+export interface AskTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 /** Body for `POST /ask`. */
 export interface AskRequest {
   question: string;
+  /**
+   * Earlier turns, oldest first, without the current question. Ask is a
+   * conversation: without this a follow-up like "why?" has nothing to refer to.
+   */
+  history?: AskTurn[];
   filters?: {
     from?: string;
     to?: string;
@@ -300,9 +329,14 @@ export interface AskResponse {
   citations: Citation[];
 }
 
-/** Body for `POST /recordings/{id}/speakers/{local_idx}/name`. */
+/**
+ * Body for `POST /recordings/{id}/speakers/{local_idx}/name`.
+ * Supply `speaker_id` to reuse someone already in the library, or `name` to
+ * reuse-by-name / create a new identity. One of the two is required.
+ */
 export interface NameSpeakerRequest {
-  name: string;
+  name?: string;
+  speaker_id?: string;
   enroll?: boolean;
 }
 
@@ -311,6 +345,8 @@ export interface NameSpeakerResponse {
   local_idx: number;
   speaker_id: string;
   display_name: string;
+  /** True once the identity carries a voiceprint (older backends omit this). */
+  enrolled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
