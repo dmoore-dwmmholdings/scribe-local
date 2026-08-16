@@ -47,6 +47,51 @@ impl Db {
         rows.iter().map(speaker_from_row).collect()
     }
 
+    /// All enrolled speakers with the number of recordings each is tagged in.
+    ///
+    /// Same order as [`Db::list_speakers`]; the count comes from
+    /// `recording_speakers`, so it reflects both manual tags and voiceprint
+    /// auto-matches.
+    pub async fn list_speakers_with_usage(&self) -> Result<Vec<(Speaker, i64)>> {
+        let sql = format!(
+            "SELECT {COLS}, \
+             (SELECT count(*) FROM recording_speakers rs WHERE rs.speaker_id = s.id) \
+                 AS recording_count \
+             FROM speakers s ORDER BY s.display_name"
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_err)?;
+        rows.iter()
+            .map(|row| {
+                let count: i64 = row.try_get("recording_count").map_err(db_err)?;
+                Ok((speaker_from_row(row)?, count))
+            })
+            .collect()
+    }
+
+    /// Attach (or replace) an enrolled speaker's reference voiceprint.
+    ///
+    /// This is what makes a name stick across recordings: the diarize stage
+    /// matches future recordings against these vectors, so a speaker without one
+    /// is only ever a manual label.
+    pub async fn set_speaker_embedding(&self, id: Uuid, embedding: &[f32]) -> Result<()> {
+        let vec = Vector::from(embedding.to_vec());
+        let affected = sqlx::query("UPDATE speakers SET embedding = $2 WHERE id = $1")
+            .bind(id)
+            .bind(vec)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        if affected == 0 {
+            Err(Error::NotFound(format!("speaker {id}")))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Fetch a speaker by id. [`Error::NotFound`] when absent.
     pub async fn get_speaker(&self, id: Uuid) -> Result<Speaker> {
         let sql = format!("SELECT {COLS} FROM speakers WHERE id = $1");

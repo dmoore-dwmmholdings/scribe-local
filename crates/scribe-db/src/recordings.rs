@@ -198,6 +198,22 @@ impl Db {
         row.try_get::<Vec<String>, _>("tags").map_err(db_err)
     }
 
+    /// Set (or clear, with `None`) how many people are in the recording.
+    ///
+    /// Diarization pins its clustering to this count when it is known, so it is
+    /// the strongest correction available for a recording that came back with
+    /// the wrong number of speakers. Takes effect on the next diarize run.
+    pub async fn set_participants_expected(&self, id: Uuid, n: Option<i32>) -> Result<()> {
+        let affected = sqlx::query("UPDATE recordings SET participants_expected = $2 WHERE id = $1")
+            .bind(id)
+            .bind(n)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        not_found_if_zero(affected, id)
+    }
+
     /// Delete the recording's pipeline scratch artifacts (`recording_artifacts`:
     /// the transcript/diarization hand-offs). Used when reprocessing so the
     /// re-run regenerates them from scratch. Returns the number of rows removed.
@@ -230,6 +246,14 @@ impl Db {
             "chunks",
             "summaries",
             "recording_artifacts",
+            // Diarization assigns speaker indices from scratch, so last run's
+            // rows are not merely stale, they are wrong: the new run upserts
+            // 0..n-1 and every higher index from the previous run survives as a
+            // phantom participant. A recording reprocessed a few times
+            // accumulated dozens that way. Enrolled identities live in
+            // `speakers` and are untouched — the diarize stage re-attaches them
+            // by voiceprint, so a tagged voice comes back named.
+            "recording_speakers",
             "jobs",
         ] {
             sqlx::query(&format!("DELETE FROM {table} WHERE recording_id = $1"))

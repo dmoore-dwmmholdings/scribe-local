@@ -24,11 +24,16 @@
 //! POST   /recordings/{id}/summarize                     (re-summarize w/ template, adds a view)
 //! POST   /recordings/{id}/translate                      (translate the summary via the LLM)
 //! PUT    /recordings/{id}/tags                           (replace org tags)
+//! PUT    /recordings/{id}/participants                   (state the speaker count)
 //! PATCH  /recordings/{id}/utterances/{utterance_id}      (edit transcript text)
 //! PUT    /recordings/{id}/segments/{seq}               (body limit disabled, streamed)
 //! GET    /recordings/{id}/segments/{seq}               (range support)
 //! GET    /recordings/{id}/audio                         (range support)
-//! POST   /recordings/{id}/speakers/{local_idx}/name
+//! POST   /recordings/{id}/speakers/{local_idx}/name      (tag by name or speaker_id)
+//! DELETE /recordings/{id}/speakers/{local_idx}/name      (untag, back to "Speaker N")
+//! GET    /speakers                                       (enrolled speaker library)
+//! PATCH  /speakers/{id}                                  (rename everywhere)
+//! DELETE /speakers/{id}                                  (forget a speaker)
 //! GET    /tags                                           (distinct tags in use)
 //! GET    /search
 //! POST   /ask
@@ -97,6 +102,10 @@ pub fn router(state: AppState) -> Router {
             put(handlers::recordings::set_recording_tags),
         )
         .route(
+            "/recordings/{id}/participants",
+            put(handlers::recordings::set_participants),
+        )
+        .route(
             "/recordings/{id}/utterances/{utterance_id}",
             patch(handlers::recordings::edit_utterance),
         )
@@ -114,7 +123,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/recordings/{id}/speakers/{local_idx}/name",
-            post(handlers::speakers::name_speaker),
+            post(handlers::speakers::name_speaker).delete(handlers::speakers::unname_speaker),
+        )
+        .route("/speakers", get(handlers::speakers::list_speakers))
+        .route(
+            "/speakers/{id}",
+            patch(handlers::speakers::rename_speaker)
+                .delete(handlers::speakers::delete_speaker),
         )
         .route("/search", get(handlers::search::search))
         .route("/ask", post(handlers::search::ask))

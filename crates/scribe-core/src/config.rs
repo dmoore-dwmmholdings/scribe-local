@@ -171,6 +171,16 @@ pub struct LlmConfig {
     /// misrecognised names / proper nouns. Degrades gracefully (keeps the raw
     /// text) if the LLM is unreachable or returns anything unexpected.
     pub correct_transcript: bool,
+    /// Largest transcript, in characters, that may go into a single prompt.
+    ///
+    /// A long meeting does not fit in a local model's context: a 50-minute
+    /// recording is ~30 000 characters, and an 8k-token model rejects the
+    /// request outright (`exceed_context_size_error`), which used to leave the
+    /// recording with a silently empty summary. Above this budget the summarize
+    /// stage switches to map-reduce — summarize each part, then summarize those
+    /// notes. Roughly 4 characters per token, so the default leaves ample room
+    /// for the instructions and the reply inside an 8k context.
+    pub max_prompt_chars: usize,
 }
 
 /// How `serve` restarts itself into a freshly-installed binary (design: §5
@@ -323,6 +333,7 @@ impl Default for LlmConfig {
             embed_model: "nomic-embed-text".to_string(),
             embed_dim: 768,
             correct_transcript: true,
+            max_prompt_chars: 18_000,
         }
     }
 }

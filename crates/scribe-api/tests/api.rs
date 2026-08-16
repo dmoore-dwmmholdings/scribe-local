@@ -477,6 +477,168 @@ async fn full_api_flow() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "audio 404 before transcode");
 
+    // --- speaker tagging + the shared speaker library ---------------------
+    // Two diarized speakers with voiceprints, as the diarize stage would leave
+    // them.
+    let voice_a: Vec<f32> = (0..192).map(|i| (i as f32) / 192.0).collect();
+    let voice_b: Vec<f32> = (0..192).map(|i| 1.0 - (i as f32) / 192.0).collect();
+    db.upsert_recording_speaker(rec_id, 0, None, Some(voice_a.clone()))
+        .await
+        .unwrap();
+    db.upsert_recording_speaker(rec_id, 1, None, Some(voice_b.clone()))
+        .await
+        .unwrap();
+
+    // Tag speaker 0 by name, enrolling the voice.
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/speakers/0/name"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "name": "Dawson", "enroll": true }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "name speaker status: {body}");
+    assert_eq!(body["display_name"], "Dawson");
+    assert_eq!(body["enrolled"], json!(true), "voice was enrolled: {body}");
+    let dawson_id = body["speaker_id"].as_str().unwrap().to_string();
+
+    // The library lists them with a voiceprint flag and a usage count, and never
+    // ships the raw embedding.
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .uri("/speakers")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "list speakers status: {body}");
+    let speakers = body["speakers"].as_array().expect("speakers array");
+    assert_eq!(speakers.len(), 1, "one enrolled speaker: {body}");
+    assert_eq!(speakers[0]["display_name"], "Dawson");
+    assert_eq!(speakers[0]["has_voiceprint"], json!(true));
+    assert_eq!(speakers[0]["recording_count"], json!(1));
+    assert!(speakers[0]["embedding"].is_null(), "embedding stays server-side");
+
+    // A voice that close to the enrolled one now matches — this is what makes a
+    // tag carry into recordings uploaded later.
+    let matched = db
+        .match_speaker_by_embedding(&voice_a, 0.5)
+        .await
+        .unwrap()
+        .expect("enrolled voice matches");
+    assert_eq!(matched.0.display_name, "Dawson");
+
+    // Tag speaker 1 by picking the SAME identity from the library (no name).
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/speakers/1/name"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "speaker_id": dawson_id }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tag by speaker_id status: {body}");
+    assert_eq!(body["display_name"], "Dawson");
+    assert_eq!(
+        body["speaker_id"].as_str().unwrap(),
+        dawson_id,
+        "reuses the existing identity instead of creating a second one"
+    );
+
+    // Neither name nor speaker_id is a 400.
+    let (status, _) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/speakers/0/name"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "name or speaker_id required");
+
+    // Renaming propagates to the transcript, which resolves through speaker_id.
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/speakers/{dawson_id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "name": "Dawson M" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "rename status: {body}");
+    assert_eq!(body["display_name"], "Dawson M");
+    assert_eq!(body["recording_count"], json!(1), "count survives rename");
+
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .uri(format!("/recordings/{rec_id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "detail status: {body}");
+    assert!(
+        body["speakers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["display_name"] == "Dawson M"),
+        "rename shows up on both diarized speakers: {body}"
+    );
+
+    // Untagging one line reverts it to "Speaker N" without touching the library.
+    let (status, _) = call(
+        &app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/recordings/{rec_id}/speakers/1/name"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "untag status");
+    let rec_speakers = db.list_recording_speakers(rec_id).await.unwrap();
+    assert!(
+        rec_speakers
+            .iter()
+            .find(|s| s.local_idx == 1)
+            .unwrap()
+            .speaker_id
+            .is_none(),
+        "speaker 1 is anonymous again"
+    );
+
+    // Deleting the speaker forgets it everywhere; tagged rows fall back to null.
+    let (status, _) = call(
+        &app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/speakers/{dawson_id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete speaker status");
+    assert!(db.list_speakers().await.unwrap().is_empty(), "library is empty");
+    let rec_speakers = db.list_recording_speakers(rec_id).await.unwrap();
+    assert!(
+        rec_speakers.iter().all(|s| s.speaker_id.is_none()),
+        "deleting a speaker un-tags the recordings it was in"
+    );
+
     // --- reprocess (Feature D) -------------------------------------------
     // Re-runs the whole pipeline: derived data (utterances/chunks/summaries) is
     // wiped, status flips to processing, and a fresh transcode job is enqueued.

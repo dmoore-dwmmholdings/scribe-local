@@ -42,6 +42,12 @@ const DIARIZE_WINDOW_MS: i64 = 10 * 60 * 1000;
 /// better error, since the alternative produced 150 phantom participants.
 const MIN_NEW_SPEAKER_MS: i64 = 3_000;
 
+/// Shortest turn used to build a speaker's identity embedding.
+///
+/// Speaker-embedding models need about a second of speech; below that the
+/// vector says more about the noise floor than the voice.
+const MIN_EMBED_MS: i64 = 1_000;
+
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
 pub struct SherpaDiarizer {
@@ -66,17 +72,30 @@ impl SherpaDiarizer {
     fn build_diarizer(&self, expected: Option<i32>) -> Result<OfflineSpeakerDiarization> {
         let provider = provider_for(&self.device);
 
-        // `participants_expected` is treated as a soft HINT, not a hard count:
-        // always discover the speaker count via the cosine threshold so the
-        // system adapts when more people speak (someone joins) or fewer do
-        // (someone stays silent) than the user guessed. Pinning `num_clusters`
-        // to the hint would force-merge or force-split real voices.
-        if let Some(n) = expected {
-            tracing::debug!(hint = n, "diarize: speaker-count hint (advisory, threshold discovery)");
-        }
-        let clustering = FastClusteringConfig {
-            num_clusters: -1,
-            threshold: CLUSTER_THRESHOLD,
+        // When the user tells us how many people are in the room, believe them.
+        //
+        // This used to always discover the count by threshold, on the reasoning
+        // that the hint might be wrong. On long recordings that reasoning cost
+        // far more than it saved: threshold discovery inside each window split
+        // four voices into dozens (a 50-minute meeting came back with 34
+        // speakers, a 2h49m one with 156). A stated count is the single most
+        // reliable signal available, and a wrong hint is recoverable — the user
+        // can rename or reprocess — where dozens of phantom speakers are not.
+        //
+        // Without a hint we still discover the count, and the global merge in
+        // `consolidate` cleans up what over-segmentation gets through.
+        let clustering = match expected {
+            Some(n) if n >= 1 => {
+                tracing::debug!(n, "diarize: clustering to the stated speaker count");
+                FastClusteringConfig {
+                    num_clusters: n,
+                    threshold: CLUSTER_THRESHOLD,
+                }
+            }
+            _ => FastClusteringConfig {
+                num_clusters: -1,
+                threshold: CLUSTER_THRESHOLD,
+            },
         };
 
         let config = OfflineSpeakerDiarizationConfig {
@@ -179,11 +198,12 @@ impl SherpaDiarizer {
         let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
         let sr = audio.sample_rate;
 
-        let mut turns: Vec<SpeakerTurn> = Vec::new();
-        // Running mean embedding per global speaker, with the number of window
-        // speakers folded into it so later merges stay weighted correctly.
-        let mut centroids: Vec<(Vec<f32>, usize)> = Vec::new();
-
+        // Pass 1: diarize each window on its own. Nothing is decided about
+        // identity here - a window speaker is just "some voice, over this
+        // stretch of audio". Identity used to be resolved greedily as the
+        // windows went by, which made the answer depend on the order they
+        // happened to arrive in.
+        let mut fragments: Vec<Fragment> = Vec::new();
         let mut start = 0usize;
         while start < audio.samples.len() {
             let end = (start + window).min(audio.samples.len());
@@ -213,78 +233,88 @@ impl SherpaDiarizer {
 
             let local_embs = compute_speaker_embeddings(&extractor, slice, sr, &local_turns)?;
 
-            // Resolve every window speaker to a global one before rewriting the
-            // turns, so two window speakers can't collapse onto each other.
-            let mut local_ids: Vec<i32> = local_turns.iter().map(|t| t.local_idx).collect();
-            local_ids.sort_unstable();
-            local_ids.dedup();
-
-            // Total speech per window speaker. Clustering inside a window splits
-            // out brief noise and crosstalk as their own "speakers"; an
-            // embedding taken from a fraction of a second is unreliable, so it
-            // matches nothing and would found a new participant every time. A
-            // 2h49m meeting produced 156 speakers that way — five real voices
-            // and ~150 fragments of well under a second each.
-            let mut speech_ms: HashMap<i32, i64> = HashMap::new();
-            for t in &local_turns {
-                *speech_ms.entry(t.local_idx).or_insert(0) += (t.end_ms - t.start_ms).max(0);
-            }
-
-            let mut mapping: HashMap<i32, i32> = HashMap::new();
-            for local_id in local_ids {
-                let Some(emb) = local_embs.get(&local_id) else {
-                    continue;
-                };
-                if let Some(global) = match_global_speaker(&mut centroids, emb) {
-                    // Recognised: join that speaker however brief this turn was.
-                    mapping.insert(local_id, global);
-                } else if speech_ms.get(&local_id).copied().unwrap_or(0) >= MIN_NEW_SPEAKER_MS {
-                    mapping.insert(local_id, push_global_speaker(&mut centroids, emb));
-                }
-                // Otherwise: unrecognised *and* too brief to be a new
-                // participant — attributed to the nearest speaker below.
-            }
-
-            // Nothing in this window could be identified — drop it rather than
-            // attribute speech to an arbitrary speaker.
-            if mapping.is_empty() {
-                tracing::debug!(offset_ms, "diarize: no identifiable speaker in window");
-                start = end;
-                continue;
-            }
-
+            let mut by_local: HashMap<i32, Fragment> = HashMap::new();
             for turn in &local_turns {
-                let global = match mapping.get(&turn.local_idx) {
-                    Some(g) => *g,
-                    // Unidentifiable fragment: attribute it to whoever holds the
-                    // nearest identified turn in this window, which is far more
-                    // likely to be right than a brand-new speaker.
-                    None => nearest_mapped_speaker(&local_turns, &mapping, turn),
-                };
-                turns.push(SpeakerTurn {
-                    local_idx: global,
+                let frag = by_local.entry(turn.local_idx).or_insert_with(|| Fragment {
+                    turns: Vec::new(),
+                    embedding: local_embs.get(&turn.local_idx).cloned(),
+                    speech_ms: 0,
+                });
+                frag.speech_ms += (turn.end_ms - turn.start_ms).max(0);
+                frag.turns.push(SpeakerTurn {
+                    local_idx: turn.local_idx,
                     start_ms: turn.start_ms + offset_ms,
                     end_ms: turn.end_ms + offset_ms,
                 });
             }
+            fragments.extend(by_local.into_values());
 
             start = end;
         }
 
+        if fragments.is_empty() {
+            return Ok(Diarization {
+                turns: Vec::new(),
+                embeddings: HashMap::new(),
+                num_speakers: 0,
+            });
+        }
+
+        // Pass 2: cluster every fragment in the recording at once.
+        let assignment = cluster_fragments(&fragments, expected);
+
+        // Pass 3: emit the turns under their cluster, and build one centroid per
+        // cluster, weighted by how much speech each fragment contributed.
+        let mut turns: Vec<SpeakerTurn> = Vec::new();
+        let mut sums: HashMap<i32, (Vec<f32>, f32)> = HashMap::new();
+        for (frag, &cluster) in fragments.iter().zip(assignment.iter()) {
+            for turn in &frag.turns {
+                turns.push(SpeakerTurn {
+                    local_idx: cluster,
+                    start_ms: turn.start_ms,
+                    end_ms: turn.end_ms,
+                });
+            }
+            if let Some(emb) = &frag.embedding {
+                let weight = (frag.speech_ms.max(1) as f32) / 1000.0;
+                let entry = sums
+                    .entry(cluster)
+                    .or_insert_with(|| (vec![0.0; emb.len()], 0.0));
+                if entry.0.len() != emb.len() {
+                    entry.0 = vec![0.0; emb.len()];
+                }
+                for (a, b) in entry.0.iter_mut().zip(emb.iter()) {
+                    *a += *b * weight;
+                }
+                entry.1 += weight;
+            }
+        }
         turns.sort_by_key(|t| (t.start_ms, t.end_ms));
 
         let mut embeddings = HashMap::new();
-        for (idx, (centroid, _)) in centroids.iter().enumerate() {
-            if centroid.iter().any(|x| *x != 0.0) {
-                embeddings.insert(idx as i32, centroid.clone());
+        for (cluster, (mut sum, weight)) in sums {
+            if weight <= 0.0 {
+                continue;
             }
+            for x in sum.iter_mut() {
+                *x /= weight;
+            }
+            l2_normalize(&mut sum);
+            embeddings.insert(cluster, sum);
         }
 
-        let num_speakers = centroids.len();
+        let num_speakers = assignment
+            .iter()
+            .copied()
+            .max()
+            .map(|m| m as usize + 1)
+            .unwrap_or(0);
         tracing::info!(
             windows = audio.samples.len().div_ceil(window),
+            fragments = fragments.len(),
             speakers = num_speakers,
             turns = turns.len(),
+            stated = expected.unwrap_or(-1),
             "diarize: chunked long recording"
         );
 
@@ -294,6 +324,208 @@ impl SherpaDiarizer {
             num_speakers,
         })
     }
+}
+
+/// One window speaker: a stretch of a single voice, before anything is decided
+/// about which recording-wide speaker it belongs to.
+struct Fragment {
+    turns: Vec<SpeakerTurn>,
+    /// `None` when the audio was too short or too poor to embed.
+    embedding: Option<Vec<f32>>,
+    speech_ms: i64,
+}
+
+/// Most speakers we will infer when the count was not stated.
+///
+/// A bound on the search, not a similarity threshold: past a dozen distinct
+/// voices in one recording, another "speaker" is far more likely to be
+/// over-segmentation than a person.
+const MAX_INFERRED_SPEAKERS: usize = 12;
+
+/// Assign every fragment to a recording-wide speaker.
+///
+/// Agglomerative clustering with **average linkage**: the similarity between
+/// two clusters is the mean over every member pair, recomputed from the
+/// original fragment embeddings each time. It deliberately keeps no running
+/// centroid - averaging centroids as you merge lets the largest cluster drift
+/// toward the mean of everything and then swallow the rest, which is how a
+/// four-person meeting collapsed into one speaker holding 99.8% of the speech.
+///
+/// The speaker count comes from `expected` when it was stated. When it was not,
+/// it is read off this recording's own merge sequence rather than from a tuned
+/// constant: merges get less convincing as clustering is forced to join
+/// genuinely different voices, and the sharpest fall in that sequence is the
+/// natural number of speakers. A cosine value that means "same person" in one
+/// recording means nothing in another - different mic, room and voices - so no
+/// fixed threshold can be right for both.
+fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> {
+    // Fragments we can actually compare.
+    let embedded: Vec<usize> = fragments
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.embedding.as_ref().is_some_and(|e| !e.is_empty()))
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut assignment = vec![-1i32; fragments.len()];
+    if embedded.is_empty() {
+        // Nothing could be embedded: one speaker is the only honest answer.
+        return vec![0; fragments.len()];
+    }
+
+    // Every embedded fragment starts as its own cluster.
+    let mut clusters: Vec<Vec<usize>> = embedded.iter().map(|&i| vec![i]).collect();
+    let target = expected
+        .filter(|n| *n >= 1)
+        .map(|n| (n as usize).min(clusters.len()));
+
+    // Merge down to a single cluster, recording what each merge cost.
+    let mut history: Vec<(usize, f32, Vec<Vec<usize>>)> = Vec::new();
+    while clusters.len() > 1 {
+        let mut best: Option<(usize, usize, f32)> = None;
+        for i in 0..clusters.len() {
+            for j in (i + 1)..clusters.len() {
+                let sim = average_linkage(fragments, &clusters[i], &clusters[j]);
+                if best.map(|(_, _, b)| sim > b).unwrap_or(true) {
+                    best = Some((i, j, sim));
+                }
+            }
+        }
+        let Some((i, j, sim)) = best else { break };
+        history.push((clusters.len(), sim, clusters.clone()));
+
+        let merged = clusters.remove(j);
+        clusters[i].extend(merged);
+
+        if target.is_some_and(|t| clusters.len() == t) {
+            break;
+        }
+    }
+
+    let final_clusters = match target {
+        // Stated count: what we hold now is the answer.
+        Some(_) => clusters,
+        // Otherwise the recording decides. `clusters` is now the single
+        // all-in-one cluster the merge loop ended at, which is the answer when
+        // nothing separates cleanly.
+        None => choose_clustering(&history, &clusters),
+    };
+
+    for (idx, members) in final_clusters.iter().enumerate() {
+        for &fragment in members {
+            assignment[fragment] = idx as i32;
+        }
+    }
+
+    // A fragment with no usable embedding joins the speaker holding the nearest
+    // turn in time - far likelier to be right than a speaker of its own.
+    for i in 0..fragments.len() {
+        if assignment[i] >= 0 {
+            continue;
+        }
+        assignment[i] = nearest_assigned(fragments, &assignment, i).unwrap_or(0);
+    }
+    assignment
+}
+
+/// How much worse than the merges already accepted a merge has to be before we
+/// refuse it and call the two clusters different people.
+///
+/// The one constant left in the speaker count, and deliberately a *ratio*
+/// rather than a similarity. Absolute cosine cannot work across recordings: two
+/// takes of one voice sit near 0.95 on a close mic and near 0.5 across a room,
+/// so any fixed cutoff is simultaneously too strict for one recording and too
+/// loose for another. What does carry across is the shape of the merge
+/// sequence - joining takes of one voice looks consistent, and joining two
+/// people is a visible step down from whatever "consistent" meant in this
+/// recording.
+const RELATIVE_DROP: f32 = 0.8;
+
+/// Decide where to stop merging, using only this recording's own numbers.
+///
+/// Walks the merge sequence in order. Each merge is compared against the median
+/// of the merges already accepted: while clustering is joining takes of the same
+/// voice the similarities stay in family, and the first one that falls well
+/// below that family is the boundary between two people. If no merge ever does,
+/// every fragment belongs to one voice - which is a possible answer here, and
+/// the one a "largest drop" rule can never give, because it always cuts
+/// somewhere.
+fn choose_clustering(
+    history: &[(usize, f32, Vec<Vec<usize>>)],
+    single: &[Vec<usize>],
+) -> Vec<Vec<usize>> {
+    let mut accepted: Vec<f32> = Vec::new();
+    for (count, sim, snapshot) in history {
+        // Above the sanity bound, keep merging whatever it looks like: that
+        // many clusters is over-segmentation, not a room full of people.
+        if *count <= MAX_INFERRED_SPEAKERS {
+            // With nothing accepted yet there is no family to compare against;
+            // a fragment is perfectly similar to itself, so use 1.0.
+            let within = median(&accepted).unwrap_or(1.0);
+            if *sim < RELATIVE_DROP * within {
+                return snapshot.clone();
+            }
+        }
+        accepted.push(*sim);
+    }
+    single.to_vec()
+}
+
+/// Median of `values`, or `None` when empty. Used instead of the mean so one
+/// unusually good or bad merge cannot move the comparison.
+fn median(values: &[f32]) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    Some(if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    })
+}
+
+/// Mean similarity over every member pair across two clusters.
+fn average_linkage(fragments: &[Fragment], a: &[usize], b: &[usize]) -> f32 {
+    let mut total = 0.0;
+    let mut pairs = 0.0;
+    for &i in a {
+        let Some(ei) = fragments[i].embedding.as_ref() else {
+            continue;
+        };
+        for &j in b {
+            let Some(ej) = fragments[j].embedding.as_ref() else {
+                continue;
+            };
+            total += cosine(ei, ej);
+            pairs += 1.0;
+        }
+    }
+    if pairs == 0.0 {
+        0.0
+    } else {
+        total / pairs
+    }
+}
+
+/// Speaker of the assigned fragment whose turns sit closest in time to `target`.
+fn nearest_assigned(fragments: &[Fragment], assignment: &[i32], target: usize) -> Option<i32> {
+    let mid = |f: &Fragment| -> i64 {
+        if f.turns.is_empty() {
+            return 0;
+        }
+        let sum: i64 = f.turns.iter().map(|t| (t.start_ms + t.end_ms) / 2).sum();
+        sum / f.turns.len() as i64
+    };
+    let want = mid(&fragments[target]);
+    fragments
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| assignment[*i] >= 0)
+        .min_by_key(|(_, f)| (mid(f) - want).abs())
+        .map(|(i, _)| assignment[i])
 }
 
 /// Global speaker of the identified turn closest in time to `turn`.
@@ -405,9 +637,28 @@ fn compute_speaker_embeddings(
     turns: &[SpeakerTurn],
 ) -> Result<HashMap<i32, Vec<f32>>> {
     let sr = sample_rate as i64;
-    let mut acc: HashMap<i32, (Vec<f32>, usize)> = HashMap::new();
+    // Weighted by duration, so a speaker's identity is dominated by the audio
+    // there was most of. An embedding taken from a fraction of a second is
+    // mostly noise; averaging it in equally with a ten-second turn was pulling
+    // centroids apart and stopping enrolled voices from matching.
+    let mut acc: HashMap<i32, (Vec<f32>, f32)> = HashMap::new();
+
+    // Turns long enough to embed reliably. If a speaker has none, fall back to
+    // whatever they do have rather than leaving them with no embedding at all.
+    let long_enough: Vec<&SpeakerTurn> = turns
+        .iter()
+        .filter(|t| t.end_ms - t.start_ms >= MIN_EMBED_MS)
+        .collect();
+    let speakers_with_long: std::collections::HashSet<i32> =
+        long_enough.iter().map(|t| t.local_idx).collect();
 
     for turn in turns {
+        // Skip a scrap of a turn when this speaker has better audio elsewhere.
+        if turn.end_ms - turn.start_ms < MIN_EMBED_MS
+            && speakers_with_long.contains(&turn.local_idx)
+        {
+            continue;
+        }
         let start = ((turn.start_ms.max(0) * sr) / 1000) as usize;
         let end = (((turn.end_ms.max(turn.start_ms)) * sr) / 1000) as usize;
         let end = end.min(samples.len());
@@ -428,25 +679,26 @@ fn compute_speaker_embeddings(
             continue;
         };
 
+        let weight = ((turn.end_ms - turn.start_ms).max(1) as f32) / 1000.0;
         let entry = acc
             .entry(turn.local_idx)
-            .or_insert_with(|| (vec![0.0; emb.len()], 0));
+            .or_insert_with(|| (vec![0.0; emb.len()], 0.0));
         if entry.0.len() != emb.len() {
             entry.0 = vec![0.0; emb.len()];
         }
         for (a, b) in entry.0.iter_mut().zip(emb.iter()) {
-            *a += *b;
+            *a += *b * weight;
         }
-        entry.1 += 1;
+        entry.1 += weight;
     }
 
     let mut out = HashMap::new();
-    for (idx, (mut sum, count)) in acc {
-        if count == 0 {
+    for (idx, (mut sum, weight)) in acc {
+        if weight <= 0.0 {
             continue;
         }
         for x in sum.iter_mut() {
-            *x /= count as f32;
+            *x /= weight;
         }
         l2_normalize(&mut sum);
         out.insert(idx, sum);
@@ -553,6 +805,144 @@ mod tests {
             end_ms,
         }
     }
+
+    fn frag(emb: Option<&[f32]>, start_ms: i64, end_ms: i64) -> Fragment {
+        Fragment {
+            turns: vec![turn(0, start_ms, end_ms)],
+            embedding: emb.map(unit),
+            speech_ms: end_ms - start_ms,
+        }
+    }
+
+    /// Group fragment indices by the speaker they were assigned, so a test can
+    /// assert the partition without caring which number each speaker got.
+    fn partition(assignment: &[i32]) -> Vec<Vec<usize>> {
+        let mut groups: HashMap<i32, Vec<usize>> = HashMap::new();
+        for (i, &a) in assignment.iter().enumerate() {
+            groups.entry(a).or_default().push(i);
+        }
+        let mut out: Vec<Vec<usize>> = groups.into_values().collect();
+        out.sort();
+        out
+    }
+
+    /// Three voices, several stretches each, must come back as three speakers
+    /// with the right membership.
+    ///
+    /// This is the case that broke in the field: a 50-minute, four-person
+    /// meeting came back with one speaker holding 99.8% of the speech, because
+    /// merging averaged centroids and the biggest cluster drifted until it
+    /// swallowed everyone.
+    #[test]
+    fn several_takes_of_three_voices_give_three_speakers() {
+        let alice = [1.0, 0.05, 0.0];
+        let bob = [0.0, 1.0, 0.05];
+        let carol = [0.05, 0.0, 1.0];
+        let fragments = vec![
+            frag(Some(&alice), 0, 10_000),
+            frag(Some(&[0.98, 0.1, 0.02]), 10_000, 20_000),
+            frag(Some(&bob), 20_000, 30_000),
+            frag(Some(&[0.02, 0.99, 0.1]), 30_000, 40_000),
+            frag(Some(&carol), 40_000, 50_000),
+            frag(Some(&[0.1, 0.02, 0.97]), 50_000, 60_000),
+        ];
+
+        let assignment = cluster_fragments(&fragments, None);
+
+        assert_eq!(
+            partition(&assignment),
+            vec![vec![0, 1], vec![2, 3], vec![4, 5]],
+            "each voice keeps its own stretches"
+        );
+    }
+
+    /// No single voice may absorb the recording when the others are genuinely
+    /// distinct, however many stretches it happens to have.
+    #[test]
+    fn a_dominant_voice_does_not_swallow_the_others() {
+        let mut fragments: Vec<Fragment> = (0..8)
+            .map(|i| frag(Some(&[1.0, 0.02 * i as f32, 0.0]), i * 10_000, i * 10_000 + 9_000))
+            .collect();
+        // Two brief contributions from two other people, as in the real case.
+        fragments.push(frag(Some(&[0.0, 1.0, 0.0]), 90_000, 94_000));
+        fragments.push(frag(Some(&[0.0, 0.0, 1.0]), 100_000, 104_000));
+
+        let assignment = cluster_fragments(&fragments, None);
+        let groups = partition(&assignment);
+
+        assert_eq!(groups.len(), 3, "three voices, not one");
+        assert_eq!(groups[0], (0..8).collect::<Vec<_>>(), "the talker stays one speaker");
+        assert_eq!(groups[1], vec![8]);
+        assert_eq!(groups[2], vec![9]);
+    }
+
+    /// A stated speaker count is honored exactly - the user knows how many
+    /// people were in the room, and that beats anything inferred.
+    #[test]
+    fn a_stated_count_is_honored() {
+        let fragments = vec![
+            frag(Some(&[1.0, 0.0, 0.0]), 0, 10_000),
+            frag(Some(&[0.0, 1.0, 0.0]), 10_000, 20_000),
+            frag(Some(&[0.0, 0.0, 1.0]), 20_000, 30_000),
+            frag(Some(&[0.9, 0.1, 0.0]), 30_000, 40_000),
+        ];
+
+        let assignment = cluster_fragments(&fragments, Some(2));
+
+        assert_eq!(partition(&assignment).len(), 2, "merged down to the stated count");
+        assert!(assignment.iter().all(|&a| a >= 0 && a < 2));
+    }
+
+    /// The result must not depend on the order the windows happened to arrive
+    /// in. The greedy pass this replaced failed exactly here: identity was
+    /// resolved one window at a time, so whoever spoke first won.
+    #[test]
+    fn clustering_is_independent_of_fragment_order() {
+        let voices: [[f32; 3]; 3] = [[1.0, 0.05, 0.0], [0.0, 1.0, 0.05], [0.05, 0.0, 1.0]];
+        let forward: Vec<Fragment> = (0..6)
+            .map(|i| frag(Some(&voices[i % 3]), i as i64 * 10_000, i as i64 * 10_000 + 9_000))
+            .collect();
+        let reversed: Vec<Fragment> = (0..6)
+            .rev()
+            .map(|i| frag(Some(&voices[i % 3]), i as i64 * 10_000, i as i64 * 10_000 + 9_000))
+            .collect();
+
+        let a = partition(&cluster_fragments(&forward, None)).len();
+        let b = partition(&cluster_fragments(&reversed, None)).len();
+        assert_eq!(a, 3);
+        assert_eq!(a, b, "the same audio must give the same speaker count either way");
+    }
+
+    /// A stretch too short or too noisy to embed joins whoever is speaking
+    /// around it, rather than becoming a speaker of its own.
+    #[test]
+    fn an_unembeddable_fragment_joins_its_neighbour() {
+        let fragments = vec![
+            frag(Some(&[1.0, 0.0, 0.0]), 0, 10_000),
+            frag(None, 10_100, 10_400),
+            frag(Some(&[0.0, 1.0, 0.0]), 60_000, 70_000),
+        ];
+
+        let assignment = cluster_fragments(&fragments, None);
+
+        assert_eq!(
+            assignment[1], assignment[0],
+            "the fragment takes the speaker it sits next to in time"
+        );
+        assert_ne!(assignment[2], assignment[0]);
+    }
+
+    /// One voice must stay one speaker - inferring a count must not split a
+    /// single person just because their stretches differ slightly.
+    #[test]
+    fn one_voice_stays_one_speaker() {
+        let fragments: Vec<Fragment> = (0..6)
+            .map(|i| frag(Some(&[1.0, 0.03 * i as f32, 0.01 * i as f32]), i * 10_000, i * 10_000 + 9_000))
+            .collect();
+
+        assert_eq!(partition(&cluster_fragments(&fragments, None)).len(), 1);
+    }
+
 
     /// A fragment too short to embed is attributed to the nearest identified
     /// speaker instead of becoming a phantom participant. Before this, a long

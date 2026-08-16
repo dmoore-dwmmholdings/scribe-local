@@ -39,13 +39,37 @@ pub async fn run(
 
     let tmpl = summary_template::resolve(template);
     let model = &cfg.llm.summarize_model;
+    let budget = cfg.llm.max_prompt_chars.max(2_000);
+
+    // A transcript longer than the model's context cannot be summarized in one
+    // call — the server rejects the request and the recording ends up with an
+    // empty summary. Condense it first, then summarize the condensation.
+    let body = if transcript.chars().count() > budget {
+        tracing::info!(
+            %recording_id,
+            chars = transcript.chars().count(),
+            budget,
+            "summarize: transcript exceeds the prompt budget; condensing in parts"
+        );
+        match condense(ollama, model, &transcript, budget).await {
+            Ok(notes) => notes,
+            Err(e) => {
+                tracing::warn!(%recording_id, error = %e, "summarize: condense failed");
+                // Better a summary of the opening than none at all.
+                take_chars(&transcript, budget)
+            }
+        }
+    } else {
+        transcript.clone()
+    };
+
     let user = format!(
         "{instructions}\n\n\
          Return ONLY a JSON object with keys: \
          \"title\" (string), \"summary\" (string), \"action_items\" (array of strings), \
          \"decisions\" (array of strings), \"topics\" (array of strings). \
          If the transcript is empty or trivial, still return the object with empty values.\n\n\
-         Transcript:\n{transcript}",
+         Transcript:\n{body}",
         instructions = tmpl.instructions
     );
 
@@ -96,6 +120,87 @@ pub async fn run(
 
     tracing::info!(%recording_id, model = %model, template = %tmpl.id, "summarize complete");
     Ok(())
+}
+
+/// Reduce a transcript that does not fit in one prompt to notes that do.
+///
+/// Map-reduce: split on line boundaries into parts that fit the budget,
+/// summarize each part into dense notes, then join the notes. If the joined
+/// notes are still over budget (a very long recording), condense again — a
+/// handful of rounds collapses any realistic meeting.
+///
+/// Each part keeps speaker labels, so the final pass can still attribute
+/// decisions and action items to people.
+async fn condense(
+    ollama: &OllamaClient,
+    model: &str,
+    transcript: &str,
+    budget: usize,
+) -> Result<String> {
+    const MAX_ROUNDS: usize = 4;
+    // Leave room for the instructions and the reply inside the same context.
+    let part_budget = (budget * 2) / 3;
+
+    let mut body = transcript.to_string();
+    for round in 0..MAX_ROUNDS {
+        let parts = split_on_lines(&body, part_budget);
+        tracing::info!(round, parts = parts.len(), "summarize: condensing transcript");
+
+        let mut notes = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            let user = format!(
+                "This is part {n} of {total} of a meeting transcript. Write dense notes on \
+                 THIS part only: what was discussed, what was decided, what was assigned to \
+                 whom, and any numbers, dates or names that matter. Keep speaker names. Do \
+                 not add a preamble, a conclusion, or anything that is not in this part.\n\n\
+                 {part}",
+                n = i + 1,
+                total = parts.len(),
+            );
+            let messages = [
+                ChatMessage::system("You take notes on meeting transcripts. Be dense and factual."),
+                ChatMessage::user(user),
+            ];
+            let text = ollama.chat(model, &messages).await?;
+            notes.push_str(text.trim());
+            notes.push_str("\n\n");
+        }
+
+        body = notes.trim().to_string();
+        if body.chars().count() <= budget {
+            return Ok(body);
+        }
+    }
+    // Still too long after several rounds: hand back what fits.
+    Ok(take_chars(&body, budget))
+}
+
+/// Split text into chunks of at most `budget` characters, breaking on line
+/// boundaries so an utterance is never cut in half. A single line longer than
+/// the budget is emitted on its own rather than dropped.
+fn split_on_lines(text: &str, budget: usize) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        let line_len = line.chars().count() + 1;
+        if !current.is_empty() && current.chars().count() + line_len > budget {
+            parts.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    if parts.is_empty() {
+        parts.push(text.to_string());
+    }
+    parts
+}
+
+/// First `max` characters, on a character boundary.
+fn take_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
 }
 
 /// Resolved per-speaker display names keyed by diarized `local_idx`.

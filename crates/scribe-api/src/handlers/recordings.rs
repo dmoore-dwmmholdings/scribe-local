@@ -400,6 +400,42 @@ pub async fn set_recording_tags(
     Ok(Json(json!({ "id": id, "tags": tags })))
 }
 
+/// Body for `PUT /recordings/{id}/participants`.
+#[derive(Debug, Deserialize)]
+pub struct SetParticipantsBody {
+    /// How many people speak in this recording. `null` clears the count and
+    /// puts diarization back to discovering it.
+    pub participants_expected: Option<i32>,
+}
+
+/// `PUT /recordings/{id}/participants` → state how many people are in the
+/// recording.
+///
+/// Imported audio arrives with no count, and diarization discovering it from
+/// scratch over a long meeting is exactly where it goes wrong. Setting the
+/// count does not re-diarize by itself — follow with `POST .../reprocess`.
+pub async fn set_participants(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetParticipantsBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if let Some(n) = body.participants_expected {
+        if !(1..=64).contains(&n) {
+            return Err(ApiError(Error::BadRequest(
+                "participants_expected must be between 1 and 64".into(),
+            )));
+        }
+    }
+    state
+        .db
+        .set_participants_expected(id, body.participants_expected)
+        .await?;
+    Ok(Json(json!({
+        "id": id,
+        "participants_expected": body.participants_expected,
+    })))
+}
+
 /// `GET /tags` → every distinct tag in use, sorted alphabetically.
 pub async fn list_tags(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let tags = state.db.distinct_tags().await?;
