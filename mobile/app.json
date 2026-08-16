@@ -13,9 +13,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.scribe.mobile",
+      "bundleIdentifier": "com.dwmmholdings.scribe",
       "infoPlist": {
-        "UIBackgroundModes": ["audio"],
+        "UIBackgroundModes": [
+          "audio"
+        ],
         "NSMicrophoneUsageDescription": "Scribe records meetings; microphone access is required.",
         "NSSpeechRecognitionUsageDescription": "Scribe transcribes meetings locally."
       }
@@ -25,7 +27,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.scribe.mobile",
+      "package": "com.dwmmholdings.scribe",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.FOREGROUND_SERVICE",
@@ -33,12 +35,15 @@
       ]
     },
     "plugins": [
+      "./plugins/withFmtConstevalFix",
       "expo-router",
       "expo-audio",
       [
         "expo-secure-store",
         {}
-      ]
+      ],
+      "expo-asset",
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true

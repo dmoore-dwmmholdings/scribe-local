@@ -20,7 +20,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import 'react-native-get-random-values'; // for crypto.randomUUID()
+import '../../src/polyfills/crypto'; // for crypto.randomUUID()
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { api } from '../../src/api/client';
 import type { AppSettings } from '../../src/types';
@@ -52,6 +52,24 @@ export default function SettingsScreen() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  // The store hydrates from storage asynchronously (see app/_layout.tsx), so
+  // this screen can mount before the saved settings have loaded.  The useState
+  // initialisers above would then capture empty defaults permanently — showing
+  // blank fields, and overwriting the saved settings with them on Save.
+  // Re-seed the form once hydration completes.
+  useEffect(() => {
+    if (!store.hydrated) return;
+    setBaseUrl(store.baseUrl);
+    setDeviceKey(store.deviceKey);
+    setDeviceId(store.deviceId);
+    setUpdateToken(store.updateToken);
+    setAudioQuality(store.audioQuality);
+    setDefaultParticipants(String(store.defaultParticipants));
+    // Intentionally keyed on `hydrated` alone: this is a one-shot sync at
+    // startup, not a subscription that would clobber in-progress edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.hydrated]);
 
   // Generate a device ID on first launch
   useEffect(() => {
@@ -89,7 +107,9 @@ export default function SettingsScreen() {
     setTesting(true);
     setTestResult(null);
     try {
-      const health = await api.health();
+      // Test what is currently in the form, not the last-saved value — so
+      // "Test connection" is meaningful before "Save settings" is tapped.
+      const health = await api.health(baseUrl);
       setTestResult(`Connected · v${health.version} · DB: ${health.db}`);
     } catch (err) {
       setTestResult(`Failed: ${err instanceof Error ? err.message : String(err)}`);

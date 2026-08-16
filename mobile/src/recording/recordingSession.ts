@@ -19,7 +19,7 @@
  * lifetime of a single recording.  Create a new one for the next recording.
  */
 
-import 'react-native-get-random-values'; // for crypto.randomUUID()
+import '../polyfills/crypto'; // for crypto.randomUUID()
 import { SegmentedRecorder, SegmentInfo } from './segmentedRecorder';
 import { uploadQueue } from './uploadQueue';
 import { api } from '../api/client';

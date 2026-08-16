@@ -111,10 +111,29 @@ export const api = {
   // Health
   // -------------------------------------------------------------------------
 
-  health(): Promise<HealthResponse> {
-    // Health endpoint does NOT require auth per the spec.
-    const { baseUrl } = useSettingsStore.getState();
-    return fetch(url(baseUrl, '/health')).then((r) => r.json() as Promise<HealthResponse>);
+  /**
+   * Health endpoint — does NOT require auth per the spec.
+   *
+   * `baseUrlOverride` lets the Settings screen test the URL currently typed
+   * into the form, before it has been saved to the store.  Without it, a
+   * "Test connection" tap would silently probe the previously-saved value
+   * (an empty string on first run) instead of what the user is looking at.
+   */
+  async health(baseUrlOverride?: string): Promise<HealthResponse> {
+    const base = (baseUrlOverride ?? useSettingsStore.getState().baseUrl)
+      .trim()
+      .replace(/\/$/, '');
+
+    if (!base) {
+      throw new Error('Scribe server URL is not configured. Go to Settings.');
+    }
+
+    const response = await fetch(url(base, '/health'));
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new ApiError(response.status, text || response.statusText, '/health');
+    }
+    return response.json() as Promise<HealthResponse>;
   },
 
   // -------------------------------------------------------------------------
