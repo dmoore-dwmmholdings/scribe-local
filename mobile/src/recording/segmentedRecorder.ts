@@ -296,21 +296,59 @@ export class SegmentedRecorder {
   }
 
   /**
-   * Close the current segment, emit it, then immediately start the next one.
-   * This keeps the mic "warm" — there is minimal gap in capture between
-   * segments (determined by OS recording session startup time).
+   * Rotate to the next segment.
+   *
+   * The next recorder is created and started BEFORE the current one is torn
+   * down, which matters for two reasons:
+   *
+   *  1. `prepareToRecordAsync` re-activates the AVAudioSession, and iOS
+   *     refuses that for a backgrounded app whose category interrupts other
+   *     audio — it fails with AVAudioSessionErrorCodeCannotInterruptOthers
+   *     (OSStatus 560557684). Keeping the current recorder running means the
+   *     session is already active, so there is nothing to re-activate.
+   *  2. It makes failure safe. If the next recorder cannot be started we
+   *     simply keep recording into the current segment and try again on the
+   *     next tick, so a failed rotation costs a longer segment rather than
+   *     the whole recording.
+   *
+   * The cost is a few milliseconds of overlap between consecutive segments,
+   * which is far preferable to a gap: the server stitches by sequence number.
    */
   private async _rotateSegment(): Promise<void> {
-    if (!this._running) return;
-    this._clearTimer();
+    if (!this._running || this._paused) return;
 
-    // Snapshot timing before stopping (stop() takes a few ms)
+    let next: AudioRecorder | null = null;
+    try {
+      next = new AudioModule.AudioRecorder(RECORDING_OPTIONS);
+      await next.prepareToRecordAsync();
+      next.record();
+    } catch (err) {
+      // Do NOT stop the current recorder and do NOT error the session — the
+      // in-progress segment keeps capturing and we retry on the next tick.
+      log('audio', 'rotate: next segment could not start; continuing current', err);
+      if (next) {
+        try {
+          next.release();
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
     const segStartMs = this._segmentStartMs;
     const currentSeq = this.seq;
+    const previous = this.activeRecorder;
 
-    const fileUri = await this._stopActiveRecorder();
+    // Hand over before awaiting the old recorder's stop, so the class is never
+    // observably without an active recorder.
+    this.activeRecorder = next;
+    this._segmentStartMs = Date.now();
+    log('audio', `rotated to segment #${currentSeq + 1}`);
+
+    const fileUri = await this._stopRecorder(previous);
     if (fileUri) {
-      const durationMs = Date.now() - segStartMs;
+      const durationMs = this._segmentStartMs - segStartMs;
       this.seq += 1;
       this.onSegmentReady({
         seq: currentSeq,
@@ -318,11 +356,6 @@ export class SegmentedRecorder {
         startMs: segStartMs - this._startTimeMs - this._pausedAccumMs,
         durationMs,
       });
-    }
-
-    // Start the next segment immediately (still running)
-    if (this._running && !this._paused) {
-      await this._startSegment();
     }
   }
 
@@ -346,6 +379,11 @@ export class SegmentedRecorder {
   private async _stopActiveRecorder(): Promise<string | null> {
     const rec = this.activeRecorder;
     this.activeRecorder = null;
+    return this._stopRecorder(rec);
+  }
+
+  /** Stop and release a specific recorder, returning its finalized file uri. */
+  private async _stopRecorder(rec: AudioRecorder | null): Promise<string | null> {
     if (!rec) return null;
 
     let uri: string | null = null;
