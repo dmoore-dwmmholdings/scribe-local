@@ -47,6 +47,14 @@ $dbUrl = "postgres://scribe:scribe@localhost:$DbPort/scribe?sslmode=disable"
 # for the migrate step below and for the serve/worker windows.
 $env:SCRIBE_DATABASE__URL = $dbUrl
 
+# A pinned ffmpeg in .\tools\ffmpeg takes priority over any older copy on PATH.
+# The worker calls `ffmpeg` by name, and builds older than 2025 cannot read the
+# MP4 'ipcm' audio and 'chnl' boxes that current phones write - those recordings
+# fail in the transcode stage with "Unsupported 'chnl' box with version 1".
+$ffmpegDir  = Join-Path $repo "tools\ffmpeg"
+$ffmpegPinned = Test-Path (Join-Path $ffmpegDir "ffmpeg.exe")
+if ($ffmpegPinned) { $env:PATH = "$ffmpegDir;$env:PATH" }
+
 function Find-Tailscale {
   $c = Get-Command tailscale -ErrorAction SilentlyContinue
   if ($c) { return $c.Source }
@@ -139,7 +147,9 @@ if (-not $ts) {
 Write-Host "`n[6/7] Backend (serve + worker) in separate windows ..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path (Join-Path $repo "data\blobs") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $repo "models")     | Out-Null
-$envPrefix = "`$env:SCRIBE_DATABASE__URL='$dbUrl'; Set-Location '$repo';"
+$pathPrefix = if ($ffmpegPinned) { "`$env:PATH='$ffmpegDir;' + `$env:PATH; " } else { "" }
+if ($ffmpegPinned) { Write-Host "      ffmpeg: $ffmpegDir (pinned, ahead of PATH)" -ForegroundColor Green }
+$envPrefix = "`$env:SCRIBE_DATABASE__URL='$dbUrl'; $pathPrefix Set-Location '$repo';"
 Start-Process powershell -ArgumentList "-NoExit","-Command","$envPrefix & '$bin' --config '$Config' serve"
 Start-Process powershell -ArgumentList "-NoExit","-Command","$envPrefix & '$bin' --config '$Config' worker"
 Start-Sleep -Seconds 4

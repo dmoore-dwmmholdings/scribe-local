@@ -15,6 +15,8 @@ Cargo.lock.bak
 !/models/README.md
 # fastembed downloads its ONNX embedding model here at runtime.
 .fastembed_cache/
+# Local tool binaries (a pinned ffmpeg the launch scripts put on PATH).
+/tools
 
 # Env / secrets
 .env
