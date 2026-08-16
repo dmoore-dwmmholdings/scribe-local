@@ -54,6 +54,24 @@ export default function SettingsScreen() {
   const [testResult, setTestResult] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
 
+  // The store hydrates from storage asynchronously (see app/_layout.tsx), so
+  // this screen can mount before the saved settings have loaded. The useState
+  // initialisers above would then capture empty defaults permanently — showing
+  // blank fields, and persisting them back over the saved values on Save (or
+  // on Test connection, which also writes baseUrl). Re-seed once hydrated.
+  useEffect(() => {
+    if (!store.hydrated) return;
+    setBaseUrl(store.baseUrl);
+    setDeviceKey(store.deviceKey);
+    setDeviceId(store.deviceId);
+    setUpdateToken(store.updateToken);
+    setAudioQuality(store.audioQuality);
+    setDefaultParticipants(String(store.defaultParticipants));
+    // Keyed on `hydrated` alone: a one-shot startup sync, not a subscription
+    // that would clobber in-progress edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.hydrated]);
+
   useEffect(() => {
     if (!store.deviceId && !deviceId) setDeviceId(crypto.randomUUID());
   }, [store.deviceId, deviceId]);

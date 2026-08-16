@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.scribe.mobile",
+      "bundleIdentifier": "com.dwmmholdings.scribe",
       "infoPlist": {
         "UIBackgroundModes": [
           "audio"
@@ -28,7 +28,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#100c0b"
       },
-      "package": "com.scribe.mobile",
+      "package": "com.dwmmholdings.scribe",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.FOREGROUND_SERVICE",
