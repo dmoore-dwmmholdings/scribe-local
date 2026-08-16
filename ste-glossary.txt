@@ -1,0 +1,179 @@
+# ste-glossary.txt - Scribe technical nouns and technical verbs (ASD-STE100 rules 1.5 / 1.12)
+# One term per line, case-insensitive, multi-word terms allowed, '#' starts a comment.
+# Plurals are matched automatically.
+#
+# Only terms that fit the 22 technical-noun categories or the 4 technical-verb
+# categories belong here (category 19, computer science and information
+# technology, covers most of this project).
+
+# --- product and its parts (categories 6, 19) ---
+Scribe
+app
+backend
+server
+storage node
+worker
+pipeline
+stage
+job
+queue
+API
+endpoint
+route
+schema
+migration
+database
+Postgres
+container
+crate
+binary
+CLI
+mobile app
+screen
+sheet
+modal
+button
+chip
+card
+store
+client
+config
+token
+tag
+timestamp
+
+# --- audio and transcription domain (categories 6, 7, 19) ---
+audio
+recording
+segment
+transcript
+transcript line
+transcription
+utterance
+word
+word timing
+alignment
+cosine similarity
+diarization
+speaker
+speaker library
+voiceprint
+embedding
+enrollment
+highlighting
+playback
+playhead
+summary
+template
+mark
+chunk
+model
+ASR
+LLM
+Whisper
+Parakeet
+Ollama
+ffmpeg
+karaoke
+
+# --- files, documents and standards (categories 10, 15) ---
+Markdown
+JSON
+SRT
+README
+roadmap
+gap analysis
+changelog
+
+# --- organizations and products (category 11) ---
+Otter
+Plaud
+Expo
+React Native
+Tailscale
+Docker
+GitHub
+
+# --- technical verbs (rule 1.12, categories 1-2) ---
+upload
+download
+tag
+rename
+enroll
+diarize
+transcribe
+summarize
+reprocess
+typecheck
+compile
+deploy
+render
+highlight
+build
+profile
+Apple Developer Program
+Apple ID
+Mac App Store
+Apple
+Xcode
+MacBook
+Mac
+iPhone
+iOS
+macOS
+CocoaPods
+Git
+GitHub
+Node
+npm
+Homebrew
+bundle identifier
+workspace
+scheme
+target
+certificate
+provisioning profile
+developer mode
+passcode
+cable
+USB cable
+QR code
+destination
+configuration
+JavaScript
+Metro
+computer
+window
+menu
+panel
+tab
+field
+account
+permission
+microphone
+directory
+repository
+command
+terminal
+version
+USD
+cloud
+network
+tailnet
+URL
+HTTPS
+debug
+release
+native module
+signature
+link
+project
+team
+personal team
+bundle
+identifier
+minute
+hour
+day
+week
+year

@@ -38,7 +38,7 @@ So a large slice of Otter's surface area (team workspaces, channels, CRM sync, e
 |---|---|---|
 | Word-level timestamps | ✅ | Every word carries start/end/conf |
 | Speaker diarization | ✅ | VAD → segmentation → embeddings → clustering |
-| Speaker ID across meetings | ✅ | 192-dim enrollment, cosine match ≥ 0.5 — **Scribe matches Otter here** |
+| Speaker ID across meetings | ✅ | 192-dim enrollment. A cosine similarity of 0.5 or more identifies the speaker. The mobile app has a speaker library. You can tag a speaker with a known name, rename that name, or remove it |
 | Custom vocabulary | 🟡 | Hotwords file exists but transducer-only + no UI; Otter has in-app term learning |
 | Languages | 🟡 | Models are multilingual (Parakeet 100+/Whisper), but no per-recording language UI or auto-detect surfaced. (Otter only supports 6 languages — Scribe's models can actually do *more*, it's just not exposed) |
 | Translation | ❌ | No translate-to-target |
@@ -60,7 +60,7 @@ So a large slice of Otter's surface area (team workspaces, channels, CRM sync, e
 ### Playback & review
 | Otter feature | Scribe | Notes |
 |---|---|---|
-| Synchronized transcript highlighting | ✅ | Active utterance highlights; tap to seek |
+| Synchronized transcript highlighting | ✅ | The mobile app highlights each spoken word and keeps that transcript line in view. Tap to seek |
 | Variable playback speed | ❌ | No speed control yet |
 | Skip silence | ❌ | Not implemented |
 | Inline transcript editing | ❌ | Can name speakers; **cannot edit transcript text** |
