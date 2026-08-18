@@ -83,23 +83,20 @@ function RecordingRow({
   recording,
   index,
   onPress,
-  onLongPress,
+  onDelete,
+  onFinish,
 }: {
   recording: Recording;
   index: number;
   onPress: () => void;
-  onLongPress?: () => void;
+  onDelete: () => void;
+  onFinish: () => void;
 }) {
   const dotCount = Math.min(recording.participants_expected ?? 0, 3);
   const extra = (recording.participants_expected ?? 0) - dotCount;
 
   return (
-    <TouchableOpacity
-      style={styles.row}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      accessibilityRole="button"
-    >
+    <TouchableOpacity style={styles.row} onPress={onPress} accessibilityRole="button">
       <View style={styles.thumb}>
         <EmberOrb size={54} variant="mini" seed={seedFromString(recording.id)} dir={index % 2 ? -1 : 1} />
       </View>
@@ -122,7 +119,33 @@ function RecordingRow({
         )}
       </View>
 
-      <StatusChip status={recording.status} />
+      <View style={styles.rowActions}>
+        <StatusChip status={recording.status} />
+        <View style={styles.rowButtons}>
+          {/* Only offered where it means something: a recording still marked
+              `uploading` was never finalised, usually because the app died. */}
+          {recording.status === 'uploading' && (
+            <TouchableOpacity
+              style={styles.rowIconBtn}
+              onPress={onFinish}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={`Finish ${recording.title ?? 'recording'}`}
+            >
+              <Ionicons name="checkmark-done-outline" size={17} color={colors.accent} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={styles.rowIconBtn}
+            onPress={onDelete}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${recording.title ?? 'recording'}`}
+          >
+            <Ionicons name="trash-outline" size={17} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      </View>
     </TouchableOpacity>
   );
 }
@@ -183,80 +206,79 @@ export default function LibraryScreen() {
   }, [baseUrl, refresh]);
 
   /**
-   * Long-press actions for a recording.
-   *
-   * Two distinct escapes from a crash:
-   *
-   * "Finish it" applies to recordings stranded in `uploading`. The app calls
-   * /complete on a clean stop; if it dies first that never happens and the
-   * recording sits in `uploading` forever. The audio is not lost — segments
-   * upload as they close — so completing it transcribes what did arrive, which
-   * is nearly always better than discarding it.
-   *
-   * "Delete" is irreversible and removes the audio blobs too.
+   * Delete a recording, its transcript and its audio. Irreversible, so it is
+   * confirmed — but reachable from a visible button rather than a hidden
+   * gesture.
    */
-  const showRecordingActions = useCallback(
+  const confirmDelete = useCallback(
     (recording: Recording) => {
       const label = recording.title?.trim() || 'this recording';
-
-      const doDelete = () => {
-        Alert.alert(
-          'Delete recording?',
-          `This permanently deletes ${label}, its transcript and summaries, and the audio ` +
-            'on the server. This cannot be undone.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Delete',
-              style: 'destructive',
-              onPress: async () => {
-                try {
-                  log('rec', `deleting recording ${recording.id}`);
-                  await api.deleteRecording(recording.id);
-                  removeRecording(recording.id);
-                  await fetchRecordings();
-                } catch (err) {
-                  log('rec', 'delete failed', err);
-                  Alert.alert(
-                    'Could not delete it',
-                    err instanceof Error ? err.message : String(err),
-                  );
-                }
-              },
-            },
-          ],
-        );
-      };
-
-      const doFinish = async () => {
-        try {
-          log('rec', `recovering stuck recording ${recording.id}`);
-          await api.completeRecording(recording.id, {});
-          await fetchRecordings();
-          Alert.alert('Finishing', 'Transcription has been queued for this recording.');
-        } catch (err) {
-          log('rec', 'recover failed', err);
-          Alert.alert('Could not finish it', err instanceof Error ? err.message : String(err));
-        }
-      };
-
-      const options: Parameters<typeof Alert.alert>[2] = [];
-      if (recording.status === 'uploading') {
-        options.push({ text: 'Finish it', onPress: () => void doFinish() });
-      }
-      options.push({ text: 'Delete', style: 'destructive', onPress: doDelete });
-      options.push({ text: 'Cancel', style: 'cancel' });
-
       Alert.alert(
-        label,
-        recording.status === 'uploading'
-          ? 'This recording was never finalised — usually because the app closed unexpectedly ' +
-              'while it was running. Audio uploaded before that point is safe on the server.'
-          : undefined,
-        options,
+        'Delete recording?',
+        `This permanently deletes ${label}, its transcript and summaries, and the audio on ` +
+          'the server. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                log('rec', `deleting recording ${recording.id}`);
+                await api.deleteRecording(recording.id);
+                removeRecording(recording.id);
+                await fetchRecordings();
+              } catch (err) {
+                log('rec', 'delete failed', err);
+                Alert.alert(
+                  'Could not delete it',
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
       );
     },
     [fetchRecordings, removeRecording],
+  );
+
+  /**
+   * Finalise a recording stranded in `uploading`.
+   *
+   * /complete is only called on a clean stop, so a crash leaves the recording
+   * stuck. The audio is not lost — segments upload as they close — so
+   * completing it transcribes what did arrive, which beats discarding it.
+   */
+  const confirmFinish = useCallback(
+    (recording: Recording) => {
+      Alert.alert(
+        'Finish this recording?',
+        'It was never finalised — usually because the app closed unexpectedly while it was ' +
+          'running. Audio uploaded before that point is safe on the server, and finishing it ' +
+          'now runs transcription on what arrived.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Finish it',
+            onPress: async () => {
+              try {
+                log('rec', `recovering stuck recording ${recording.id}`);
+                await api.completeRecording(recording.id, {});
+                await fetchRecordings();
+              } catch (err) {
+                log('rec', 'recover failed', err);
+                Alert.alert(
+                  'Could not finish it',
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [fetchRecordings],
   );
 
   // Import an existing audio file: pick -> create -> upload as segment 0 ->
@@ -415,7 +437,8 @@ export default function LibraryScreen() {
             recording={item}
             index={index}
             onPress={() => router.push(`/recordings/${item.id}`)}
-            onLongPress={() => showRecordingActions(item)}
+            onDelete={() => confirmDelete(item)}
+            onFinish={() => confirmFinish(item)}
           />
         )}
         ListEmptyComponent={
@@ -498,9 +521,24 @@ const styles = StyleSheet.create({
   importBtn: {
     padding: 2,
   },
+  rowActions: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  rowButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  rowIconBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
   filterScroll: {
+    // No maxHeight: a chip is ~30pt (12 padding + 2 border + line height) and
+    // filterRow adds 12 more, which overflowed a 44pt cap and clipped the
+    // bottom of every tag. Let the content size the bar.
     flexGrow: 0,
-    maxHeight: 44,
   },
   filterRow: {
     paddingHorizontal: 18,
