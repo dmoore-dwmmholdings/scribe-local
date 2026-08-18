@@ -83,16 +83,23 @@ function RecordingRow({
   recording,
   index,
   onPress,
+  onLongPress,
 }: {
   recording: Recording;
   index: number;
   onPress: () => void;
+  onLongPress?: () => void;
 }) {
   const dotCount = Math.min(recording.participants_expected ?? 0, 3);
   const extra = (recording.participants_expected ?? 0) - dotCount;
 
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} accessibilityRole="button">
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      accessibilityRole="button"
+    >
       <View style={styles.thumb}>
         <EmberOrb size={54} variant="mini" seed={seedFromString(recording.id)} dir={index % 2 ? -1 : 1} />
       </View>
@@ -174,6 +181,50 @@ export default function LibraryScreen() {
     if (!baseUrl) return;
     await refresh();
   }, [baseUrl, refresh]);
+
+  /**
+   * Rescue a recording stuck in `uploading`.
+   *
+   * The app calls POST /complete when you stop a recording. If it dies first —
+   * a crash, a force-quit, the OS reclaiming it — that call never happens and
+   * the recording sits in `uploading` forever, with no way to clear it.
+   *
+   * The audio is not lost: segments upload as they close, so everything
+   * captured before the crash is already on the server. Completing it now
+   * enqueues the pipeline and transcribes what did arrive, which is almost
+   * always what you want over discarding it.
+   */
+  const recoverStuckRecording = useCallback(
+    (recording: Recording) => {
+      Alert.alert(
+        'Finish this recording?',
+        'This recording was never finalised — usually because the app closed unexpectedly ' +
+          'while it was running.\n\nAudio uploaded before that point is safe on the server. ' +
+          'Finishing it now runs transcription on what arrived.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Finish it',
+            onPress: async () => {
+              try {
+                log('rec', `recovering stuck recording ${recording.id}`);
+                await api.completeRecording(recording.id, {});
+                await fetchRecordings();
+                Alert.alert('Finishing', 'Transcription has been queued for this recording.');
+              } catch (err) {
+                log('rec', 'recover failed', err);
+                Alert.alert(
+                  'Could not finish it',
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [fetchRecordings],
+  );
 
   // Import an existing audio file: pick -> create -> upload as segment 0 ->
   // complete, then open the new recording (it transcribes like any capture).
@@ -331,6 +382,9 @@ export default function LibraryScreen() {
             recording={item}
             index={index}
             onPress={() => router.push(`/recordings/${item.id}`)}
+            onLongPress={
+              item.status === 'uploading' ? () => recoverStuckRecording(item) : undefined
+            }
           />
         )}
         ListEmptyComponent={

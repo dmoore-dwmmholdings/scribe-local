@@ -19,6 +19,7 @@ interface ScribeLiveActivityNativeModule {
     segmentsUploaded: number,
   ): Promise<boolean>;
   end(): Promise<boolean>;
+  endAll(): Promise<number>;
 }
 
 const native = requireOptionalNativeModule<ScribeLiveActivityNativeModule>('ScribeLiveActivity');
@@ -61,6 +62,26 @@ export async function updateLiveActivity(state: LiveActivityState): Promise<bool
     );
   } catch {
     return false;
+  }
+}
+
+/**
+ * End every Live Activity belonging to this app, including ones started by a
+ * previous process.
+ *
+ * ActivityKit activities outlive the app. If the app crashes mid-recording the
+ * Lock Screen keeps claiming a recording is in progress, and the new process
+ * holds no handle to it — so neither relaunching nor rebooting the phone clears
+ * it. Call this on startup, where no recording can legitimately be running yet.
+ *
+ * Returns how many stale activities were cleared.
+ */
+export async function endAllLiveActivities(): Promise<number> {
+  if (!native) return 0;
+  try {
+    return await native.endAll();
+  } catch {
+    return 0;
   }
 }
 

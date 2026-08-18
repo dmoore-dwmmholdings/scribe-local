@@ -42,30 +42,37 @@ public class ScribeLiveActivityModule: Module {
         return
       }
 
-      // Starting twice would orphan the first activity on screen with no way
-      // to reach it, so end any existing one first.
-      self.endCurrentActivity(dismissImmediately: true)
+      self.currentActivity = nil
 
-      let attributes = ScribeActivityAttributes(title: title)
-      let state = ScribeActivityAttributes.ContentState(
-        startedAt: Date(timeIntervalSince1970: startedAtMs / 1000.0),
-        pausedMs: 0,
-        isPaused: false,
-        segmentsUploaded: 0
-      )
+      Task {
+        // Sweep ALL existing activities, not just one this process started — a
+        // previous run may have crashed and left one stranded on the Lock
+        // Screen, where it is unreachable by any handle this process holds.
+        for stale in Activity<ScribeActivityAttributes>.activities {
+          await stale.end(nil, dismissalPolicy: .immediate)
+        }
 
-      do {
-        let activity = try Activity.request(
-          attributes: attributes,
-          content: ActivityContent(state: state, staleDate: nil),
-          pushType: nil
+        let attributes = ScribeActivityAttributes(title: title)
+        let state = ScribeActivityAttributes.ContentState(
+          startedAt: Date(timeIntervalSince1970: startedAtMs / 1000.0),
+          pausedMs: 0,
+          isPaused: false,
+          segmentsUploaded: 0
         )
-        self.currentActivity = activity
-        promise.resolve(true)
-      } catch {
-        // Most commonly: too many active activities, or the user disabled them
-        // between the check above and here. Not fatal to recording.
-        promise.reject("ERR_LIVE_ACTIVITY_START", error.localizedDescription)
+
+        do {
+          let activity = try Activity.request(
+            attributes: attributes,
+            content: ActivityContent(state: state, staleDate: nil),
+            pushType: nil
+          )
+          self.currentActivity = activity
+          promise.resolve(true)
+        } catch {
+          // Most commonly: too many active activities, or the user disabled
+          // them between the check above and here. Not fatal to recording.
+          promise.reject("ERR_LIVE_ACTIVITY_START", error.localizedDescription)
+        }
       }
     }
 
@@ -87,6 +94,29 @@ public class ScribeLiveActivityModule: Module {
       Task {
         await activity.update(ActivityContent(state: state, staleDate: nil))
         promise.resolve(true)
+      }
+    }
+
+    /// End EVERY activity belonging to this app, including ones this process
+    /// did not start.
+    ///
+    /// ActivityKit activities outlive the app: if the app crashes mid-recording
+    /// the Live Activity keeps showing "recording" forever, and because the new
+    /// process has no handle to it, neither relaunching nor rebooting clears it.
+    /// The only way back is to enumerate the system's activities and end them.
+    AsyncFunction("endAll") { (promise: Promise) in
+      guard #available(iOS 16.2, *) else {
+        promise.resolve(0)
+        return
+      }
+      self.currentActivity = nil
+      Task {
+        var ended = 0
+        for activity in Activity<ScribeActivityAttributes>.activities {
+          ended += 1
+          await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        promise.resolve(ended)
       }
     }
 

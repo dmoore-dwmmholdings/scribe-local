@@ -9,6 +9,7 @@ import { useRecordingsStore } from '../src/state/recordingsStore';
 import { uploadQueue } from '../src/recording/uploadQueue';
 import { colors } from '../src/theme';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
+import { endAllLiveActivities } from '../modules/scribe-live-activity';
 
 export default function RootLayout() {
   const hydrateSettings = useSettingsStore((s) => s.hydrate);
@@ -24,6 +25,15 @@ export default function RootLayout() {
     ])
       .then(() => log('app', 'hydrate complete'))
       .catch((e) => log('app', 'hydrate failed', e));
+
+    // Clear Live Activities stranded by a previous run. ActivityKit activities
+    // survive app termination and reboot, so a crash mid-recording otherwise
+    // leaves the Lock Screen insisting a recording is still going, with no way
+    // for the user to dismiss it. Nothing can legitimately be recording at
+    // startup, so anything still present is stale by definition.
+    void endAllLiveActivities().then((n) => {
+      if (n > 0) log('app', `cleared ${n} stale live activity/activities`);
+    });
   }, [hydrateSettings, hydrateRecordings]);
 
   return (
