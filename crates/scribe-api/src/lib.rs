@@ -19,6 +19,7 @@
 //! POST   /recordings
 //! GET    /recordings                                    (optional ?tag= filter)
 //! GET    /recordings/{id}                               (detail: summaries[] per template)
+//! DELETE /recordings/{id}                               (recording + derived rows + blobs)
 //! POST   /recordings/{id}/complete
 //! POST   /recordings/{id}/reprocess                     (re-run the whole pipeline)
 //! POST   /recordings/{id}/summarize                     (re-summarize w/ template, adds a view)
@@ -80,7 +81,11 @@ pub fn router(state: AppState) -> Router {
             "/recordings",
             post(handlers::recordings::create_recording).get(handlers::recordings::list_recordings),
         )
-        .route("/recordings/{id}", get(handlers::recordings::get_recording))
+        .route(
+            "/recordings/{id}",
+            get(handlers::recordings::get_recording)
+                .delete(handlers::recordings::delete_recording),
+        )
         .route(
             "/recordings/{id}/complete",
             post(handlers::recordings::complete_recording),

@@ -160,7 +160,7 @@ function FilterChip({
 export default function LibraryScreen() {
   const router = useRouter();
   const { baseUrl, deviceId } = useSettingsStore();
-  const { recordings, hydrated, refresh } = useRecordingsStore();
+  const { recordings, hydrated, refresh, removeRecording } = useRecordingsStore();
   const [importing, setImporting] = useState(false);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
@@ -183,47 +183,80 @@ export default function LibraryScreen() {
   }, [baseUrl, refresh]);
 
   /**
-   * Rescue a recording stuck in `uploading`.
+   * Long-press actions for a recording.
    *
-   * The app calls POST /complete when you stop a recording. If it dies first —
-   * a crash, a force-quit, the OS reclaiming it — that call never happens and
-   * the recording sits in `uploading` forever, with no way to clear it.
+   * Two distinct escapes from a crash:
    *
-   * The audio is not lost: segments upload as they close, so everything
-   * captured before the crash is already on the server. Completing it now
-   * enqueues the pipeline and transcribes what did arrive, which is almost
-   * always what you want over discarding it.
+   * "Finish it" applies to recordings stranded in `uploading`. The app calls
+   * /complete on a clean stop; if it dies first that never happens and the
+   * recording sits in `uploading` forever. The audio is not lost — segments
+   * upload as they close — so completing it transcribes what did arrive, which
+   * is nearly always better than discarding it.
+   *
+   * "Delete" is irreversible and removes the audio blobs too.
    */
-  const recoverStuckRecording = useCallback(
+  const showRecordingActions = useCallback(
     (recording: Recording) => {
-      Alert.alert(
-        'Finish this recording?',
-        'This recording was never finalised — usually because the app closed unexpectedly ' +
-          'while it was running.\n\nAudio uploaded before that point is safe on the server. ' +
-          'Finishing it now runs transcription on what arrived.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Finish it',
-            onPress: async () => {
-              try {
-                log('rec', `recovering stuck recording ${recording.id}`);
-                await api.completeRecording(recording.id, {});
-                await fetchRecordings();
-                Alert.alert('Finishing', 'Transcription has been queued for this recording.');
-              } catch (err) {
-                log('rec', 'recover failed', err);
-                Alert.alert(
-                  'Could not finish it',
-                  err instanceof Error ? err.message : String(err),
-                );
-              }
+      const label = recording.title?.trim() || 'this recording';
+
+      const doDelete = () => {
+        Alert.alert(
+          'Delete recording?',
+          `This permanently deletes ${label}, its transcript and summaries, and the audio ` +
+            'on the server. This cannot be undone.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Delete',
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  log('rec', `deleting recording ${recording.id}`);
+                  await api.deleteRecording(recording.id);
+                  removeRecording(recording.id);
+                  await fetchRecordings();
+                } catch (err) {
+                  log('rec', 'delete failed', err);
+                  Alert.alert(
+                    'Could not delete it',
+                    err instanceof Error ? err.message : String(err),
+                  );
+                }
+              },
             },
-          },
-        ],
+          ],
+        );
+      };
+
+      const doFinish = async () => {
+        try {
+          log('rec', `recovering stuck recording ${recording.id}`);
+          await api.completeRecording(recording.id, {});
+          await fetchRecordings();
+          Alert.alert('Finishing', 'Transcription has been queued for this recording.');
+        } catch (err) {
+          log('rec', 'recover failed', err);
+          Alert.alert('Could not finish it', err instanceof Error ? err.message : String(err));
+        }
+      };
+
+      const options: Parameters<typeof Alert.alert>[2] = [];
+      if (recording.status === 'uploading') {
+        options.push({ text: 'Finish it', onPress: () => void doFinish() });
+      }
+      options.push({ text: 'Delete', style: 'destructive', onPress: doDelete });
+      options.push({ text: 'Cancel', style: 'cancel' });
+
+      Alert.alert(
+        label,
+        recording.status === 'uploading'
+          ? 'This recording was never finalised — usually because the app closed unexpectedly ' +
+              'while it was running. Audio uploaded before that point is safe on the server.'
+          : undefined,
+        options,
       );
     },
-    [fetchRecordings],
+    [fetchRecordings, removeRecording],
   );
 
   // Import an existing audio file: pick -> create -> upload as segment 0 ->
@@ -382,9 +415,7 @@ export default function LibraryScreen() {
             recording={item}
             index={index}
             onPress={() => router.push(`/recordings/${item.id}`)}
-            onLongPress={
-              item.status === 'uploading' ? () => recoverStuckRecording(item) : undefined
-            }
+            onLongPress={() => showRecordingActions(item)}
           />
         )}
         ListEmptyComponent={

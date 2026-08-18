@@ -29,6 +29,7 @@ interface RecordingsState {
   /** Fetch the latest list from the server and update the cache. */
   refresh: () => Promise<void>;
   upsertRecording: (recording: Recording) => void;
+  removeRecording: (id: string) => void;
   setUploadProgress: (recordingId: string, progress: number) => void;
   getRecording: (id: string) => Recording | undefined;
 }
@@ -77,6 +78,11 @@ export const useRecordingsStore = create<RecordingsState>((set, get) => ({
         ? existing.map((r) => (r.id === recording.id ? recording : r))
         : [recording, ...existing];
     get().setRecordings(next);
+  },
+
+  /** Drop a recording from the cache after it is deleted on the server. */
+  removeRecording: (id: string) => {
+    get().setRecordings(get().recordings.filter((r) => r.id !== id));
   },
 
   setUploadProgress: (recordingId: string, progress: number) => {

@@ -19,8 +19,35 @@ public class ScribeLiveActivityModule: Module {
   /// nameable under `@available`, which stored properties cannot carry.
   private var currentActivity: Any?
 
+  /// Observer for intents fired from the Live Activity's buttons.
+  private var actionObserver: NSObjectProtocol?
+
   public func definition() -> ModuleDefinition {
     Name("ScribeLiveActivity")
+
+    /// Emitted when the user taps Pause/Resume or Stop on the Live Activity.
+    /// Payload: `{ action: "togglePause" | "stop" }`.
+    Events("onAction")
+
+    OnStartObserving {
+      // A LiveActivityIntent's perform() runs in THIS process, so the button
+      // tap arrives as a local notification rather than anything cross-process.
+      self.actionObserver = NotificationCenter.default.addObserver(
+        forName: ScribeLiveActivityBridge.actionNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        guard let action = note.userInfo?["action"] as? String else { return }
+        self?.sendEvent("onAction", ["action": action])
+      }
+    }
+
+    OnStopObserving {
+      if let observer = self.actionObserver {
+        NotificationCenter.default.removeObserver(observer)
+        self.actionObserver = nil
+      }
+    }
 
     /// Whether Live Activities can actually be shown right now. False on
     /// iOS < 16.2, and false when the user has switched them off for the app —
