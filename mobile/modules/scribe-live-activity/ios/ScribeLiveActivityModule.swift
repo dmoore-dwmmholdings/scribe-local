@@ -19,8 +19,35 @@ public class ScribeLiveActivityModule: Module {
   /// nameable under `@available`, which stored properties cannot carry.
   private var currentActivity: Any?
 
+  /// Observer for intents fired from the Live Activity's buttons.
+  private var actionObserver: NSObjectProtocol?
+
   public func definition() -> ModuleDefinition {
     Name("ScribeLiveActivity")
+
+    /// Emitted when the user taps Pause/Resume or Stop on the Live Activity.
+    /// Payload: `{ action: "togglePause" | "stop" }`.
+    Events("onAction")
+
+    OnStartObserving {
+      // A LiveActivityIntent's perform() runs in THIS process, so the button
+      // tap arrives as a local notification rather than anything cross-process.
+      self.actionObserver = NotificationCenter.default.addObserver(
+        forName: ScribeLiveActivityBridge.actionNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        guard let action = note.userInfo?["action"] as? String else { return }
+        self?.sendEvent("onAction", ["action": action])
+      }
+    }
+
+    OnStopObserving {
+      if let observer = self.actionObserver {
+        NotificationCenter.default.removeObserver(observer)
+        self.actionObserver = nil
+      }
+    }
 
     /// Whether Live Activities can actually be shown right now. False on
     /// iOS < 16.2, and false when the user has switched them off for the app —
@@ -42,30 +69,37 @@ public class ScribeLiveActivityModule: Module {
         return
       }
 
-      // Starting twice would orphan the first activity on screen with no way
-      // to reach it, so end any existing one first.
-      self.endCurrentActivity(dismissImmediately: true)
+      self.currentActivity = nil
 
-      let attributes = ScribeActivityAttributes(title: title)
-      let state = ScribeActivityAttributes.ContentState(
-        startedAt: Date(timeIntervalSince1970: startedAtMs / 1000.0),
-        pausedMs: 0,
-        isPaused: false,
-        segmentsUploaded: 0
-      )
+      Task {
+        // Sweep ALL existing activities, not just one this process started — a
+        // previous run may have crashed and left one stranded on the Lock
+        // Screen, where it is unreachable by any handle this process holds.
+        for stale in Activity<ScribeActivityAttributes>.activities {
+          await stale.end(nil, dismissalPolicy: .immediate)
+        }
 
-      do {
-        let activity = try Activity.request(
-          attributes: attributes,
-          content: ActivityContent(state: state, staleDate: nil),
-          pushType: nil
+        let attributes = ScribeActivityAttributes(title: title)
+        let state = ScribeActivityAttributes.ContentState(
+          startedAt: Date(timeIntervalSince1970: startedAtMs / 1000.0),
+          pausedMs: 0,
+          isPaused: false,
+          segmentsUploaded: 0
         )
-        self.currentActivity = activity
-        promise.resolve(true)
-      } catch {
-        // Most commonly: too many active activities, or the user disabled them
-        // between the check above and here. Not fatal to recording.
-        promise.reject("ERR_LIVE_ACTIVITY_START", error.localizedDescription)
+
+        do {
+          let activity = try Activity.request(
+            attributes: attributes,
+            content: ActivityContent(state: state, staleDate: nil),
+            pushType: nil
+          )
+          self.currentActivity = activity
+          promise.resolve(true)
+        } catch {
+          // Most commonly: too many active activities, or the user disabled
+          // them between the check above and here. Not fatal to recording.
+          promise.reject("ERR_LIVE_ACTIVITY_START", error.localizedDescription)
+        }
       }
     }
 
@@ -87,6 +121,29 @@ public class ScribeLiveActivityModule: Module {
       Task {
         await activity.update(ActivityContent(state: state, staleDate: nil))
         promise.resolve(true)
+      }
+    }
+
+    /// End EVERY activity belonging to this app, including ones this process
+    /// did not start.
+    ///
+    /// ActivityKit activities outlive the app: if the app crashes mid-recording
+    /// the Live Activity keeps showing "recording" forever, and because the new
+    /// process has no handle to it, neither relaunching nor rebooting clears it.
+    /// The only way back is to enumerate the system's activities and end them.
+    AsyncFunction("endAll") { (promise: Promise) in
+      guard #available(iOS 16.2, *) else {
+        promise.resolve(0)
+        return
+      }
+      self.currentActivity = nil
+      Task {
+        var ended = 0
+        for activity in Activity<ScribeActivityAttributes>.activities {
+          ended += 1
+          await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        promise.resolve(ended)
       }
     }
 

@@ -19,6 +19,19 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 const LOG_FILE = `${FileSystem.documentDirectory ?? ''}scribe-debug.log`;
 const PREV_FILE = `${FileSystem.documentDirectory ?? ''}scribe-debug.prev.log`;
+/**
+ * How many prior sessions to keep, beyond PREV_FILE.
+ *
+ * One generation is not enough. After a crash the user typically relaunches
+ * (rotation 1: the crash log lands in PREV_FILE) and then force-quits or
+ * reboots and opens the app again (rotation 2: a trivial session overwrites
+ * PREV_FILE). The crash breadcrumbs are gone before anyone can read them —
+ * which is exactly what happened to the 2026-08-17 crash. Keeping a few
+ * generations makes the evidence survive normal panicky user behaviour.
+ */
+const ARCHIVE_GENERATIONS = 5;
+const archivePath = (n: number) =>
+  `${FileSystem.documentDirectory ?? ''}scribe-debug.${n}.log`;
 const MAX_LINES = 1000;
 
 let buffer: string[] = [];
@@ -58,10 +71,25 @@ function ensureRotated(): Promise<void> {
     rotatePromise = (async () => {
       try {
         const info = await FileSystem.getInfoAsync(LOG_FILE);
-        if (info.exists) {
-          const prev = await FileSystem.readAsStringAsync(LOG_FILE);
-          if (prev.trim()) await FileSystem.writeAsStringAsync(PREV_FILE, prev);
+        if (!info.exists) return;
+        const prev = await FileSystem.readAsStringAsync(LOG_FILE);
+        if (!prev.trim()) return;
+
+        // Shift the archive down (…3 -> 4, 2 -> 3, 1 -> 2) so the oldest falls
+        // off the end rather than the newest overwriting the only slot.
+        for (let n = ARCHIVE_GENERATIONS - 1; n >= 1; n--) {
+          try {
+            const from = archivePath(n);
+            if ((await FileSystem.getInfoAsync(from)).exists) {
+              await FileSystem.copyAsync({ from, to: archivePath(n + 1) });
+            }
+          } catch {
+            // a gap in the archive is not worth failing the rotation over
+          }
         }
+        await FileSystem.writeAsStringAsync(archivePath(1), prev);
+        // Keep PREV_FILE too: it is what the in-app Diagnostics view reads.
+        await FileSystem.writeAsStringAsync(PREV_FILE, prev);
       } catch {
         // best-effort: a missing/unreadable prior log just means no carry-over
       }

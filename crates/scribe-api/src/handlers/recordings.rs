@@ -251,6 +251,38 @@ pub struct CompleteBody {
 /// `POST /recordings/{id}/complete` → flip to `processing`, record duration and
 /// bookmark marks if supplied, and enqueue the `transcode` job (the DB trigger
 /// fires NOTIFY). 409 if the recording isn't in `uploading`.
+/// `DELETE /recordings/{id}` — remove a recording and everything derived from
+/// it, including the audio on disk.
+///
+/// Deliberately allowed from any status. A recording stranded in `uploading`
+/// by a client crash is one of the main reasons to want this, so refusing to
+/// delete anything mid-flight would block the case it exists for.
+///
+/// Order matters: blobs first, then the row. If blob removal fails we abort and
+/// keep the row, so the recording stays visible and retryable. Deleting the row
+/// first would orphan the audio with nothing left pointing at it.
+pub async fn delete_recording(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    // 404 for an unknown id rather than reporting success for a no-op.
+    let _ = state.db.get_recording(id).await?;
+
+    let dir = storage::recording_dir(&state.blobs, id);
+    match tokio::fs::remove_dir_all(&dir).await {
+        Ok(()) => {}
+        // Already gone: nothing to clean up, carry on and remove the row.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(ApiError(Error::Io(e)));
+        }
+    }
+
+    state.db.delete_recording(id).await?;
+
+    Ok(Json(json!({ "id": id, "deleted": true })))
+}
+
 pub async fn complete_recording(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

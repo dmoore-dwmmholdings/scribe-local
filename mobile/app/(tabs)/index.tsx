@@ -33,6 +33,7 @@ import type { SessionEvent, SessionState } from '../../src/recording/recordingSe
 import { api } from '../../src/api/client';
 import type { Utterance } from '../../src/types';
 import { EmberOrb } from '../../src/components/EmberOrb';
+import { onLiveActivityAction } from '../../modules/scribe-live-activity';
 import { Screen } from '../../src/components/ui';
 import { colors, mono } from '../../src/theme';
 
@@ -149,6 +150,17 @@ export default function RecordScreen() {
       Alert.alert('Pause failed', String(err));
     }
   }, []);
+
+  // Pause/Resume and Stop pressed on the Live Activity (Lock Screen or Dynamic
+  // Island). iOS performs the LiveActivityIntent in this process, so it can
+  // drive the same session the on-screen buttons do — no separate code path,
+  // and no risk of the two disagreeing about state.
+  useEffect(() => {
+    return onLiveActivityAction((action) => {
+      if (action === 'stop') void stopRecording();
+      else if (action === 'togglePause') void togglePause();
+    });
+  }, [stopRecording, togglePause]);
 
   const doMark = useCallback(() => {
     const at = sessionRef.current?.mark();

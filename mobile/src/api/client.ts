@@ -154,6 +154,14 @@ export const api = {
     return apiFetch<RecordingDetailResponse>(`/recordings/${id}`);
   },
 
+  /**
+   * Delete a recording, everything derived from it, and its audio blobs.
+   * Irreversible: the server removes the blob directory before the row.
+   */
+  deleteRecording(id: string): Promise<void> {
+    return apiFetch<void>(`/recordings/${id}`, { method: 'DELETE' });
+  },
+
   completeRecording(
     id: string,
     req: CompleteRecordingRequest = {},

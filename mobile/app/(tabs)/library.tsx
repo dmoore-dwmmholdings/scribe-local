@@ -83,10 +83,14 @@ function RecordingRow({
   recording,
   index,
   onPress,
+  onDelete,
+  onFinish,
 }: {
   recording: Recording;
   index: number;
   onPress: () => void;
+  onDelete: () => void;
+  onFinish: () => void;
 }) {
   const dotCount = Math.min(recording.participants_expected ?? 0, 3);
   const extra = (recording.participants_expected ?? 0) - dotCount;
@@ -115,7 +119,33 @@ function RecordingRow({
         )}
       </View>
 
-      <StatusChip status={recording.status} />
+      <View style={styles.rowActions}>
+        <StatusChip status={recording.status} />
+        <View style={styles.rowButtons}>
+          {/* Only offered where it means something: a recording still marked
+              `uploading` was never finalised, usually because the app died. */}
+          {recording.status === 'uploading' && (
+            <TouchableOpacity
+              style={styles.rowIconBtn}
+              onPress={onFinish}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={`Finish ${recording.title ?? 'recording'}`}
+            >
+              <Ionicons name="checkmark-done-outline" size={17} color={colors.accent} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={styles.rowIconBtn}
+            onPress={onDelete}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${recording.title ?? 'recording'}`}
+          >
+            <Ionicons name="trash-outline" size={17} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      </View>
     </TouchableOpacity>
   );
 }
@@ -153,7 +183,7 @@ function FilterChip({
 export default function LibraryScreen() {
   const router = useRouter();
   const { baseUrl, deviceId } = useSettingsStore();
-  const { recordings, hydrated, refresh } = useRecordingsStore();
+  const { recordings, hydrated, refresh, removeRecording } = useRecordingsStore();
   const [importing, setImporting] = useState(false);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
@@ -174,6 +204,82 @@ export default function LibraryScreen() {
     if (!baseUrl) return;
     await refresh();
   }, [baseUrl, refresh]);
+
+  /**
+   * Delete a recording, its transcript and its audio. Irreversible, so it is
+   * confirmed — but reachable from a visible button rather than a hidden
+   * gesture.
+   */
+  const confirmDelete = useCallback(
+    (recording: Recording) => {
+      const label = recording.title?.trim() || 'this recording';
+      Alert.alert(
+        'Delete recording?',
+        `This permanently deletes ${label}, its transcript and summaries, and the audio on ` +
+          'the server. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                log('rec', `deleting recording ${recording.id}`);
+                await api.deleteRecording(recording.id);
+                removeRecording(recording.id);
+                await fetchRecordings();
+              } catch (err) {
+                log('rec', 'delete failed', err);
+                Alert.alert(
+                  'Could not delete it',
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [fetchRecordings, removeRecording],
+  );
+
+  /**
+   * Finalise a recording stranded in `uploading`.
+   *
+   * /complete is only called on a clean stop, so a crash leaves the recording
+   * stuck. The audio is not lost — segments upload as they close — so
+   * completing it transcribes what did arrive, which beats discarding it.
+   */
+  const confirmFinish = useCallback(
+    (recording: Recording) => {
+      Alert.alert(
+        'Finish this recording?',
+        'It was never finalised — usually because the app closed unexpectedly while it was ' +
+          'running. Audio uploaded before that point is safe on the server, and finishing it ' +
+          'now runs transcription on what arrived.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Finish it',
+            onPress: async () => {
+              try {
+                log('rec', `recovering stuck recording ${recording.id}`);
+                await api.completeRecording(recording.id, {});
+                await fetchRecordings();
+              } catch (err) {
+                log('rec', 'recover failed', err);
+                Alert.alert(
+                  'Could not finish it',
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [fetchRecordings],
+  );
 
   // Import an existing audio file: pick -> create -> upload as segment 0 ->
   // complete, then open the new recording (it transcribes like any capture).
@@ -331,6 +437,8 @@ export default function LibraryScreen() {
             recording={item}
             index={index}
             onPress={() => router.push(`/recordings/${item.id}`)}
+            onDelete={() => confirmDelete(item)}
+            onFinish={() => confirmFinish(item)}
           />
         )}
         ListEmptyComponent={
@@ -413,22 +521,41 @@ const styles = StyleSheet.create({
   importBtn: {
     padding: 2,
   },
+  rowActions: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  rowButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  rowIconBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
   filterScroll: {
+    // No maxHeight: a chip is ~30pt (12 padding + 2 border + line height) and
+    // filterRow adds 12 more, which overflowed a 44pt cap and clipped the
+    // bottom of every tag. Let the content size the bar.
     flexGrow: 0,
-    maxHeight: 44,
   },
   filterRow: {
     paddingHorizontal: 18,
-    paddingVertical: 6,
+    paddingVertical: 8,
     gap: 8,
     alignItems: 'center',
   },
   chip: {
     paddingHorizontal: 13,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 14,
     borderWidth: 1,
     maxWidth: 180,
+    // Descenders in tag names were being clipped. Guarantee the chip is tall
+    // enough for the line box rather than relying on padding alone.
+    minHeight: 32,
+    justifyContent: 'center',
   },
   chipActive: {
     backgroundColor: colors.accentSoft,
@@ -439,7 +566,11 @@ const styles = StyleSheet.create({
     borderColor: colors.borderInput,
   },
   chipText: {
-    fontSize: 12.5,
+    // Integer size with an explicit lineHeight: at 12.5 with no lineHeight,
+    // iOS rounds the text frame tight and cuts the bottom off letters like
+    // g/y/p, which is what made every tag look cropped.
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: '500',
     color: colors.textMuted,
   },

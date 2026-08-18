@@ -1,4 +1,5 @@
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -46,6 +47,47 @@ private struct ElapsedText: View {
   }
 }
 
+
+/// Pause/resume + stop controls.
+///
+/// Interactive Live Activities need iOS 17 (`Button(intent:)` with a
+/// LiveActivityIntent). The widget deploys to 16.2, so on 16.x these simply do
+/// not render and the activity stays a read-only status display.
+@available(iOS 17.0, *)
+private struct RecordingControls: View {
+  var isPaused: Bool
+  var compact: Bool = false
+
+  var body: some View {
+    HStack(spacing: compact ? 8 : 10) {
+      Button(intent: ToggleRecordingPauseIntent()) {
+        Label(
+          isPaused ? "Resume" : "Pause",
+          systemImage: isPaused ? "play.fill" : "pause.fill"
+        )
+        .labelStyle(.iconOnly)
+        .font(.system(size: compact ? 13 : 15, weight: .bold))
+        .foregroundStyle(kilnText)
+        .frame(width: compact ? 30 : 38, height: compact ? 30 : 38)
+        .background(Circle().fill(.white.opacity(0.14)))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(isPaused ? "Resume recording" : "Pause recording")
+
+      Button(intent: StopRecordingIntent()) {
+        Label("Stop", systemImage: "stop.fill")
+          .labelStyle(.iconOnly)
+          .font(.system(size: compact ? 13 : 15, weight: .bold))
+          .foregroundStyle(kilnText)
+          .frame(width: compact ? 30 : 38, height: compact ? 30 : 38)
+          .background(Circle().fill(kilnEmber))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Stop recording")
+    }
+  }
+}
+
 /// Lock Screen / Notification Center presentation.
 private struct LockScreenView: View {
   var context: ActivityViewContext<ScribeActivityAttributes>
@@ -66,7 +108,12 @@ private struct LockScreenView: View {
 
       Spacer(minLength: 8)
 
-      ElapsedText(state: context.state)
+      VStack(alignment: .trailing, spacing: 8) {
+        ElapsedText(state: context.state)
+        if #available(iOS 17.0, *) {
+          RecordingControls(isPaused: context.state.isPaused)
+        }
+      }
     }
     .padding(.horizontal, 18)
     .padding(.vertical, 14)
@@ -95,14 +142,20 @@ struct ScribeLiveActivityWidget: Widget {
             .padding(.trailing, 4)
         }
         DynamicIslandExpandedRegion(.bottom) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text(context.attributes.title.isEmpty ? "Scribe" : context.attributes.title)
-              .font(.headline)
-              .foregroundStyle(kilnText)
-              .lineLimit(1)
-            Text("\(context.state.segmentsUploaded) segments uploaded")
-              .font(.caption)
-              .foregroundStyle(kilnMuted)
+          HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(context.attributes.title.isEmpty ? "Scribe" : context.attributes.title)
+                .font(.headline)
+                .foregroundStyle(kilnText)
+                .lineLimit(1)
+              Text("\(context.state.segmentsUploaded) segments uploaded")
+                .font(.caption)
+                .foregroundStyle(kilnMuted)
+            }
+            Spacer(minLength: 8)
+            if #available(iOS 17.0, *) {
+              RecordingControls(isPaused: context.state.isPaused, compact: true)
+            }
           }
         }
       } compactLeading: {

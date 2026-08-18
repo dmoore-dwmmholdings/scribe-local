@@ -103,6 +103,23 @@ impl Db {
         not_found_if_zero(affected, id)
     }
 
+    /// Delete a recording and everything derived from it.
+    ///
+    /// Every child table (segments, jobs, utterances, chunks, summaries,
+    /// recording_speakers, recording_artifacts) declares
+    /// `REFERENCES recordings(id) ON DELETE CASCADE`, so this single statement
+    /// removes the whole graph. Audio blobs live outside the database and are
+    /// the caller's responsibility — see the delete handler in scribe-api.
+    pub async fn delete_recording(&self, id: Uuid) -> Result<()> {
+        let affected = sqlx::query("DELETE FROM recordings WHERE id = $1")
+            .bind(id)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        not_found_if_zero(affected, id)
+    }
+
     /// Record the measured duration (ms) once transcoded.
     pub async fn set_recording_duration(&self, id: Uuid, duration_ms: i64) -> Result<()> {
         let affected = sqlx::query("UPDATE recordings SET duration_ms = $2 WHERE id = $1")

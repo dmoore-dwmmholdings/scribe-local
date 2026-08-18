@@ -8,6 +8,7 @@
  */
 
 import { requireOptionalNativeModule } from 'expo';
+import { EventSubscription } from 'expo-modules-core';
 
 interface ScribeLiveActivityNativeModule {
   isSupported(): boolean;
@@ -19,7 +20,15 @@ interface ScribeLiveActivityNativeModule {
     segmentsUploaded: number,
   ): Promise<boolean>;
   end(): Promise<boolean>;
+  endAll(): Promise<number>;
+  addListener(
+    event: 'onAction',
+    listener: (payload: { action: LiveActivityAction }) => void,
+  ): EventSubscription;
 }
+
+/** Buttons the user can press on the Live Activity. */
+export type LiveActivityAction = 'togglePause' | 'stop';
 
 const native = requireOptionalNativeModule<ScribeLiveActivityNativeModule>('ScribeLiveActivity');
 
@@ -64,6 +73,26 @@ export async function updateLiveActivity(state: LiveActivityState): Promise<bool
   }
 }
 
+/**
+ * End every Live Activity belonging to this app, including ones started by a
+ * previous process.
+ *
+ * ActivityKit activities outlive the app. If the app crashes mid-recording the
+ * Lock Screen keeps claiming a recording is in progress, and the new process
+ * holds no handle to it — so neither relaunching nor rebooting the phone clears
+ * it. Call this on startup, where no recording can legitimately be running yet.
+ *
+ * Returns how many stale activities were cleared.
+ */
+export async function endAllLiveActivities(): Promise<number> {
+  if (!native) return 0;
+  try {
+    return await native.endAll();
+  } catch {
+    return 0;
+  }
+}
+
 export async function endLiveActivity(): Promise<boolean> {
   if (!native) return false;
   try {
@@ -71,4 +100,21 @@ export async function endLiveActivity(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Subscribe to Pause/Resume and Stop presses on the Live Activity.
+ *
+ * These arrive via a LiveActivityIntent, which iOS performs in the app's own
+ * process — so the handler can drive the live RecordingSession directly. The
+ * app is alive to receive it because an active recording keeps it running.
+ *
+ * Returns an unsubscribe function; a no-op where the module is unavailable.
+ */
+export function onLiveActivityAction(
+  handler: (action: LiveActivityAction) => void,
+): () => void {
+  if (!native) return () => {};
+  const sub = native.addListener('onAction', ({ action }) => handler(action));
+  return () => sub.remove();
 }
