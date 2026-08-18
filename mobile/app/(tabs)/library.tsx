@@ -542,16 +542,20 @@ const styles = StyleSheet.create({
   },
   filterRow: {
     paddingHorizontal: 18,
-    paddingVertical: 6,
+    paddingVertical: 8,
     gap: 8,
     alignItems: 'center',
   },
   chip: {
     paddingHorizontal: 13,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 14,
     borderWidth: 1,
     maxWidth: 180,
+    // Descenders in tag names were being clipped. Guarantee the chip is tall
+    // enough for the line box rather than relying on padding alone.
+    minHeight: 32,
+    justifyContent: 'center',
   },
   chipActive: {
     backgroundColor: colors.accentSoft,
@@ -562,7 +566,11 @@ const styles = StyleSheet.create({
     borderColor: colors.borderInput,
   },
   chipText: {
-    fontSize: 12.5,
+    // Integer size with an explicit lineHeight: at 12.5 with no lineHeight,
+    // iOS rounds the text frame tight and cuts the bottom off letters like
+    // g/y/p, which is what made every tag look cropped.
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: '500',
     color: colors.textMuted,
   },

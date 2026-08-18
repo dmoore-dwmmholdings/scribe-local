@@ -626,6 +626,8 @@ export default function RecordingDetailScreen() {
   const [scrubFraction, setScrubFraction] = useState<number | null>(null);
   /** locationX where the current scrub gesture began. */
   const scrubStartXRef = useRef(0);
+  /** Duration + wave width, read by the scrub responder at gesture time. */
+  const scrubGeomRef = useRef({ dur: 0, width: 0 });
 
   const [searchQuery, setSearchQuery] = useState('');
   const [namingUtterance, setNamingUtterance] = useState<Utterance | null>(null);
@@ -789,6 +791,53 @@ export default function RecordingDetailScreen() {
         .catch((e) => log('audio', 'seek failed', e));
     },
     [player, setFollow],
+  );
+
+  /**
+   * Drag-to-seek on the waveform.
+   *
+   * Declared here, above the `loading` / `error` early returns. It previously
+   * sat further down next to the playback bar, which meant the hook only ran
+   * on some renders — React then threw "rendered more hooks than during the
+   * previous render" the moment a recording finished loading, which looked
+   * like playback itself failing. Geometry comes from a ref for the same
+   * reason: `dur` is only known after those returns.
+   *
+   * Seeking happens on release, not on every move: the audio streams over HTTP
+   * Range requests, so seeking per frame would thrash the connection and fight
+   * the drag. While dragging we render scrubFraction so the wave follows the
+   * finger, then commit one seek.
+   *
+   * `gesture.dx` is cumulative from the grant, so position is always
+   * grantX + dx — never an accumulation, which would drift.
+   */
+  const scrubResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () =>
+          scrubGeomRef.current.dur > 0 && scrubGeomRef.current.width > 0,
+        onMoveShouldSetPanResponder: () =>
+          scrubGeomRef.current.dur > 0 && scrubGeomRef.current.width > 0,
+        // Claim the gesture so an enclosing ScrollView cannot steal it mid-drag.
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => {
+          scrubStartXRef.current = e.nativeEvent.locationX;
+          setScrubFraction(clamp01(e.nativeEvent.locationX / scrubGeomRef.current.width));
+        },
+        onPanResponderMove: (_e, gesture) => {
+          setScrubFraction(
+            clamp01((scrubStartXRef.current + gesture.dx) / scrubGeomRef.current.width),
+          );
+        },
+        onPanResponderRelease: (_e, gesture) => {
+          const { dur: d, width } = scrubGeomRef.current;
+          const f = clamp01((scrubStartXRef.current + gesture.dx) / width);
+          setScrubFraction(null);
+          seekTo(Math.round(f * d));
+        },
+        onPanResponderTerminate: () => setScrubFraction(null),
+      }),
+    [seekTo],
   );
 
   const togglePlayback = useCallback(() => {
@@ -1137,41 +1186,11 @@ export default function RecordingDetailScreen() {
   const { recording, speakers } = detail;
   const dur = recording.duration_ms ?? statusDurationMs;
   const progress = dur > 0 ? positionMs / dur : 0;
+  // Feed the scrub responder without making it depend on values that only
+  // exist after the early returns above.
+  scrubGeomRef.current = { dur, width: waveWidth };
 
-  /**
-   * Drag-to-seek on the waveform.
-   *
-   * Seeking only on release, not on every move: the audio streams over HTTP
-   * Range requests, so seeking per frame would thrash the connection and fight
-   * the drag. While dragging we render scrubFraction instead of playback
-   * progress so the wave tracks the finger, then commit one seek.
-   *
-   * `gesture.dx` is cumulative from the grant, so the position is always
-   * grantX + dx — never an accumulation, which would drift.
-   */
-  const scrubResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => dur > 0 && waveWidth > 0,
-        onMoveShouldSetPanResponder: () => dur > 0 && waveWidth > 0,
-        // Claim the gesture so an enclosing ScrollView cannot steal it mid-drag.
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: (e) => {
-          scrubStartXRef.current = e.nativeEvent.locationX;
-          setScrubFraction(clamp01(e.nativeEvent.locationX / waveWidth));
-        },
-        onPanResponderMove: (_e, gesture) => {
-          setScrubFraction(clamp01((scrubStartXRef.current + gesture.dx) / waveWidth));
-        },
-        onPanResponderRelease: (_e, gesture) => {
-          const f = clamp01((scrubStartXRef.current + gesture.dx) / waveWidth);
-          setScrubFraction(null);
-          seekTo(Math.round(f * dur));
-        },
-        onPanResponderTerminate: () => setScrubFraction(null),
-      }),
-    [dur, waveWidth, seekTo],
-  );
+
   const templateLabel = (tid?: string | null) =>
     tid ? (templates.find((t) => t.id === tid)?.label ?? null) : null;
   const generatedTemplates = summaries.map((s) => s.template ?? 'general');
