@@ -47,6 +47,7 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { log } from '../util/logger';
 import { startBackgroundInterval } from '../../modules/scribe-bg-timer';
+import { onAudioInterruption } from '../../modules/scribe-audio-session';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,6 +120,8 @@ export class SegmentedRecorder {
   private stopRotationTimer: (() => void) | null = null;
   /** Guards against a tick arriving while the previous rotation is in flight. */
   private _rotating = false;
+  /** Unsubscribes the AVAudioSession interruption listener. */
+  private stopInterruptionWatch: (() => void) | null = null;
   private seq = 0;
   private _recordingId = '';
   private _startTimeMs = 0;
@@ -187,10 +190,23 @@ export class SegmentedRecorder {
     // allowsRecording = true enables recording on iOS (sets AVAudioSession category).
     // shouldPlayInBackground = true keeps the session alive when backgrounded
     // (pairs with UIBackgroundModes: audio on iOS; foreground service on Android).
+    // interruptionMode 'mixWithOthers' is load-bearing, not a preference.
+    //
+    // A non-mixing category takes exclusive audio focus, and iOS refuses to let
+    // a BACKGROUNDED app activate such a session — prepareToRecordAsync then
+    // fails with AVAudioSessionErrorCodeCannotInterruptOthers (OSStatus
+    // 560557684). That is exactly what the device log showed while the phone
+    // was locked: rotation could not start a new recorder, and with the session
+    // no longer running iOS suspended the app entirely, so capture stopped and
+    // even the native rotation timer went quiet for two minutes.
+    //
+    // Mixing also stops Scribe fighting other apps for focus, so playing audio
+    // elsewhere no longer interrupts a meeting recording.
     await setAudioModeAsync({
       allowsRecording: true,
       playsInSilentMode: true,
       shouldPlayInBackground: true,
+      interruptionMode: 'mixWithOthers',
     });
 
     this._recordingId = options.recordingId;
@@ -203,6 +219,7 @@ export class SegmentedRecorder {
 
     await this._startSegment();
     this._startRotationTimer();
+    this._watchInterruptions();
   }
 
   /**
@@ -246,6 +263,8 @@ export class SegmentedRecorder {
     this._running = false;
     this._paused = false;
     this._clearTimer();
+    this.stopInterruptionWatch?.();
+    this.stopInterruptionWatch = null;
     await this._closeCurrentSegment();
 
     // Reset audio mode after recording ends
@@ -412,6 +431,46 @@ export class SegmentedRecorder {
       }
     }
     return uri;
+  }
+
+  /**
+   * Watch for AVAudioSession interruptions and restart capture afterwards.
+   *
+   * An interruption stops the recorder at the OS level. Nothing surfaces that
+   * to JS on its own, so previously the session kept reporting "recording"
+   * while capturing nothing — the failure mode where a meeting goes missing
+   * without any error.
+   *
+   * On `began` we drop the current recorder rather than leaving a dead object
+   * attached to the session; the partial file is still finalised and emitted,
+   * so audio captured up to the interruption is kept.
+   */
+  private _watchInterruptions(): void {
+    this.stopInterruptionWatch?.();
+    this.stopInterruptionWatch = onAudioInterruption((event) => {
+      if (!this._running) return;
+      log('audio', `interruption ${event.type}`, event);
+
+      if (event.type === 'began') {
+        // Close out whatever was captured before the interruption.
+        void this._closeCurrentSegment()
+          .then(() => {
+            this.seq += 1;
+          })
+          .catch((err) => log('audio', 'interruption close failed', err));
+        return;
+      }
+
+      // Ended. Resume unless we are deliberately paused. iOS sets
+      // shouldResume=false in cases where it does not expect us to restart,
+      // but a background recording is exactly the case where we should try
+      // anyway — the worst outcome is one more logged failure and a retry on
+      // the next rotation tick.
+      if (this._paused) return;
+      void this._startSegment().catch((err) =>
+        log('audio', 'interruption resume failed', err),
+      );
+    });
   }
 
   /**
