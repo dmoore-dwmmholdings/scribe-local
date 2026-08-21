@@ -32,6 +32,26 @@ const COLS: &str = "id, recording_id, kind, state, priority, attempts, run_after
 pub const LEASE_EXPIRED: &str =
     "worker lease expired: the worker stopped renewing it (crashed, killed, or lost the database)";
 
+/// Recorded against a job the worker put down because its processing window
+/// closed. Not a failure — the note exists so the queue says *why* the job is
+/// sitting there rather than looking mysteriously stalled.
+pub const WINDOW_CLOSED: &str =
+    "paused: the processing window closed while this stage was running; it will be retried when the next window opens";
+
+/// A snapshot of the queue, for the backlog readout in the app.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueueBacklog {
+    /// Jobs waiting to be claimed.
+    pub queued: i64,
+    /// Jobs a worker holds right now.
+    pub running: i64,
+    /// Jobs parked after exhausting their attempts.
+    pub failed: i64,
+    /// Distinct recordings with at least one queued schedule-gated job — the
+    /// honest answer to "how much is waiting for the next window?".
+    pub recordings_waiting: i64,
+}
+
 /// A job the reaper took back from a worker that stopped renewing its lease.
 #[derive(Debug, Clone)]
 pub struct ReapedJob {
@@ -225,6 +245,78 @@ impl Db {
             .map_err(db_err)?;
             Ok(false)
         }
+    }
+
+    /// Put a running job back on the queue without counting an attempt, to be
+    /// picked up no earlier than `delay` from now.
+    ///
+    /// This is the deliberate counterpart to [`Db::fail`]. A job abandoned
+    /// because its processing window closed did nothing wrong, so charging it an
+    /// attempt would let a few closed windows park a perfectly good recording in
+    /// `failed`. The error text is kept as a human-readable note rather than a
+    /// failure — nothing branches on it.
+    pub async fn defer(&self, job_id: i64, note: &str, delay: Duration) -> Result<()> {
+        sqlx::query(
+            "UPDATE jobs SET state = 'queued', locked_by = NULL, locked_at = NULL, \
+               error = $2, run_after = now() + make_interval(secs => $3) \
+             WHERE id = $1",
+        )
+        .bind(job_id)
+        .bind(note)
+        .bind(delay.as_secs_f64())
+        .execute(self.pool())
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Fire the workers' wakeup channel by hand.
+    ///
+    /// The insert/requeue triggers cover new work; this covers the other reason
+    /// an idle worker should look again — the *policy* changed. When the app
+    /// lifts a pause, the queue is unchanged, so without this the worker would
+    /// sit out its poll interval before noticing.
+    pub async fn notify_workers(&self, payload: &str) -> Result<()> {
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(crate::JOBS_CHANNEL)
+            .bind(payload)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Count what is in the queue, split so the app can say how much work is
+    /// waiting on the schedule as opposed to merely in flight.
+    pub async fn backlog(&self) -> Result<QueueBacklog> {
+        // Schedule-gated kinds: everything except the ones that bypass it. Built
+        // from JobKind so adding a stage cannot silently skew the count.
+        let gated: Vec<&str> = JobKind::ALL
+            .iter()
+            .filter(|k| !k.bypasses_schedule())
+            .map(JobKind::as_str)
+            .collect();
+
+        let row = sqlx::query(
+            "SELECT \
+               count(*) FILTER (WHERE state = 'queued')  AS queued, \
+               count(*) FILTER (WHERE state = 'running') AS running, \
+               count(*) FILTER (WHERE state = 'failed')  AS failed, \
+               count(DISTINCT recording_id) \
+                 FILTER (WHERE state = 'queued' AND kind = ANY($1)) AS recordings_waiting \
+             FROM jobs",
+        )
+        .bind(&gated[..])
+        .fetch_one(self.pool())
+        .await
+        .map_err(db_err)?;
+
+        Ok(QueueBacklog {
+            queued: row.try_get("queued").map_err(db_err)?,
+            running: row.try_get("running").map_err(db_err)?,
+            failed: row.try_get("failed").map_err(db_err)?,
+            recordings_waiting: row.try_get("recordings_waiting").map_err(db_err)?,
+        })
     }
 
     /// Requeue `running` jobs whose `locked_at` is older than `older_than`

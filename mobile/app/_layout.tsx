@@ -56,6 +56,7 @@ export default function RootLayout() {
         <Stack.Screen name="speakers" options={{ headerShown: false }} />
         <Stack.Screen name="admin/update" options={{ headerShown: false }} />
         <Stack.Screen name="admin/logs" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/schedule" options={{ headerShown: false }} />
       </Stack>
     </ErrorBoundary>
   );

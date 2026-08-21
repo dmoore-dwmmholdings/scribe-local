@@ -270,6 +270,24 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Processing */}
+        <SectionLabel>PROCESSING</SectionLabel>
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={styles.linkRow}
+            onPress={() => router.push('/admin/schedule')}
+            accessibilityRole="button"
+          >
+            <View style={styles.toggleText}>
+              <Text style={styles.rowLabel}>Processing schedule</Text>
+              <Text style={styles.toggleHint}>
+                Hours the server may transcribe, so it stays off your GPU at home
+              </Text>
+            </View>
+            <Text style={styles.chevron}>›</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Diagnostics */}
         <SectionLabel>DIAGNOSTICS</SectionLabel>
         <View style={styles.card}>

@@ -16,6 +16,7 @@
 //! * [`chunks`] — retrieval chunks + embeddings.
 //! * [`summaries`] — LLM-generated metadata.
 //! * [`search`] — hybrid keyword + vector search with RRF fusion.
+//! * [`settings`] — server-side settings documents (the processing schedule).
 //!
 //! ## sqlx style
 //!
@@ -35,6 +36,7 @@ pub mod recording_speakers;
 pub mod recordings;
 pub mod search;
 pub mod segments;
+pub mod settings;
 pub mod speakers;
 pub mod summaries;
 pub mod transcript;

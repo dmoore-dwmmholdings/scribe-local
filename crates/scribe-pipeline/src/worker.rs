@@ -5,11 +5,17 @@
 //! per-job heartbeat task that keeps the visibility lease fresh, a background
 //! reaper that requeues jobs whose lease expired, and bounded-concurrency
 //! dispatch via a [`Semaphore`].
+//!
+//! It also enforces the processing schedule (see [`scribe_core::schedule`]):
+//! outside the configured windows the loop narrows what it will claim to the
+//! stages that bypass the schedule, and a stage still running when a window
+//! closes is given a grace period before being put back on the queue.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scribe_core::config::Config;
+use scribe_core::schedule::ProcessingSchedule;
 use scribe_core::types::{Job, JobKind, RecordingStatus};
 use scribe_core::Result;
 use scribe_db::Db;
@@ -18,7 +24,27 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::engines::Engines;
+use crate::gate::ScheduleGate;
 use crate::stages;
+
+/// How often a running stage re-checks whether its window is still open.
+///
+/// Coarse on purpose: this fires for the whole life of every job, and the thing
+/// it guards (the grace cap) is measured in minutes.
+const WINDOW_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Longest an idle, schedule-paused worker sleeps before re-reading the
+/// schedule. A NOTIFY normally wakes it sooner — this is the backstop for the
+/// hours when nothing at all is happening.
+const PAUSED_POLL_MAX: Duration = Duration::from_secs(15);
+
+/// Floor on how long a job deferred by a closing window waits before it is
+/// claimable again, so a boundary that is only seconds away cannot spin.
+const MIN_DEFER: Duration = Duration::from_secs(60);
+
+/// Fallback wait for a deferred job when the schedule reports no upcoming
+/// window at all (every day switched off, or a very long pause).
+const FALLBACK_DEFER: Duration = Duration::from_secs(3600);
 
 /// Dispatch one stage by kind. Shared by the worker and the inline driver so the
 /// stage code path is identical regardless of how it was triggered. `payload` is
@@ -114,7 +140,8 @@ pub async fn run_worker(cfg: Config) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(concurrency));
 
     let mut listener = db.job_listener(&cfg.database).await?;
-    let kinds = cfg.effective_stages();
+    let configured = cfg.effective_stages();
+    let gate = ScheduleGate::new(db.clone());
 
     loop {
         // Acquire a concurrency permit before claiming, so we never claim work we
@@ -125,16 +152,22 @@ pub async fn run_worker(cfg: Config) -> Result<()> {
             .await
             .expect("semaphore not closed");
 
+        // Re-evaluated every iteration, not once at startup: the window can
+        // close, or the operator can pause from the phone, between two claims.
+        let decision = gate.decide().await;
+        let kinds = ProcessingSchedule::claimable_kinds(&configured, &decision);
+
         match db.claim_one(&worker_id, &kinds).await? {
             Some(job) => {
                 let db = db.clone();
                 let cfg = cfg.clone();
                 let engines = engines.clone();
+                let gate = Arc::clone(&gate);
                 let worker_id = worker_id.clone();
                 tokio::spawn(async move {
                     let _permit = permit; // released on task end
                     if let Err(e) =
-                        process_job(&cfg, &db, &engines, &worker_id, job, heartbeat).await
+                        process_job(&cfg, &db, &engines, &gate, &worker_id, job, heartbeat).await
                     {
                         tracing::error!(error = %e, "job processing error");
                     }
@@ -144,11 +177,16 @@ pub async fn run_worker(cfg: Config) -> Result<()> {
                 // Nothing to claim: release the permit and sleep until a NOTIFY or
                 // the poll backstop fires, then loop.
                 drop(permit);
+                let wait = idle_wait(poll, decision.allowed);
                 tokio::select! {
                     _ = listener.recv() => {
+                        // The wakeup may be new work *or* a schedule edit, and
+                        // the two are indistinguishable here — so drop the
+                        // cached schedule and let the next iteration re-read it.
+                        gate.invalidate().await;
                         tracing::trace!("woken by NOTIFY");
                     }
-                    _ = tokio::time::sleep(poll) => {
+                    _ = tokio::time::sleep(wait) => {
                         tracing::trace!("poll backstop tick");
                     }
                 }
@@ -157,12 +195,36 @@ pub async fn run_worker(cfg: Config) -> Result<()> {
     }
 }
 
+/// How long an idle worker waits before looking again.
+///
+/// While paused the backstop is also what bounds how stale the schedule may
+/// get, so it is capped independently of `[worker].poll_secs`: an install that
+/// has tuned the poll interval up to minutes should still notice a "process
+/// now" tapped on the phone promptly. (A NOTIFY normally beats both.)
+fn idle_wait(poll: Duration, allowed: bool) -> Duration {
+    if allowed {
+        poll
+    } else {
+        poll.min(PAUSED_POLL_MAX)
+    }
+}
+
+/// What became of a dispatched stage.
+enum StageOutcome {
+    /// The stage ran to completion (successfully or not).
+    Finished(Result<()>),
+    /// The processing window closed and the grace period ran out, so the stage
+    /// was abandoned. Not a failure: the job goes back on the queue untouched.
+    WindowClosed { retry_in: Duration },
+}
+
 /// Run one claimed job: heartbeat while it runs, dispatch the stage, then on
 /// success complete it + enqueue ready successors; on failure record it.
 async fn process_job(
     cfg: &Config,
     db: &Db,
     engines: &Engines,
+    gate: &ScheduleGate,
     worker_id: &str,
     job: Job,
     heartbeat: Duration,
@@ -195,8 +257,24 @@ async fn process_job(
         }
     });
 
-    let result = run_stage(cfg, db, engines, job.kind, recording_id, &job.payload).await;
+    let outcome = run_stage_within_window(cfg, db, engines, gate, &job, recording_id).await;
     hb.abort();
+
+    let result = match outcome {
+        StageOutcome::Finished(r) => r,
+        StageOutcome::WindowClosed { retry_in } => {
+            tracing::info!(
+                job_id = job.id,
+                kind = %job.kind,
+                %recording_id,
+                retry_in_mins = retry_in.as_secs() / 60,
+                "processing window closed; putting this stage back for the next one"
+            );
+            return db
+                .defer(job.id, scribe_db::queue::WINDOW_CLOSED, retry_in)
+                .await;
+        }
+    };
 
     match result {
         Ok(()) => {
@@ -238,6 +316,75 @@ async fn process_job(
             }
             Ok(())
         }
+    }
+}
+
+/// Dispatch a stage, watching the processing window while it runs.
+///
+/// A stage that bypasses the schedule (live transcription) is simply awaited.
+/// Anything else races the stage against a periodic window check: once the
+/// window has been shut for `grace_minutes`, the stage future is dropped and
+/// the job is handed back to the queue.
+///
+/// **What "abandoned" means in practice.** Dropping the future cancels the
+/// stage at its next `await`, which is prompt for the I/O-shaped parts of the
+/// pipeline (ffmpeg, database, LLM calls) but cannot interrupt a native ONNX
+/// call already executing on a blocking thread — that call finishes on its own
+/// thread and its result is discarded. So the grace cap bounds when the worker
+/// *stops taking new work from this job*, not the instant the GPU goes quiet.
+/// Interrupting mid-inference would mean cancellation points inside sherpa-onnx,
+/// which it does not offer.
+async fn run_stage_within_window(
+    cfg: &Config,
+    db: &Db,
+    engines: &Engines,
+    gate: &ScheduleGate,
+    job: &Job,
+    recording_id: Uuid,
+) -> StageOutcome {
+    if job.kind.bypasses_schedule() {
+        return StageOutcome::Finished(
+            run_stage(cfg, db, engines, job.kind, recording_id, &job.payload).await,
+        );
+    }
+
+    let stage = run_stage(cfg, db, engines, job.kind, recording_id, &job.payload);
+    tokio::pin!(stage);
+
+    // When the window first closed under this job. Reset if it reopens (an
+    // override, or a window that merges into the next one), so only a
+    // *continuous* overrun counts against the grace period.
+    let mut closed_since: Option<Instant> = None;
+
+    loop {
+        tokio::select! {
+            result = &mut stage => return StageOutcome::Finished(result),
+            _ = tokio::time::sleep(WINDOW_CHECK_INTERVAL) => {
+                let sched = gate.schedule().await;
+                let decision = sched.decide_now();
+                if decision.allowed {
+                    closed_since = None;
+                    continue;
+                }
+                let since = *closed_since.get_or_insert_with(Instant::now);
+                let grace = Duration::from_secs(u64::from(sched.grace_minutes) * 60);
+                if since.elapsed() >= grace {
+                    return StageOutcome::WindowClosed {
+                        retry_in: retry_delay(&decision),
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// How long a deferred job should wait: until the next window opens, clamped so
+/// it neither spins on an imminent boundary nor sleeps forever when the
+/// schedule has no next window to point at.
+fn retry_delay(decision: &scribe_core::schedule::ScheduleDecision) -> Duration {
+    match decision.next_change_secs {
+        Some(secs) if secs > 0 => Duration::from_secs(secs as u64).max(MIN_DEFER),
+        _ => FALLBACK_DEFER,
     }
 }
 
@@ -297,6 +444,58 @@ fn spawn_reaper(db: Db, cfg: Arc<Config>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scribe_core::schedule::{ScheduleDecision, ScheduleReason};
+
+    fn decision(allowed: bool, next: Option<i64>) -> ScheduleDecision {
+        ScheduleDecision {
+            allowed,
+            reason: if allowed {
+                ScheduleReason::InWindow
+            } else {
+                ScheduleReason::OutsideWindow
+            },
+            next_change_secs: next,
+        }
+    }
+
+    #[test]
+    fn idle_wait_uses_the_configured_poll_while_running() {
+        assert_eq!(idle_wait(Duration::from_secs(5), true), Duration::from_secs(5));
+        assert_eq!(idle_wait(Duration::from_secs(300), true), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn idle_wait_is_capped_while_paused() {
+        // A short poll is already responsive enough; a long one is capped so a
+        // phone-side override is not stuck behind it.
+        assert_eq!(idle_wait(Duration::from_secs(5), false), Duration::from_secs(5));
+        assert_eq!(idle_wait(Duration::from_secs(300), false), PAUSED_POLL_MAX);
+    }
+
+    #[test]
+    fn deferred_jobs_wait_for_the_next_window() {
+        let two_hours = 2 * 3600;
+        assert_eq!(
+            retry_delay(&decision(false, Some(two_hours))),
+            Duration::from_secs(two_hours as u64)
+        );
+    }
+
+    #[test]
+    fn an_imminent_boundary_still_waits_the_minimum() {
+        assert_eq!(retry_delay(&decision(false, Some(3))), MIN_DEFER);
+    }
+
+    #[test]
+    fn no_upcoming_window_falls_back_rather_than_retrying_forever() {
+        assert_eq!(retry_delay(&decision(false, None)), FALLBACK_DEFER);
+        assert_eq!(retry_delay(&decision(false, Some(0))), FALLBACK_DEFER);
+    }
 }
 
 /// A stable-ish worker identity: `hostname-pid`, falling back to a uuid.

@@ -4,6 +4,7 @@
 //!
 //! * [`config`] — the role-shared TOML/env configuration (see design §17 appendix B).
 //! * [`error`] — the crate-wide error type and `Result` alias.
+//! * [`schedule`] — the processing schedule: when the worker may run heavy stages.
 //! * [`types`] — the domain model: recordings, segments, jobs, speakers,
 //!   utterances, chunks, summaries. These mirror the Postgres schema in
 //!   `migrations/` (design §10) but are storage-agnostic.
@@ -14,6 +15,7 @@
 
 pub mod config;
 pub mod error;
+pub mod schedule;
 pub mod storage;
 pub mod summary_template;
 pub mod types;
