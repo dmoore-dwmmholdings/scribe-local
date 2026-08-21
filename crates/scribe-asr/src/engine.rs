@@ -173,4 +173,20 @@ impl SpeechEngine {
     pub fn speaker_embedder(&self) -> &dyn SpeakerEmbedder {
         self.embedder.as_ref()
     }
+
+    /// An owned handle to the transcriber, for running it on a blocking thread.
+    ///
+    /// Transcription and diarization are long CPU-bound native calls. Run on a
+    /// runtime worker thread they hold it for minutes, and tokio's timers stop
+    /// firing — which silently killed the job heartbeat, so the reaper treated
+    /// a working stage as an abandoned one and took its job back mid-run. The
+    /// callers hand these to `spawn_blocking`, which needs an owned value.
+    pub fn transcriber_handle(&self) -> Arc<dyn Transcriber> {
+        self.transcriber.clone()
+    }
+
+    /// An owned handle to the diarizer. See [`Self::transcriber_handle`].
+    pub fn diarizer_handle(&self) -> Arc<dyn Diarizer> {
+        self.diarizer.clone()
+    }
 }

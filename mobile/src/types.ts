@@ -382,6 +382,79 @@ export interface AppSettings {
 }
 
 // ---------------------------------------------------------------------------
+// Processing schedule
+// ---------------------------------------------------------------------------
+
+/**
+ * One weekday's processing window, in minutes after **server-local** midnight.
+ *
+ * `end <= start` wraps past midnight, so 22:00 → 06:00 is `{start: 1320, end:
+ * 360}`, and `start === end` is a full 24 hours. There is no zero-length
+ * window; `enabled: false` is how a day is switched off.
+ */
+export interface DayWindow {
+  enabled: boolean;
+  start: number;
+  end: number;
+}
+
+/** A time-boxed instruction that outranks the weekly windows until `until`. */
+export interface ScheduleOverride {
+  mode: 'run' | 'pause';
+  /** RFC-3339 UTC instant at which the override lapses. */
+  until: string;
+}
+
+/** The stored policy. `days` is always 7 entries, **Monday first**. */
+export interface ProcessingSchedule {
+  enabled: boolean;
+  days: DayWindow[];
+  grace_minutes: number;
+  override: ScheduleOverride | null;
+}
+
+export type ScheduleReason =
+  | 'disabled'
+  | 'in_window'
+  | 'outside_window'
+  | 'override_run'
+  | 'override_pause';
+
+/** The server's live verdict on its own schedule. */
+export interface ScheduleStatus {
+  allowed: boolean;
+  reason: ScheduleReason;
+  /** Seconds until the verdict could change, or null when nothing is coming. */
+  next_change_secs: number | null;
+  /** The same boundary as an absolute instant (RFC-3339). */
+  next_change_at: string | null;
+  /** Wall-clock time on the server, which is what the windows are written in. */
+  server_time: string;
+}
+
+/** How much work is sitting in the queue. */
+export interface ScheduleBacklog {
+  queued: number;
+  running: number;
+  failed: number;
+  /** Distinct recordings with at least one job waiting on the schedule. */
+  recordings_waiting: number;
+}
+
+/** Response from every `/processing-schedule*` endpoint. */
+export interface ProcessingScheduleResponse {
+  schedule: ProcessingSchedule;
+  status: ScheduleStatus;
+  backlog: ScheduleBacklog;
+}
+
+/** Body for `POST /processing-schedule/override`. */
+export interface OverrideRequest {
+  mode: 'run' | 'pause' | 'clear';
+  minutes?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Admin / update API types
 // ---------------------------------------------------------------------------
 

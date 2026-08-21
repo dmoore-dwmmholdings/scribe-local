@@ -31,6 +31,9 @@ import type {
   ListSpeakersResponse,
   NameSpeakerRequest,
   NameSpeakerResponse,
+  OverrideRequest,
+  ProcessingSchedule,
+  ProcessingScheduleResponse,
   RecordingDetailResponse,
   ReprocessResponse,
   ResummarizeResponse,
@@ -402,6 +405,48 @@ export const api = {
     return apiFetch<TranslateResponse>(`/recordings/${id}/translate`, {
       method: 'POST',
       body: JSON.stringify({ lang }),
+    });
+  },
+
+  // -------------------------------------------------------------------------
+  // Processing schedule
+  // -------------------------------------------------------------------------
+
+  /**
+   * GET /processing-schedule — the weekly windows, what they evaluate to on the
+   * server right now, and the queue backlog waiting on them.
+   */
+  getProcessingSchedule(): Promise<ProcessingScheduleResponse> {
+    return apiFetch<ProcessingScheduleResponse>('/processing-schedule');
+  },
+
+  /**
+   * PUT /processing-schedule — replace the weekly windows.
+   *
+   * `days` must be exactly 7 entries, Monday first. A live override is NOT sent
+   * and NOT cleared: the server carries it across the write, so saving a window
+   * edit cannot cancel a pause set moments earlier.
+   */
+  setProcessingSchedule(
+    schedule: Pick<ProcessingSchedule, 'enabled' | 'days' | 'grace_minutes'>,
+  ): Promise<ProcessingScheduleResponse> {
+    return apiFetch<ProcessingScheduleResponse>('/processing-schedule', {
+      method: 'PUT',
+      body: JSON.stringify(schedule),
+    });
+  },
+
+  /**
+   * POST /processing-schedule/override — bend the schedule for a while.
+   *
+   * `run` drains the backlog regardless of the windows, `pause` stops heavy
+   * processing even inside one, `clear` drops whichever is in force. Both timed
+   * modes default to 60 minutes and are capped at 24 hours by the server.
+   */
+  setProcessingOverride(req: OverrideRequest): Promise<ProcessingScheduleResponse> {
+    return apiFetch<ProcessingScheduleResponse>('/processing-schedule/override', {
+      method: 'POST',
+      body: JSON.stringify(req),
     });
   },
 

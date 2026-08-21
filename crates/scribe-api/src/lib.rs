@@ -39,6 +39,9 @@
 //! GET    /search
 //! POST   /ask
 //! GET    /summary-templates
+//! GET    /processing-schedule                            (windows + live status + backlog)
+//! PUT    /processing-schedule                            (replace the weekly windows)
+//! POST   /processing-schedule/override                   (run now / pause now / clear)
 //! ```
 //!
 //! Every route except `GET /health` passes through the device-token auth layer
@@ -138,6 +141,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/search", get(handlers::search::search))
         .route("/ask", post(handlers::search::ask))
+        .route(
+            "/processing-schedule",
+            get(handlers::schedule::get_schedule).put(handlers::schedule::set_schedule),
+        )
+        .route(
+            "/processing-schedule/override",
+            post(handlers::schedule::set_override),
+        )
         .route(
             "/summary-templates",
             get(handlers::recordings::list_summary_templates),

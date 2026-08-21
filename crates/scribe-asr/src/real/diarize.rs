@@ -48,6 +48,23 @@ const MIN_NEW_SPEAKER_MS: i64 = 3_000;
 /// vector says more about the noise floor than the voice.
 const MIN_EMBED_MS: i64 = 1_000;
 
+/// Longest slice handed to the embedding extractor in one call.
+///
+/// TitaNet's masked convolutions carry a length limit baked in at export: past
+/// roughly two minutes of audio the mask and the feature map disagree, and
+/// onnxruntime throws from `mconv`'s `Where` node
+/// (`broadcast an axis by a dimension other than 1. 12288 by 14531`). That is a
+/// C++ exception crossing the FFI boundary, which Rust cannot catch — it aborts
+/// the whole worker, taking the job's lease and every other queued job with it.
+/// A 9-minute single-speaker recording did exactly that: diarization merged the
+/// monologue into one turn far over the limit.
+///
+/// 30 s is well inside the limit and is already more speech than these models
+/// use — they were trained on a few seconds — so nothing is lost by splitting.
+/// A longer turn is embedded in pieces and averaged, weighted by duration, so
+/// the result is what embedding the whole turn was meant to produce anyway.
+const MAX_EMBED_MS: i64 = 30_000;
+
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
 pub struct SherpaDiarizer {
@@ -665,31 +682,41 @@ fn compute_speaker_embeddings(
         if end <= start {
             continue;
         }
-        let slice = &samples[start..end];
 
-        let Some(stream) = extractor.create_stream() else {
-            continue;
-        };
-        stream.accept_waveform(sample_rate as i32, slice);
-        stream.input_finished();
-        if !extractor.is_ready(&stream) {
-            continue;
-        }
-        let Some(emb) = extractor.compute(&stream) else {
-            continue;
-        };
+        // A turn over the model's length limit is embedded in pieces and
+        // averaged. The pieces carry their own duration as weight, so a long
+        // turn still counts for its full length in the speaker's mean.
+        let max_len = ((MAX_EMBED_MS * sr) / 1000) as usize;
+        for (from, to) in split_evenly(start, end, max_len) {
+            if to <= from {
+                continue;
+            }
+            let slice = &samples[from..to];
 
-        let weight = ((turn.end_ms - turn.start_ms).max(1) as f32) / 1000.0;
-        let entry = acc
-            .entry(turn.local_idx)
-            .or_insert_with(|| (vec![0.0; emb.len()], 0.0));
-        if entry.0.len() != emb.len() {
-            entry.0 = vec![0.0; emb.len()];
+            let Some(stream) = extractor.create_stream() else {
+                continue;
+            };
+            stream.accept_waveform(sample_rate as i32, slice);
+            stream.input_finished();
+            if !extractor.is_ready(&stream) {
+                continue;
+            }
+            let Some(emb) = extractor.compute(&stream) else {
+                continue;
+            };
+
+            let weight = (to - from) as f32 / sample_rate as f32;
+            let entry = acc
+                .entry(turn.local_idx)
+                .or_insert_with(|| (vec![0.0; emb.len()], 0.0));
+            if entry.0.len() != emb.len() {
+                entry.0 = vec![0.0; emb.len()];
+            }
+            for (a, b) in entry.0.iter_mut().zip(emb.iter()) {
+                *a += *b * weight;
+            }
+            entry.1 += weight;
         }
-        for (a, b) in entry.0.iter_mut().zip(emb.iter()) {
-            *a += *b * weight;
-        }
-        entry.1 += weight;
     }
 
     let mut out = HashMap::new();
@@ -704,6 +731,23 @@ fn compute_speaker_embeddings(
         out.insert(idx, sum);
     }
     Ok(out)
+}
+
+/// Split `start..end` into consecutive ranges of at most `max_len`.
+///
+/// The pieces come out as equal as the range divides, rather than a run of
+/// full-length pieces followed by whatever is left: a three-second remainder
+/// embeds far worse than two pieces of half the length, and the pieces are
+/// averaged together either way.
+fn split_evenly(start: usize, end: usize, max_len: usize) -> Vec<(usize, usize)> {
+    if end <= start || max_len == 0 {
+        return vec![(start, end)];
+    }
+    let len = end - start;
+    let pieces = len.div_ceil(max_len);
+    (0..pieces)
+        .map(|i| (start + len * i / pieces, start + len * (i + 1) / pieces))
+        .collect()
 }
 
 fn l2_normalize(v: &mut [f32]) {
@@ -1005,6 +1049,61 @@ mod tests {
             push_global_speaker(&mut centroids, &stranger);
         }
         assert_eq!(centroids.len(), 2, "substantial speech must add one");
+    }
+
+    /// A turn inside the limit must go to the model whole — splitting audio
+    /// that did not need splitting would only blur the embedding.
+    #[test]
+    fn a_short_turn_is_not_split() {
+        assert_eq!(split_evenly(0, 100, 100), vec![(0, 100)]);
+        assert_eq!(split_evenly(500, 600, 1000), vec![(500, 600)]);
+    }
+
+    /// Pieces must cover the range exactly, with no gap, overlap or lost tail —
+    /// they are weighted by their own length, so a gap silently under-weights
+    /// the speaker and an overlap counts the same audio twice.
+    #[test]
+    fn pieces_tile_the_range_without_gaps() {
+        let pieces = split_evenly(1_000, 8_500, 1_000);
+        assert_eq!(pieces.first().unwrap().0, 1_000);
+        assert_eq!(pieces.last().unwrap().1, 8_500);
+        for pair in pieces.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0, "pieces must be contiguous");
+        }
+    }
+
+    /// An over-long turn splits into even pieces, not full ones plus a runt.
+    #[test]
+    fn a_long_turn_splits_evenly() {
+        // 2.5× the limit → three pieces of ~5/6 the limit, not 1 + 1 + 0.5.
+        let pieces = split_evenly(0, 2_500, 1_000);
+        assert_eq!(pieces.len(), 3);
+        let shortest = pieces.iter().map(|(a, b)| b - a).min().unwrap();
+        assert!(shortest >= 800, "no runt piece, got {shortest}");
+    }
+
+    /// The regression this cap exists for: TitaNet's exported masked convolution
+    /// holds 12288 frames (122.88 s at a 10 ms hop), and one sample past that
+    /// throws from onnxruntime — a foreign exception that aborts the worker
+    /// rather than failing the job. A 9-minute monologue diarized into a single
+    /// ~145 s turn and took the whole process down.
+    #[test]
+    fn no_piece_can_reach_the_models_length_limit() {
+        const TITANET_LIMIT_MS: i64 = 122_880;
+        assert!(
+            MAX_EMBED_MS < TITANET_LIMIT_MS,
+            "the cap must sit under the model's limit"
+        );
+
+        let sr = 16_000i64;
+        let max_len = ((MAX_EMBED_MS * sr) / 1000) as usize;
+        let limit = ((TITANET_LIMIT_MS * sr) / 1000) as usize;
+
+        // A ten-minute turn, the worst case the diarize window can produce.
+        for (from, to) in split_evenly(0, 600 * sr as usize, max_len) {
+            assert!(to - from <= max_len, "piece over the cap: {}", to - from);
+            assert!(to - from < limit, "piece would abort the worker");
+        }
     }
 
     #[test]

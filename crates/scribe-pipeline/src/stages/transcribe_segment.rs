@@ -59,10 +59,14 @@ pub async fn run(cfg: &Config, db: &Db, engines: &Engines, recording_id: Uuid) -
         transcode_to_wav(std::slice::from_ref(&seg_path), &wav).await?;
         let duration_ms = read_wav(&wav).map_err(|e| stage_err(STAGE, e))?.duration_ms();
 
-        let transcript = engines
-            .speech
-            .transcriber()
-            .transcribe(&wav)
+        // On a blocking thread: see the note in the diarize stage. Each segment
+        // is short, but they arrive back to back for the whole of a live
+        // recording, so the runtime threads would rarely be free.
+        let transcriber = engines.speech.transcriber_handle();
+        let wav_owned = wav.clone();
+        let transcript = tokio::task::spawn_blocking(move || transcriber.transcribe(&wav_owned))
+            .await
+            .map_err(|e| stage_err(STAGE, format!("transcribe task failed: {e}")))?
             .map_err(|e| stage_err(STAGE, e))?;
         let _ = tokio::fs::remove_file(&wav).await;
 

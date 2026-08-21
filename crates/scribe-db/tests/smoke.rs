@@ -204,12 +204,68 @@ async fn smoke_full_pipeline() {
     assert_eq!(after_fail.attempts, 1);
     assert_eq!(after_fail.state, scribe_core::types::JobState::Queued);
 
-    // reap_stuck: no running jobs are stuck (diarize was requeued), expect 0.
+    // reap_stuck: no running jobs are stuck (diarize was requeued), expect none.
     let reaped = db
-        .reap_stuck(Duration::from_secs(3600))
+        .reap_stuck(Duration::from_secs(3600), 5)
         .await
         .expect("reap");
-    assert_eq!(reaped, 0);
+    assert!(reaped.is_empty());
+
+    // A worker that dies mid-job leaves the row `running` with a stale lease.
+    // The reap must take it back *and* count the attempt: a stage that aborts
+    // the process never reaches fail(), so if the reap did not count, the job
+    // would be retried forever and starve the rest of the queue.
+    let claimed = db
+        .claim_one("worker-that-will-die", &[JobKind::Diarize])
+        .await
+        .expect("claim")
+        .expect("diarize is claimable");
+    assert_eq!(claimed.attempts, 1, "one failure already recorded");
+
+    // `older_than` of zero treats the lease as expired immediately.
+    let reaped = db
+        .reap_stuck(Duration::from_secs(0), 5)
+        .await
+        .expect("reap stuck");
+    assert_eq!(reaped.len(), 1, "the abandoned job comes back");
+    assert_eq!(reaped[0].id, claimed.id);
+    assert!(!reaped[0].exhausted, "attempts 2 of 5 — still retryable");
+
+    let after_reap = db.get_job(claimed.id).await.unwrap().unwrap();
+    assert_eq!(after_reap.attempts, 2, "the reap counts as an attempt");
+    assert_eq!(after_reap.state, scribe_core::types::JobState::Queued);
+    assert!(after_reap.locked_by.is_none(), "the dead worker's lock is cleared");
+
+    // Reap it until the cap: the last one parks it `failed` instead of looping.
+    let mut last = Vec::new();
+    for _ in 0..3 {
+        db.claim_one("worker-that-will-die", &[JobKind::Diarize])
+            .await
+            .expect("re-claim")
+            .expect("still queued");
+        last = db
+            .reap_stuck(Duration::from_secs(0), 5)
+            .await
+            .expect("reap stuck");
+    }
+    assert_eq!(last.len(), 1);
+    assert!(last[0].exhausted, "the fifth attempt is the last one");
+
+    let parked = db.get_job(claimed.id).await.unwrap().unwrap();
+    assert_eq!(parked.state, scribe_core::types::JobState::Failed);
+    assert_eq!(parked.attempts, 5);
+    assert!(
+        parked.error.as_deref().is_some_and(|e| e.contains("lease expired")),
+        "the reason survives for inspection, got {:?}",
+        parked.error
+    );
+
+    // And a failed job is no longer claimable, so the queue moves on.
+    assert!(db
+        .claim_one("another-worker", &[JobKind::Diarize])
+        .await
+        .expect("claim after park")
+        .is_none());
 
     // --- speakers + recording_speakers -------------------------------------
     let spk_embedding: Vec<f32> = (0..192).map(|i| (i as f32) / 192.0).collect();

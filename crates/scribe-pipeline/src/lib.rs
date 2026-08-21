@@ -5,6 +5,10 @@
 //! Each stage is a module under [`stages`]; the queue-driven driver lives in
 //! [`worker`] and an inline (no-queue) driver is [`process_recording_inline`].
 //!
+//! The queue-driven worker obeys the processing schedule
+//! ([`scribe_core::schedule`]) through [`gate`]. The inline driver does not: an
+//! explicit CLI invocation is the operator asking for work right now.
+//!
 //! ## Public entrypoints
 //! * [`run_worker`] — the long-running worker (NOTIFY + poll + heartbeat + reaper).
 //! * [`process_recording_inline`] — run one recording end-to-end synchronously.
@@ -21,6 +25,7 @@
 mod artifacts;
 mod engines;
 mod fillers;
+mod gate;
 mod stages;
 mod title;
 mod worker;

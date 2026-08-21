@@ -334,7 +334,13 @@ GET    /recordings/{id}/audio              full stitched audio (HTTP range suppo
 POST   /recordings/{id}/speakers/{idx}/name  assign a name to a diarized speaker
 GET    /search?q=…                         hybrid full-text + vector semantic search
 POST   /ask                                RAG: {question} → {answer, citations}
+GET    /processing-schedule                weekly windows + live status + queue counts
+PUT    /processing-schedule                replace the weekly windows
+POST   /processing-schedule/override       run now / pause now / clear
 ```
+
+The processing schedule limits the heavy stages of the pipeline to the hours you
+select in the app. Full guide: **[docs/processing-schedule.md](docs/processing-schedule.md)**.
 
 Backend self-update (only when `[update].enabled`, gated by the **update token**):
 

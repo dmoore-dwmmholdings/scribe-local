@@ -24,6 +24,44 @@ use crate::Db;
 const COLS: &str = "id, recording_id, kind, state, priority, attempts, run_after, \
                     locked_by, locked_at, payload, error, created_at, updated_at";
 
+/// Recorded against a job whose worker stopped renewing its lease.
+///
+/// Distinct from a stage error on purpose: a stage that returns `Err` reports
+/// what went wrong, while this is what is left when the worker never got to
+/// report anything at all.
+pub const LEASE_EXPIRED: &str =
+    "worker lease expired: the worker stopped renewing it (crashed, killed, or lost the database)";
+
+/// Recorded against a job the worker put down because its processing window
+/// closed. Not a failure — the note exists so the queue says *why* the job is
+/// sitting there rather than looking mysteriously stalled.
+pub const WINDOW_CLOSED: &str =
+    "paused: the processing window closed while this stage was running; it will be retried when the next window opens";
+
+/// A snapshot of the queue, for the backlog readout in the app.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueueBacklog {
+    /// Jobs waiting to be claimed.
+    pub queued: i64,
+    /// Jobs a worker holds right now.
+    pub running: i64,
+    /// Jobs parked after exhausting their attempts.
+    pub failed: i64,
+    /// Distinct recordings with at least one queued schedule-gated job — the
+    /// honest answer to "how much is waiting for the next window?".
+    pub recordings_waiting: i64,
+}
+
+/// A job the reaper took back from a worker that stopped renewing its lease.
+#[derive(Debug, Clone)]
+pub struct ReapedJob {
+    pub id: i64,
+    pub recording_id: Option<Uuid>,
+    /// True when this reap used the last attempt, so the job is now `failed`
+    /// rather than queued for another try.
+    pub exhausted: bool,
+}
+
 impl Db {
     /// Enqueue a job for `recording_id`/`kind`.
     ///
@@ -209,23 +247,124 @@ impl Db {
         }
     }
 
-    /// Requeue `running` jobs whose `locked_at` is older than `older_than`
-    /// (a worker died mid-job). Returns the number of jobs reaped. The requeue
-    /// fires the NOTIFY trigger so another worker picks them up immediately.
-    pub async fn reap_stuck(&self, older_than: Duration) -> Result<u64> {
-        let secs = older_than.as_secs_f64();
-        let affected = sqlx::query(
-            "UPDATE jobs SET state = 'queued', locked_by = NULL, locked_at = NULL \
-             WHERE state = 'running' \
-               AND locked_at IS NOT NULL \
-               AND locked_at < now() - make_interval(secs => $1)",
+    /// Put a running job back on the queue without counting an attempt, to be
+    /// picked up no earlier than `delay` from now.
+    ///
+    /// This is the deliberate counterpart to [`Db::fail`]. A job abandoned
+    /// because its processing window closed did nothing wrong, so charging it an
+    /// attempt would let a few closed windows park a perfectly good recording in
+    /// `failed`. The error text is kept as a human-readable note rather than a
+    /// failure — nothing branches on it.
+    pub async fn defer(&self, job_id: i64, note: &str, delay: Duration) -> Result<()> {
+        sqlx::query(
+            "UPDATE jobs SET state = 'queued', locked_by = NULL, locked_at = NULL, \
+               error = $2, run_after = now() + make_interval(secs => $3) \
+             WHERE id = $1",
         )
-        .bind(secs)
+        .bind(job_id)
+        .bind(note)
+        .bind(delay.as_secs_f64())
         .execute(self.pool())
         .await
-        .map_err(db_err)?
-        .rows_affected();
-        Ok(affected)
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Fire the workers' wakeup channel by hand.
+    ///
+    /// The insert/requeue triggers cover new work; this covers the other reason
+    /// an idle worker should look again — the *policy* changed. When the app
+    /// lifts a pause, the queue is unchanged, so without this the worker would
+    /// sit out its poll interval before noticing.
+    pub async fn notify_workers(&self, payload: &str) -> Result<()> {
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(crate::JOBS_CHANNEL)
+            .bind(payload)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Count what is in the queue, split so the app can say how much work is
+    /// waiting on the schedule as opposed to merely in flight.
+    pub async fn backlog(&self) -> Result<QueueBacklog> {
+        // Schedule-gated kinds: everything except the ones that bypass it. Built
+        // from JobKind so adding a stage cannot silently skew the count.
+        let gated: Vec<&str> = JobKind::ALL
+            .iter()
+            .filter(|k| !k.bypasses_schedule())
+            .map(JobKind::as_str)
+            .collect();
+
+        let row = sqlx::query(
+            "SELECT \
+               count(*) FILTER (WHERE state = 'queued')  AS queued, \
+               count(*) FILTER (WHERE state = 'running') AS running, \
+               count(*) FILTER (WHERE state = 'failed')  AS failed, \
+               count(DISTINCT recording_id) \
+                 FILTER (WHERE state = 'queued' AND kind = ANY($1)) AS recordings_waiting \
+             FROM jobs",
+        )
+        .bind(&gated[..])
+        .fetch_one(self.pool())
+        .await
+        .map_err(db_err)?;
+
+        Ok(QueueBacklog {
+            queued: row.try_get("queued").map_err(db_err)?,
+            running: row.try_get("running").map_err(db_err)?,
+            failed: row.try_get("failed").map_err(db_err)?,
+            recordings_waiting: row.try_get("recordings_waiting").map_err(db_err)?,
+        })
+    }
+
+    /// Requeue `running` jobs whose `locked_at` is older than `older_than`
+    /// (a worker died mid-job). The requeue fires the NOTIFY trigger so another
+    /// worker picks them up immediately.
+    ///
+    /// **The reap counts as an attempt.** A stage that returns `Err` is counted
+    /// by [`Db::fail`], but a stage that takes the whole worker process down
+    /// never reaches that code — and a native abort does exactly this, since a
+    /// C++ exception from onnxruntime cannot be caught in Rust. Without counting
+    /// the reap, such a job is immortal: every worker that claims it dies, the
+    /// reaper hands it to the next one, `attempts` stays at 0, and the job
+    /// starves every other job in the queue for as long as anyone keeps
+    /// restarting the worker. Counting the reap gives that loop the same
+    /// `max_attempts` bound every other failure has.
+    ///
+    /// Returns one [`ReapedJob`] per job taken back, flagged with whether this
+    /// reap was its last attempt.
+    pub async fn reap_stuck(&self, older_than: Duration, max_attempts: i32) -> Result<Vec<ReapedJob>> {
+        let secs = older_than.as_secs_f64();
+        let rows = sqlx::query(
+            "UPDATE jobs SET \
+               attempts  = attempts + 1, \
+               state     = CASE WHEN attempts + 1 >= $2 THEN 'failed' ELSE 'queued' END, \
+               error     = $3, \
+               locked_by = NULL, \
+               locked_at = NULL \
+             WHERE state = 'running' \
+               AND locked_at IS NOT NULL \
+               AND locked_at < now() - make_interval(secs => $1) \
+             RETURNING id, recording_id, state = 'failed' AS exhausted",
+        )
+        .bind(secs)
+        .bind(max_attempts)
+        .bind(LEASE_EXPIRED)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_err)?;
+
+        rows.iter()
+            .map(|r| {
+                Ok(ReapedJob {
+                    id: r.try_get("id").map_err(db_err)?,
+                    recording_id: r.try_get("recording_id").map_err(db_err)?,
+                    exhausted: r.try_get("exhausted").map_err(db_err)?,
+                })
+            })
+            .collect()
     }
 
     /// True if every predecessor stage of `kind` (per [`JobKind::predecessors`])

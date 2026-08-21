@@ -147,6 +147,18 @@ impl JobKind {
         }
     }
 
+    /// Does this kind ignore the processing schedule
+    /// ([`crate::schedule::ProcessingSchedule`])?
+    ///
+    /// Only live transcription does. It runs solely while a recording is being
+    /// captured — a deliberate act by the operator, on ≤15 s of audio at a time
+    /// — so gating it would blank out the live transcript for no real saving.
+    /// Every full-pipeline stage, which is where the GPU time actually goes,
+    /// waits for its window.
+    pub fn bypasses_schedule(&self) -> bool {
+        matches!(self, JobKind::TranscribeSegment)
+    }
+
     /// The stages that must complete before this one can run (DAG edges).
     /// `TranscribeSegment` is side-channel (no DAG edges).
     pub fn predecessors(&self) -> &'static [JobKind] {
