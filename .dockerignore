@@ -1,0 +1,37 @@
+# Keep the build context small: the Dockerfile only needs Cargo.toml,
+# Cargo.lock, crates/, migrations/, and docker/. Everything below would
+# otherwise push multi-gigabyte directories to the daemon on every build.
+
+# Host build output and downloaded model assets (the image fetches its own).
+target/
+models/
+tools/
+dist/
+data/
+blobs/
+.fastembed_cache/
+
+# The mobile app is built with Expo, not in this image.
+mobile/
+
+.git/
+.github/
+
+# Runtime state and secrets — never bake these into an image layer.
+.env
+*.local.toml
+devices.toml
+*.key
+release.key*
+scribe-*.tar.gz
+
+# Docs and design material.
+docs/
+*.md
+!models/README.md
+
+# Editor / OS noise.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

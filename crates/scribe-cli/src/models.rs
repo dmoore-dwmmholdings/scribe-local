@@ -1,15 +1,31 @@
-//! `scribe models <list|pull>` — model-asset reporting (design §4).
+//! `scribe models <list|pull>` — model-asset reporting and download (design §4).
 //!
 //! The expected ONNX layout under `cfg.worker.models_dir` is owned by
 //! [`scribe_asr::models`]; we report each expected asset and whether it exists,
-//! then list the configured Ollama models. `pull` doesn't download multi-GB
-//! models in this environment — it verifies presence and prints exactly what to
-//! fetch and where (it never fails hard on a missing asset).
+//! then list the configured LLM models.
+//!
+//! `pull` downloads the assets the default stack needs straight from the
+//! upstream publishers (Hugging Face for the ASR checkpoint and the pyannote
+//! segmentation model, the sherpa-onnx release page for the speaker-embedding
+//! extractor) and writes them into the layout `models.rs` discovers. Downloads
+//! stream to a `.part` file and are renamed only once the byte count matches
+//! `Content-Length`, so an interrupted pull never leaves a truncated model that
+//! would fail deep inside the ASR loader.
+//!
+//! Only the default `[asr].model` has a download recipe. Any other checkpoint
+//! still reports what is missing and where to put it — see `models/README.md`.
 
 use std::path::{Path, PathBuf};
 
 use scribe_asr::models::{AsrModelPaths, DiarizationModelPaths};
 use scribe_core::config::Config;
+
+use futures::StreamExt;
+use tokio::io::AsyncWriteExt;
+
+/// The ASR checkpoint `pull` knows how to download. Anything else is reported
+/// as manual-fetch guidance.
+const AUTO_ASR_MODEL: &str = "parakeet-tdt-0.6b-v3";
 
 /// One expected asset on disk and whether it is present.
 struct Asset {
@@ -87,47 +103,269 @@ pub fn list(cfg: &Config) {
     println!("ASR config: model `{}`, diarization {}", cfg.asr.model, cfg.asr.diarization);
 }
 
-/// `scribe models pull`: verify presence and print exactly what to fetch and
-/// where. This environment can't download multi-GB models, so we never fail
-/// hard — we surface guidance for any missing asset.
-pub async fn pull(cfg: &Config) {
+// ---------------------------------------------------------------------------
+// pull
+// ---------------------------------------------------------------------------
+
+/// One file to fetch: where it comes from, where it lands, and how big we
+/// expect it to be.
+///
+/// `bytes` is advisory — it is what upstream served when this recipe was
+/// written, and is used to size the plan we print and to flag a republished
+/// file. The hard integrity check is the transferred byte count against the
+/// server's `Content-Length`.
+struct Download {
+    label: String,
+    url: String,
+    dest: PathBuf,
+    bytes: u64,
+}
+
+impl Download {
+    fn new(label: impl Into<String>, url: impl Into<String>, dest: PathBuf, bytes: u64) -> Self {
+        Self { label: label.into(), url: url.into(), dest, bytes }
+    }
+}
+
+/// Hugging Face raw-file URL for a repo at `main`.
+fn hf(repo: &str, file: &str) -> String {
+    format!("https://huggingface.co/{repo}/resolve/main/{file}")
+}
+
+/// The download recipe for the default stack.
+///
+/// ASR is the sherpa-onnx INT8 export of Parakeet-TDT-0.6B-v3, installed under
+/// a per-model subdirectory so a second checkpoint can sit beside it (see
+/// `AsrModelPaths::discover_for`). Diarization is pyannote-segmentation-3.0
+/// plus NeMo TitaNet-large, whose 192-dim output matches the `vector(192)`
+/// speaker-embedding column.
+fn plan(cfg: &Config) -> Vec<Download> {
+    let dir = &cfg.worker.models_dir;
+    let mut out = Vec::new();
+
+    if cfg.asr.model == AUTO_ASR_MODEL {
+        let repo = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
+        let asr = dir.join("asr").join(AUTO_ASR_MODEL);
+        for (file, bytes) in [
+            ("encoder.int8.onnx", 652_184_281_u64),
+            ("decoder.int8.onnx", 11_845_275),
+            ("joiner.int8.onnx", 6_355_277),
+            ("tokens.txt", 93_939),
+        ] {
+            out.push(Download::new(
+                format!("asr/{AUTO_ASR_MODEL}/{file}"),
+                hf(repo, file),
+                asr.join(file),
+                bytes,
+            ));
+        }
+    }
+
+    if cfg.asr.diarization {
+        let diar = dir.join("diarization");
+        out.push(Download::new(
+            "diarization/segmentation.onnx",
+            hf("csukuangfj/sherpa-onnx-pyannote-segmentation-3-0", "model.onnx"),
+            diar.join("segmentation.onnx"),
+            5_992_913,
+        ));
+        out.push(Download::new(
+            "diarization/embedding.onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx",
+            diar.join("embedding.onnx"),
+            101_405_493,
+        ));
+    }
+
+    out
+}
+
+fn human(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if (bytes as f64) < MB {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else if (bytes as f64) < 1024.0 * MB {
+        format!("{:.0} MB", bytes as f64 / MB)
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * MB))
+    }
+}
+
+/// `scribe models pull`: download every missing asset in the recipe.
+///
+/// Returns `false` if anything the worker needs is still absent afterwards, so
+/// the caller can exit non-zero — a container that silently starts with the
+/// stub engine is the failure mode this guards against.
+pub async fn pull(cfg: &Config, force: bool, dry_run: bool) -> bool {
     let dir = &cfg.worker.models_dir;
     println!("models_dir: {}", dir.display());
     println!();
 
-    let assets = expected_assets(dir);
-    let missing: Vec<&Asset> = assets.iter().filter(|a| !a.present).collect();
+    let all = plan(cfg);
+    if all.is_empty() {
+        println!("no download recipe for `[asr].model = {}`.", cfg.asr.model);
+        println!();
+        return manual_guidance(cfg);
+    }
 
-    if missing.is_empty() {
-        println!("all expected ONNX assets are present — nothing to fetch.");
+    let todo: Vec<&Download> = all.iter().filter(|d| force || !d.dest.exists()).collect();
+
+    if todo.is_empty() {
+        println!("all model assets are already present — nothing to download.");
+        println!("(re-download with `scribe models pull --force`)");
     } else {
-        println!("missing ONNX assets ({}):", missing.len());
-        for a in &missing {
-            println!("  - {} → {}", a.label, a.path.display());
+        let total: u64 = todo.iter().map(|d| d.bytes).sum();
+        println!("to download: {} file(s), about {}", todo.len(), human(total));
+        for d in &todo {
+            println!("  {:<44} {:>9}", d.label, human(d.bytes));
         }
         println!();
-        println!("This environment does not auto-download multi-GB models. Fetch the");
-        println!("sherpa-onnx assets and unpack them into the layout above:");
+
+        if dry_run {
+            println!("--dry-run: nothing was downloaded.");
+            return true;
+        }
+
+        let client = match reqwest::Client::builder()
+            // Model files are large and links redirect across CDNs, so there is
+            // no overall deadline; a read timeout still catches a stalled
+            // connection instead of hanging a container start forever.
+            .read_timeout(std::time::Duration::from_secs(120))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: could not build HTTP client: {e}");
+                return false;
+            }
+        };
+
+        for (i, d) in todo.iter().enumerate() {
+            println!("[{}/{}] {} …", i + 1, todo.len(), d.label);
+            if let Err(e) = fetch(&client, d).await {
+                eprintln!("      failed: {e}");
+                eprintln!("      source: {}", d.url);
+                return false;
+            }
+        }
         println!();
-        println!("  ASR (Parakeet TDT 0.6B v3, the default in [asr].model):");
-        println!("    https://github.com/k2-fsa/sherpa-onnx/releases  (sherpa-onnx-* parakeet bundle)");
-        println!("    place encoder/decoder/joiner.onnx + tokens.txt under {}/asr/", dir.display());
-        println!();
-        println!("  Diarization (pyannote segmentation 3.0 + 3D-Speaker/WeSpeaker embedding):");
-        println!("    https://github.com/k2-fsa/sherpa-onnx/releases  (speaker-diarization models)");
-        println!("    place segmentation.onnx + embedding.onnx under {}/diarization/", dir.display());
+        println!("downloaded {} file(s).", todo.len());
     }
 
     println!();
-    println!("Ollama models (pull with the Ollama CLI on the processing node):");
+    manual_guidance(cfg)
+}
+
+/// Stream one file to disk via a `.part` sibling, then rename it into place.
+async fn fetch(client: &reqwest::Client, d: &Download) -> anyhow::Result<()> {
+    if let Some(parent) = d.dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let resp = client.get(&d.url).send().await?.error_for_status()?;
+    let expected = resp.content_length();
+    if let Some(len) = expected {
+        if len != d.bytes {
+            println!(
+                "      note: upstream serves {} (recipe expected {}) — using upstream.",
+                human(len),
+                human(d.bytes)
+            );
+        }
+    }
+
+    let part = d.dest.with_extension("part");
+    let mut file = tokio::fs::File::create(&part).await?;
+    let mut written: u64 = 0;
+    let mut next_report: u64 = 64 * 1024 * 1024;
+    let mut stream = resp.bytes_stream();
+
+    // Any failure below leaves a partial `.part`; drop it so a re-run starts
+    // clean rather than tripping over a half-written file.
+    let result: anyhow::Result<()> = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            written += chunk.len() as u64;
+            if written >= next_report {
+                match expected {
+                    Some(total) if total > 0 => println!(
+                        "      {} / {} ({}%)",
+                        human(written),
+                        human(total),
+                        written * 100 / total
+                    ),
+                    _ => println!("      {}", human(written)),
+                }
+                next_report = written + 64 * 1024 * 1024;
+            }
+        }
+        file.flush().await?;
+        file.sync_all().await?;
+        Ok(())
+    }
+    .await;
+
+    drop(file);
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(e);
+    }
+
+    // Truncated transfers are the failure we most want to catch: a short
+    // encoder.onnx surfaces as an opaque ONNX load error much later.
+    if let Some(total) = expected {
+        if written != total {
+            let _ = tokio::fs::remove_file(&part).await;
+            anyhow::bail!("truncated download: got {written} of {total} bytes");
+        }
+    }
+
+    tokio::fs::rename(&part, &d.dest).await?;
+    println!("      ok  {} ({})", d.dest.display(), human(written));
+    Ok(())
+}
+
+/// Report the effective readiness verdict, plus what to fetch by hand for any
+/// asset outside the automatic recipe. Returns whether the worker is ready.
+fn manual_guidance(cfg: &Config) -> bool {
+    let dir = &cfg.worker.models_dir;
+    let asr_ready = AsrModelPaths::discover(dir).is_some();
+    let diar_ready = !cfg.asr.diarization || DiarizationModelPaths::discover(dir).is_some();
+
+    println!("ASR model:         {}", if asr_ready { "ready" } else { "MISSING" });
+    println!(
+        "Diarization model: {}",
+        if !cfg.asr.diarization {
+            "disabled in config"
+        } else if diar_ready {
+            "ready"
+        } else {
+            "MISSING"
+        }
+    );
+
+    if !asr_ready {
+        println!();
+        println!("Fetch the ASR checkpoint by hand and unpack it into {}/asr/:", dir.display());
+        println!("  https://github.com/k2-fsa/sherpa-onnx/releases  (tag: asr-models)");
+        println!("  expected files: encoder/decoder/joiner .onnx (or .int8.onnx) + tokens.txt");
+        println!("  see models/README.md for the per-model layout.");
+    }
+    if cfg.asr.diarization && !diar_ready {
+        println!();
+        println!("Fetch the diarization models into {}/diarization/:", dir.display());
+        println!("  segmentation.onnx — pyannote-segmentation-3.0");
+        println!("  embedding.onnx    — a 192-dim speaker-embedding extractor");
+    }
+
+    println!();
+    println!("LLM models are managed by the LLM server, not this directory:");
     println!("  ollama pull {}", cfg.llm.summarize_model);
     println!(
-        "  embeddings: model `{}` (dim {}) — pull/serve per your embedding backend",
+        "  embeddings: `{}` (dim {}) — fastembed downloads this on first use",
         cfg.llm.embed_model, cfg.llm.embed_dim
     );
-    println!();
-    println!(
-        "LLM endpoint: {:?} at {} (run `scribe doctor` to verify reachability).",
-        cfg.llm.provider, cfg.llm.base_url
-    );
+
+    asr_ready && diar_ready
 }

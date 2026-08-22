@@ -5,8 +5,8 @@
 #
 # Format: device_id = "api_key"
 #   device_id — a stable identifier you choose (phone model, hostname, etc.)
-#   api_key   — a random secret the device sends in X-Device-Token (or
-#               Authorization: Bearer <key>) on every request.
+#   api_key   — a random secret the device sends as
+#               `Authorization: Bearer <key>` on every request.
 #
 # Generate a key:
 #   openssl rand -hex 32

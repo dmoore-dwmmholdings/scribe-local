@@ -9,17 +9,52 @@ with no cloud APIs and no data leaving your network.
 
 ## Table of contents
 
-- [Architecture](#architecture)
-- [Crate layout](#crate-layout)
+Install and run:
+
+- [Quickstart with Docker](#quickstart-with-docker)
 - [Prerequisites](#prerequisites)
 - [Quickstart (stub build — no GPU / ONNX required)](#quickstart-stub-build)
 - [Real-ML build (ONNX + GPU)](#real-ml-build)
+- [Mobile app](#mobile-app)
+
+How it works:
+
+- [Architecture](#architecture)
+- [Crate layout](#crate-layout)
 - [Configuration reference](#configuration-reference)
 - [API endpoints](#api-endpoints)
 - [Self-update](#self-update)
-- [Mobile app](#mobile-app)
 - [Design document and roadmap](#design-document-and-roadmap)
 - [License](#license)
+
+---
+
+## Quickstart with Docker
+
+One command starts the full system: the database, the API, and the worker.
+
+```bash
+git clone https://github.com/dmoore-dwmmholdings/scribe-local.git
+cd scribe-local
+docker compose up -d --build
+```
+
+Docker makes the image, applies the migrations, downloads the ASR models, and
+starts the API and the worker. A change to the configuration is not necessary
+before the first start. The API makes its own URL signature secret and one
+device token for the phone.
+
+On Windows, this script does the same steps. It also publishes the API on your
+tailnet and shows the device token at the end:
+
+```powershell
+.\scripts\quickstart.ps1 -Tailscale
+```
+
+The image does the transcription on the CPU. For an NVIDIA GPU, use the install
+without containers that the sections below give.
+
+Full procedure: **[docs/install.md](docs/install.md)**.
 
 ---
 
@@ -177,7 +212,7 @@ SCRIBE_API__PUBLIC_BASE_URL="http://127.0.0.1:8443" \
 
 # Check it landed
 curl http://127.0.0.1:8443/health
-curl http://127.0.0.1:8443/recordings   # needs X-Device-Token if auth is on
+curl http://127.0.0.1:8443/recordings   # needs a bearer token if auth is on
 ```
 
 ---
@@ -229,8 +264,14 @@ models/
     embedding.onnx
 ```
 
-See [models/README.md](models/README.md) for download instructions and sources.
-fastembed models are downloaded automatically at first run.
+`scribe models pull` downloads these assets for the default
+`parakeet-tdt-0.6b-v3` stack. The download is about 750 MB.
+
+The command keeps each file that it finds in the directory. Thus you can start
+the command again safely.
+
+For a different checkpoint, refer to [models/README.md](models/README.md).
+fastembed downloads its own model at the first start.
 
 ### GPU acceleration (NVIDIA / CUDA)
 
@@ -319,8 +360,8 @@ embed_dim       = 768
 
 ## API endpoints
 
-All routes except `GET /health` require `X-Device-Token: <key>` (or
-`Authorization: Bearer <key>`) when `auth.require_device_token = true`.
+All routes except `GET /health` require `Authorization: Bearer <key>` when
+`auth.require_device_token = true`. This is what the mobile app sends.
 
 ```
 GET    /health                              liveness probe

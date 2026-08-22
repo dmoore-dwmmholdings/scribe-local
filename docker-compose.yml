@@ -1,38 +1,66 @@
-# Scribe — docker-compose for local development
+# Scribe — the whole system in one command.
 #
-# What lives here vs. what doesn't
-# ─────────────────────────────────
-# Managed: postgres  (always needed)
-# Optional: ollama   (processing-node LLM; enable with --profile ollama)
-# NOT here: scribe   (runs as a host binary / systemd service; see deploy/)
+#   docker compose up -d --build
 #
-# Usage:
-#   docker compose up -d postgres          # just the DB
-#   docker compose --profile ollama up -d  # DB + Ollama
+# That builds the scribe image, starts Postgres, downloads the speech models,
+# applies migrations, and runs the API and the worker. Nothing needs editing
+# first: the signing secret and the phone's device token are generated into the
+# data volume on first start (see docker/entrypoint.sh).
 #
-# Environment: copy .env.example → .env and override as needed.
+# Services
+#   postgres      pgvector — the single rendezvous point for both roles
+#   scribe-init   one-shot: migrate + download models, then exit
+#   scribe-serve  the HTTP API the phone talks to
+#   scribe-worker the transcription pipeline
+#   ollama        optional LLM for summaries and Q&A (profile: ollama)
+#
+# Optional profiles
+#   docker compose --profile ollama up -d      also run Ollama in a container
+#
+# Copy .env.example to .env to change ports, the public URL, or the LLM model.
+
+name: scribe
+
+# The scribe image is one binary in three roles, so the three services differ
+# only in their command. This anchor holds everything they share.
+x-scribe-common: &scribe-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: scribe:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # The URL the phone and the worker use to reach the API. Set
+    # SCRIBE_PUBLIC_BASE_URL in .env to your Tailscale MagicDNS name.
+    SCRIBE_API__PUBLIC_BASE_URL: "${SCRIBE_PUBLIC_BASE_URL:-http://127.0.0.1:8443}"
+    SCRIBE_LLM__SUMMARIZE_MODEL: "${SCRIBE_SUMMARIZE_MODEL:-gemma3:12b}"
+    RUST_LOG: "${SCRIBE_LOG:-info}"
+  volumes:
+    - scribe-data:/data
+    - scribe-models:/models
+    - ./deploy/docker.toml:/etc/scribe/scribe.toml:ro
+  restart: unless-stopped
 
 services:
 
-  # ─────────────────────────────────────────────────────────────
+  # ---------------------------------------------------------------------------
   # Postgres with pgvector
-  # ─────────────────────────────────────────────────────────────
-  # NOTE: if you already have another Postgres container running on the host
-  # at port 5432 (e.g. a dev instance), set POSTGRES_PORT=5433 in your .env
-  # or export it before calling docker compose.
+  # ---------------------------------------------------------------------------
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
-      POSTGRES_DB:       scribe
-      POSTGRES_USER:     scribe
+      POSTGRES_DB: scribe
+      POSTGRES_USER: scribe
       POSTGRES_PASSWORD: scribe
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      # Default 5432. If your host already uses 5432 (another dev PG),
-      # override: POSTGRES_PORT=5433 in .env before composing.
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Loopback only: the containers reach Postgres over the internal network,
+      # and this publish exists just for psql and the native dev workflow.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U scribe -d scribe"]
       interval: 5s
@@ -40,20 +68,83 @@ services:
       retries: 10
       start_period: 10s
 
-  # ─────────────────────────────────────────────────────────────
-  # Ollama (optional — processing node LLM)
-  # Activate with:  docker compose --profile ollama up -d
-  # After starting: docker exec scribe-ollama ollama pull gemma3:27b
-  # ─────────────────────────────────────────────────────────────
+  # ---------------------------------------------------------------------------
+  # One-shot setup: schema + model assets
+  # ---------------------------------------------------------------------------
+  # Runs to completion before serve and worker start. `models pull` skips files
+  # that already exist, so later starts are a no-op; the first one downloads
+  # about 750 MB and exits non-zero if any of it fails, which stops the worker
+  # from coming up and quietly "transcribing" stub text.
+  scribe-init:
+    <<: *scribe-common
+    command: ["models", "pull"]
+    # A YAML merge key gives the local mapping precedence wholesale, so this
+    # block replaces the anchor's `environment` rather than adding to it. That
+    # is fine here — setup needs the config file and the database, nothing else
+    # — but anything this service must inherit has to be repeated.
+    environment:
+      # This service owns the schema, so serve and worker never race to apply
+      # the same migration on a cold start.
+      SCRIBE_MIGRATE_ON_START: "1"
+      RUST_LOG: "${SCRIBE_LOG:-info}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Storage node: HTTP API, uploads, blobs, search, Q&A
+  # ---------------------------------------------------------------------------
+  scribe-serve:
+    <<: *scribe-common
+    command: ["--config", "/etc/scribe/scribe.toml", "serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scribe-init:
+        condition: service_completed_successfully
+    ports:
+      # Loopback only. `tailscale serve` fronts this with HTTPS on the tailnet;
+      # publishing it on 0.0.0.0 would put every transcript on the LAN.
+      - "127.0.0.1:${SCRIBE_API_PORT:-8443}:8443"
+    healthcheck:
+      # GET /health, not `scribe doctor` — doctor also fails when the optional
+      # LLM is absent, which is a supported way to run the stack.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8443/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Processing node: the pipeline
+  # ---------------------------------------------------------------------------
+  # Shares the blob volume with scribe-serve — the pipeline reads segments
+  # straight off disk rather than over HTTP.
+  scribe-worker:
+    <<: *scribe-common
+    command: ["--config", "/etc/scribe/scribe.toml", "worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scribe-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------------
+  # Ollama — summaries and Q&A (optional)
+  # ---------------------------------------------------------------------------
+  # docker compose --profile ollama up -d
+  # then: docker compose exec ollama ollama pull gemma3:12b
   ollama:
     profiles: ["ollama"]
     image: ollama/ollama
     restart: unless-stopped
     volumes:
-      - ollama_models:/root/.ollama
+      - ollama-models:/root/.ollama
     ports:
-      - "11434:11434"
-    # Uncomment to pass GPU resources (requires nvidia-container-toolkit):
+      - "127.0.0.1:11434:11434"
+    # NVIDIA GPU passthrough needs the container toolkit on the host (on Windows
+    # that means Docker Desktop with a WSL2 backend and a current driver):
     # deploy:
     #   resources:
     #     reservations:
@@ -62,33 +153,8 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
-  # ─────────────────────────────────────────────────────────────
-  # scribe binary (commented out — run on host or via systemd)
-  #
-  # Keeping this here as a reference; the recommended path is:
-  #   scribe serve  --config /etc/scribe/storage.toml    # storage node
-  #   scribe worker --config /etc/scribe/compute.toml    # processing node
-  #
-  # If you do want to containerise it, uncomment and adjust:
-  # ─────────────────────────────────────────────────────────────
-  # scribe-serve:
-  #   image: ghcr.io/your-org/scribe:latest
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   command: ["serve", "--config", "/etc/scribe/storage.toml"]
-  #   environment:
-  #     SCRIBE_DATABASE__URL: "postgres://scribe:scribe@postgres/scribe"
-  #     SCRIBE_DATABASE__MAX_CONNECTIONS: "10"
-  #   volumes:
-  #     - /var/lib/scribe/blobs:/var/lib/scribe/blobs
-  #     - ./deploy/storage.toml:/etc/scribe/storage.toml:ro
-  #   ports:
-  #     - "8443:8443"
-  #   network_mode: host   # or use a tailscale sidecar
-
 volumes:
   pgdata:
-    driver: local
-  ollama_models:
-    driver: local
+  scribe-data:
+  scribe-models:
+  ollama-models:

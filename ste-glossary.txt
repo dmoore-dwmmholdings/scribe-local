@@ -204,3 +204,76 @@ hour
 day
 week
 year
+
+# --- containers and install (categories 5, 6, 19) ---
+image
+runtime
+stack
+host
+host machine
+service
+daemon
+cache
+volume
+blob
+script
+quickstart
+toolchain
+archive
+log
+port
+address
+secret
+signature secret
+prefix
+environment variable
+memory
+disk
+hardware
+placeholder
+policy
+account
+topic
+section
+authorization
+rate limit
+index
+search
+search index
+summaries
+pgvector
+ONNX
+CPU
+MB
+GB
+Docker Desktop
+Docker Engine
+Docker Compose
+PowerShell
+Rust
+Visual Studio
+MSVC
+NVIDIA
+CUDA
+curl
+psql
+file
+document
+machine
+setup
+text
+stub
+session
+package
+library
+engine
+health
+icon
+password
+label
+publish
+encrypt
+Linux
+Desktop
+Internet
+CAUTION

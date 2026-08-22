@@ -3307,6 +3307,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "futures",
+ "reqwest",
  "scribe-api",
  "scribe-asr",
  "scribe-core",

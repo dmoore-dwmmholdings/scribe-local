@@ -1,0 +1,71 @@
+# Scribe — configuration for the containerised all-in-one stack.
+#
+# docker-compose.yml mounts this file read-only at /etc/scribe/scribe.toml in
+# every scribe container. Edit it here and `docker compose restart` to apply.
+#
+# Two values are deliberately absent:
+#   storage.signing_secret — generated into the data volume on first start
+#   auth.device_keys       — the token file is generated there too
+# Both live in the volume so serve and worker read the same copy, and so a
+# published image never carries a working default secret.
+#
+# Anything here can be overridden per-container with SCRIBE_<SECTION>__<KEY>
+# environment variables; docker-compose.yml uses that for the handful of
+# settings a user actually changes (see .env.example).
+
+[database]
+# `postgres` is the compose service name on the internal network.
+url             = "postgres://scribe:scribe@postgres:5432/scribe?sslmode=disable"
+max_connections = 10
+
+[storage]
+blobs               = "/data/blobs"
+signed_url_ttl_secs = 600
+
+[api]
+# Bind all interfaces INSIDE the container; compose publishes it to the host as
+# 127.0.0.1:8443 only, so the API is not exposed to the LAN by accident.
+bind              = "0.0.0.0:8443"
+max_segment_bytes = 16777216
+# Override with SCRIBE_API__PUBLIC_BASE_URL (see .env) once Tailscale is up.
+public_base_url   = "http://127.0.0.1:8443"
+
+[auth]
+# Closed by default. The entrypoint mints a device key on first start and prints
+# it in the scribe-serve log; paste it into the app under Settings.
+require_device_token = true
+device_keys          = "/data/devices.toml"
+
+[asr]
+# CPU inference: this image has no CUDA execution provider (see Dockerfile).
+# Parakeet on CPU runs faster than real time; for GPU use the native bundle.
+model          = "parakeet-tdt-0.6b-v3"
+diarization    = true
+device         = "cpu"
+remove_fillers = true
+
+[worker]
+stages         = ["all"]
+concurrency    = 1
+models_dir     = "/models"
+heartbeat_secs = 15
+poll_secs      = 5
+max_attempts   = 5
+
+[llm]
+# `ollama` is the compose service name. Start it with the `ollama` profile:
+#   docker compose --profile ollama up -d
+# Without that profile the summarize and Q&A stages degrade gracefully — the
+# transcript, diarization, search index, and embeddings are all unaffected.
+provider           = "ollama"
+base_url           = "http://ollama:11434"
+summarize_model    = "gemma3:12b"
+summary_template   = "general"
+embed_model        = "nomic-embed-text"
+embed_dim          = 768
+correct_transcript = true
+
+[update]
+# Self-update installs a new binary over the running one, which does not survive
+# a container restart — rebuild the image instead. See docs/self-update.md.
+enabled = false

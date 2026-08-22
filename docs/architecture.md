@@ -212,7 +212,7 @@ POST   /ask                                RAG: question → answer + citations
 ```
 
 Every route except `GET /health` passes through the device-token auth
-middleware (`X-Device-Token` or `Authorization: Bearer <key>`).
+middleware (`Authorization: Bearer <key>`).
 
 ---
 

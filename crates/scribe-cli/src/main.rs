@@ -238,8 +238,18 @@ enum SpeakerCmd {
 enum ModelsCmd {
     /// Report expected ONNX assets, their presence, and configured Ollama models.
     List,
-    /// Verify model presence and print exactly what to fetch and where.
-    Pull,
+    /// Download the ONNX assets for the configured models into `models_dir`.
+    ///
+    /// Existing files are left alone, so this is safe to run on every start —
+    /// it is what the container images do before `serve`/`worker`.
+    Pull {
+        /// Re-download assets that are already present.
+        #[arg(long)]
+        force: bool,
+        /// Print what would be downloaded, then stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -376,13 +386,19 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Models(cmd) => {
-            match cmd {
-                ModelsCmd::List => models::list(&cfg),
-                ModelsCmd::Pull => models::pull(&cfg).await,
+        Command::Models(cmd) => match cmd {
+            ModelsCmd::List => {
+                models::list(&cfg);
+                Ok(ExitCode::SUCCESS)
             }
-            Ok(ExitCode::SUCCESS)
-        }
+            // A failed pull must be loud: the worker would otherwise fall back
+            // to the stub engine and "transcribe" placeholder text.
+            ModelsCmd::Pull { force, dry_run } => Ok(if models::pull(&cfg, *force, *dry_run).await {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }),
+        },
 
         Command::Update(cmd) => {
             update::run(&cfg, cmd).await?;

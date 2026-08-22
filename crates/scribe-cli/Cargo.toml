@@ -29,6 +29,9 @@ scribe-llm = { workspace = true, default-features = false }
 scribe-update = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
+# `models pull` streams multi-hundred-MB ONNX assets straight to disk.
+reqwest = { workspace = true }
+futures = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
