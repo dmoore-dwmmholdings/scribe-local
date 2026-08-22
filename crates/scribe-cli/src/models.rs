@@ -12,8 +12,9 @@
 //! `Content-Length`, so an interrupted pull never leaves a truncated model that
 //! would fail deep inside the ASR loader.
 //!
-//! Only the default `[asr].model` has a download recipe. Any other checkpoint
-//! still reports what is missing and where to put it — see `models/README.md`.
+//! The two checkpoints the shipped configs name — Parakeet-TDT-0.6B-v3 and
+//! Whisper large-v3-turbo — have download recipes. Any other checkpoint still
+//! reports what is missing and where to put it — see `models/README.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -23,9 +24,10 @@ use scribe_core::config::Config;
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 
-/// The ASR checkpoint `pull` knows how to download. Anything else is reported
-/// as manual-fetch guidance.
-const AUTO_ASR_MODEL: &str = "parakeet-tdt-0.6b-v3";
+/// The ASR checkpoints `pull` knows how to download — the two named by the
+/// shipped configs. Anything else is reported as manual-fetch guidance.
+const PARAKEET: &str = "parakeet-tdt-0.6b-v3";
+const WHISPER_TURBO: &str = "whisper-large-v3-turbo";
 
 /// One expected asset on disk and whether it is present.
 struct Asset {
@@ -143,20 +145,41 @@ fn plan(cfg: &Config) -> Vec<Download> {
     let dir = &cfg.worker.models_dir;
     let mut out = Vec::new();
 
-    if cfg.asr.model == AUTO_ASR_MODEL {
-        let repo = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
-        let asr = dir.join("asr").join(AUTO_ASR_MODEL);
-        for (file, bytes) in [
-            ("encoder.int8.onnx", 652_184_281_u64),
-            ("decoder.int8.onnx", 11_845_275),
-            ("joiner.int8.onnx", 6_355_277),
-            ("tokens.txt", 93_939),
-        ] {
+    // The ASR recipes install into a per-model subdirectory so both checkpoints
+    // can sit side by side and be chosen with `[asr].model`. Whisper's exported
+    // filenames differ from the names the loader looks for, so each entry
+    // carries its own (remote name, local name) pair.
+    let asr: &[(&str, &str, u64)] = match cfg.asr.model.as_str() {
+        m if m == PARAKEET => &[
+            ("encoder.int8.onnx", "encoder.int8.onnx", 652_184_281),
+            ("decoder.int8.onnx", "decoder.int8.onnx", 11_845_275),
+            ("joiner.int8.onnx", "joiner.int8.onnx", 6_355_277),
+            ("tokens.txt", "tokens.txt", 93_939),
+        ],
+        m if m == WHISPER_TURBO => &[
+            ("turbo-encoder.onnx", "encoder.onnx", 735_920),
+            ("turbo-decoder.onnx", "decoder.onnx", 636_209_532),
+            ("turbo-tokens.txt", "tokens.txt", 816_730),
+            // `encoder.onnx` is an ONNX external-data stub that names this file
+            // verbatim, so it must keep the upstream name and sit beside it.
+            ("turbo-encoder.weights", "turbo-encoder.weights", 2_600_325_120),
+        ],
+        _ => &[],
+    };
+    if !asr.is_empty() {
+        let repo = if cfg.asr.model == PARAKEET {
+            "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+        } else {
+            "csukuangfj/sherpa-onnx-whisper-turbo"
+        };
+        let model = &cfg.asr.model;
+        let asr_dir = dir.join("asr").join(model);
+        for (remote, local, bytes) in asr {
             out.push(Download::new(
-                format!("asr/{AUTO_ASR_MODEL}/{file}"),
-                hf(repo, file),
-                asr.join(file),
-                bytes,
+                format!("asr/{model}/{local}"),
+                hf(repo, remote),
+                asr_dir.join(local),
+                *bytes,
             ));
         }
     }
@@ -206,6 +229,15 @@ pub async fn pull(cfg: &Config, force: bool, dry_run: bool) -> bool {
         println!("no download recipe for `[asr].model = {}`.", cfg.asr.model);
         println!();
         return manual_guidance(cfg);
+    }
+
+    // A configured checkpoint with no recipe would otherwise look like a
+    // successful short download, so say so before the plan rather than only in
+    // the verdict at the end.
+    if !all.iter().any(|d| d.label.starts_with("asr/")) {
+        println!("note: no download recipe for `[asr].model = {}`.", cfg.asr.model);
+        println!("      automatic recipes exist for `{PARAKEET}` and `{WHISPER_TURBO}`.");
+        println!();
     }
 
     let todo: Vec<&Download> = all.iter().filter(|d| force || !d.dest.exists()).collect();

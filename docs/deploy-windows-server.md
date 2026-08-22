@@ -35,8 +35,18 @@ server · serve+worker as auto-start services.**
 
 This builds the real binary (MSVC dev shell), stages the CUDA/cuDNN DLLs, and
 assembles `dist\scribe-server\` (+ `.zip`) containing: `scribe.exe` + all DLLs,
-`models\`, `deploy\server.toml`, `docker-compose.yml`, the server scripts, and a
-README. It's large (~2–3 GB — mostly the CUDA DLLs + models).
+`deploy\server.toml`, `docker-compose.yml`, the server scripts, and a README.
+
+The ONNX models are not in the bundle. On the server, this command downloads
+them (about 750 MB). It keeps each file that it finds, thus you can start it
+again safely:
+
+```powershell
+.\scribe.exe --config deploy\server.toml models pull
+```
+
+Add `-WithModels` to put the models in the bundle for a server with no network
+connection.
 
 > CPU-only server instead? `.\scripts\package-release.ps1 -Cpu` (and set
 > `asr.device = "cpu"` in the config below).
@@ -136,7 +146,7 @@ tradeoff documented for the dev box.
 ## Troubleshooting
 
 - **`/health` db=false** → Postgres not up / wrong `SCRIBE_DATABASE__URL`. Check Docker Desktop + the container.
-- **Transcripts are placeholders** → `models\` missing in the bundle (stub fallback). Re-package after downloading models (`models\README.md`).
+- **Transcripts are placeholders** → the models are not on the server (stub fallback). Run `.\scribe.exe --config deploy\server.toml models pull`.
 - **Service won't start** → read `logs\scribe-serve.log`; common causes: missing VC++ Redistributable, missing DLL beside `scribe.exe`, or a bad config path.
 - **App times out** → the phone must be on the **same tailnet** and `tailscale serve` enabled; the URL is `https://<server>.<tailnet>.ts.net` with **no port**.
 - **CUDA errors** → update the NVIDIA driver; or fall back to `asr.device = "cpu"`.

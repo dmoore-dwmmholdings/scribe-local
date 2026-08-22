@@ -10,6 +10,27 @@ which is the authoritative source — check that file if anything does not match
 
 ---
 
+## Download them automatically
+
+`scribe models pull` downloads the assets for the configured `[asr].model` and
+puts them in the layout below. It keeps each file that it finds, thus you can
+start it again safely.
+
+```bash
+scribe --config <your-config.toml> models pull
+scribe --config <your-config.toml> models pull --dry-run   # show the plan only
+```
+
+There are recipes for the two checkpoints the shipped configs name:
+
+- `parakeet-tdt-0.6b-v3` (the default) — about 750 MB with the diarization pair.
+- `whisper-large-v3-turbo` — about 3.1 GB with the diarization pair.
+
+The containers do this for you on the first start. For a different checkpoint,
+or for a server with no network connection, use the manual steps below.
+
+---
+
 ## Expected directory layout
 
 ```

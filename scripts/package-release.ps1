@@ -5,27 +5,48 @@
   Rust/Visual Studio - only the runtime prereqs (see docs/deploy-windows-server.md).
 
   The bundle contains: scribe.exe + all sibling DLLs (ONNX Runtime, sherpa-onnx,
-  and - unless -Cpu - the CUDA/cuDNN GPU DLLs), the models/ folder, the server
-  config + devices example, docker-compose.yml, the server scripts, and a README.
+  and - unless -Cpu - the CUDA/cuDNN GPU DLLs), the server config + devices
+  example, docker-compose.yml, the server scripts, and a README.
 
-.PARAMETER OutDir   Output folder (relative to repo). Default dist\scribe-server.
-.PARAMETER Cpu      Skip the GPU DLLs (CPU-only server).
-.PARAMETER Zip      Also produce <OutDir>.zip.
+  The ONNX models are NOT bundled by default - `scribe.exe models pull` downloads
+  them on the server (about 750 MB), which keeps the bundle small enough to ship
+  as a release asset. Use -WithModels for an offline server.
+
+.PARAMETER OutDir      Output folder (relative to repo). Default dist\scribe-server.
+.PARAMETER Cpu         Skip the GPU DLLs (CPU-only server).
+.PARAMETER WithModels  Copy the local models/ folder into the bundle (adds ~750 MB).
+.PARAMETER Zip         Also produce <OutDir>.zip.
 
 .EXAMPLE
   .\scripts\package-release.ps1            # GPU bundle in dist\scribe-server
   .\scripts\package-release.ps1 -Zip       # ...and a .zip to copy over
   .\scripts\package-release.ps1 -Cpu       # CPU-only server bundle
+  .\scripts\package-release.ps1 -WithModels  # include models/ (offline server)
 #>
 [CmdletBinding()]
 param(
   [string]$OutDir = "dist\scribe-server",
   [switch]$Cpu,
+  [switch]$WithModels,
   [switch]$Zip
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+
+# Windows PowerShell 5.1 wraps a native command's stderr in an ErrorRecord, and
+# with $ErrorActionPreference = 'Stop' that terminates the script. cargo writes
+# its progress ("Compiling ...") to stderr, so calling it directly kills this
+# script whenever stderr is redirected - which is what happens in a non-interactive
+# run. Drop to 'Continue' for the call and judge the result by the exit code.
+function Invoke-Native {
+  param([Parameter(Mandatory)][scriptblock]$Command, [string]$What = "command")
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & $Command 2>&1 | Out-Host; $code = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($code -ne 0) { throw "$What failed (exit $code)" }
+}
 
 function Enter-MsvcBuildEnv {
   # Real ML build needs the MSVC toolchain + VS Developer Shell (link.exe + libs).
@@ -48,8 +69,7 @@ Write-Host "== Packaging Scribe server bundle ($build) ==" -ForegroundColor Cyan
 # 1. Build the real binary -----------------------------------------------------
 Write-Host "`n[1/4] Building scribe.exe (release, MSVC) ..." -ForegroundColor Cyan
 Enter-MsvcBuildEnv
-cargo build --release -p scribe-cli
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+Invoke-Native { cargo build --release -p scribe-cli } "cargo build"
 $rel = Join-Path $repo "target\release"
 $bin = Join-Path $rel "scribe.exe"
 if (-not (Test-Path $bin)) { throw "build did not produce $bin" }
@@ -59,7 +79,7 @@ if (-not $Cpu) {
   $gpu = Join-Path $repo "scripts\setup-gpu.ps1"
   if (Test-Path $gpu) {
     Write-Host "`n[2/4] Staging CUDA/cuDNN DLLs into target\release ..." -ForegroundColor Cyan
-    & $gpu
+    Invoke-Native { & $gpu } "setup-gpu.ps1"
   } else {
     Write-Warning "[2/4] scripts\setup-gpu.ps1 not found - CUDA DLLs may be missing from the bundle. Use -Cpu for a CPU-only server."
   }
@@ -76,9 +96,20 @@ New-Item -ItemType Directory -Force -Path (Join-Path $dest "deploy") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $dest "scripts") | Out-Null
 
 Copy-Item $bin $dest
-Copy-Item (Join-Path $rel "*.dll") $dest
-if (-not (Test-Path (Join-Path $repo "models"))) { Write-Warning "models\ folder is empty/missing - the server will fall back to STUB transcription. Download models first (see models\README.md)." }
-else { Copy-Item (Join-Path $repo "models") (Join-Path $dest "models") -Recurse }
+# -Cpu must EXCLUDE the CUDA/cuDNN DLLs, not merely skip staging them: a previous
+# GPU build (or a plain setup-gpu.ps1 run) leaves them in target\release, and a
+# blind *.dll copy would put ~3 GB of them in a "CPU" bundle. The GPU DLLs all
+# start with cu*/nv*, plus the CUDA execution provider.
+$gpuDllPattern = '^(cu|nv)|^onnxruntime_providers_cuda\.dll$'
+Get-ChildItem (Join-Path $rel "*.dll") | Where-Object {
+  -not ($Cpu -and $_.Name -match $gpuDllPattern)
+} | Copy-Item -Destination $dest
+if ($WithModels) {
+  if (-not (Test-Path (Join-Path $repo "models"))) { Write-Warning "-WithModels given, but models\ is empty. The server will have to run: scribe.exe models pull" }
+  else { Copy-Item (Join-Path $repo "models") (Join-Path $dest "models") -Recurse }
+} else {
+  Write-Host "      models/ not bundled - the server downloads them with: scribe.exe models pull" -ForegroundColor DarkGray
+}
 Copy-Item (Join-Path $repo "deploy\server.toml") (Join-Path $dest "deploy")
 if (Test-Path (Join-Path $repo "deploy\devices.toml.example")) { Copy-Item (Join-Path $repo "deploy\devices.toml.example") (Join-Path $dest "deploy") }
 Copy-Item (Join-Path $repo "docker-compose.yml") $dest
@@ -94,13 +125,19 @@ in the repo for the full walkthrough. Quick start on the server:
 1. Install prereqs: Docker Desktop, Visual C++ Redistributable 2015-2022 x64,
    ffmpeg (on PATH), an LLM (LM Studio or Ollama), Tailscale, and an NVIDIA
    driver (GPU bundle). No CUDA toolkit needed - the CUDA DLLs are bundled.
-2. Edit deploy\server.toml (signing_secret, public_base_url, summarize_model)
+2. Download the speech models (~750 MB; skips anything already present):
+      .\scribe.exe --config deploy\server.toml models pull
+3. Edit deploy\server.toml (signing_secret, public_base_url, summarize_model)
    and create deploy\devices.toml from the example (device-token auth is ON).
-3. First run / test:        .\scripts\run-server.ps1
-4. Install as services:     (admin) .\scripts\install-service.ps1
-5. Enable Tailscale Serve once: https://login.tailscale.com/f/serve
+4. First run / test:        .\scripts\run-server.ps1
+5. Install as services:     (admin) .\scripts\install-service.ps1
+6. Enable Tailscale Serve once: https://login.tailscale.com/f/serve
 
 Logs (services): .\logs\scribe-serve.log and .\logs\scribe-worker.log
+
+Prefer containers? `docker compose up -d --build` in the repo does all of the
+above on any OS - see docs/install.md. This bundle is the native Windows path,
+and it is the one that can use an NVIDIA GPU.
 '@ | Set-Content -Encoding utf8 (Join-Path $dest "README.md")
 
 # 4. Optional zip --------------------------------------------------------------
@@ -112,11 +149,16 @@ if ($Zip) {
   # Windows 10/11), which handles multi-GB archives. -a selects zip from the .zip ext.
   $zipPath = "$dest.zip"
   if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-  $tar = (Get-Command tar -ErrorAction SilentlyContinue).Source
+  # Must be the Windows bsdtar, not MSYS/Git Bash tar - the latter is usually
+  # first on PATH in a developer shell and cannot handle a Windows path here.
+  $tar = Join-Path $env:SystemRoot "System32\tar.exe"
+  if (-not (Test-Path $tar)) { $tar = (Get-Command tar -ErrorAction SilentlyContinue).Source }
   if ($tar) {
     Write-Host "      archiving (tar) -> $zipPath ..." -ForegroundColor Cyan
-    & $tar -a -c -f $zipPath -C (Split-Path -Parent $dest) (Split-Path -Leaf $dest)
-    if ($LASTEXITCODE -eq 0) { Write-Host "      archive: $zipPath (extract on the server with: tar -xf scribe-server.zip)" -ForegroundColor Green }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $tar -a -c -f $zipPath -C (Split-Path -Parent $dest) (Split-Path -Leaf $dest) 2>&1 | Out-Host
+    $tarCode = $LASTEXITCODE; $ErrorActionPreference = $prev
+    if ($tarCode -eq 0) { Write-Host "      archive: $zipPath (extract on the server with: tar -xf scribe-server.zip)" -ForegroundColor Green }
     else { Write-Warning "tar failed - just copy the folder $dest to the server instead." }
   } else {
     Write-Warning "tar not found, and Compress-Archive can't handle >2 GB. Just copy the folder $dest to the server."
