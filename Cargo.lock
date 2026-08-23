@@ -3257,7 +3257,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scribe-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "axum-server",
@@ -3288,7 +3288,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-asr"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "ndarray",
@@ -3302,7 +3302,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3326,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "figment",
@@ -3340,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3357,7 +3357,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-llm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "fastembed",
@@ -3372,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-pipeline"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-update"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "ed25519-dalek",
