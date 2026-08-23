@@ -48,9 +48,10 @@ $dbUrl = "postgres://scribe:scribe@localhost:$DbPort/scribe?sslmode=disable"
 $env:SCRIBE_DATABASE__URL = $dbUrl
 
 # A pinned ffmpeg in .\tools\ffmpeg takes priority over any older copy on PATH.
-# The worker calls `ffmpeg` by name, and builds older than 2025 cannot read the
-# MP4 'ipcm' audio and 'chnl' boxes that current phones write - those recordings
-# fail in the transcode stage with "Unsupported 'chnl' box with version 1".
+# The worker calls `ffmpeg` by name, and support for the 'chnl' channel-layout
+# box at version 1 - which iOS writes - only reached FFmpeg in mid-2026. Any
+# build older than that fails every phone recording in the transcode stage with
+# "Unsupported 'chnl' box with version 1", including builds from late 2025.
 $ffmpegDir  = Join-Path $repo "tools\ffmpeg"
 $ffmpegPinned = Test-Path (Join-Path $ffmpegDir "ffmpeg.exe")
 if ($ffmpegPinned) { $env:PATH = "$ffmpegDir;$env:PATH" }

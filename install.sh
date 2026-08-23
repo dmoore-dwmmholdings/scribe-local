@@ -26,9 +26,6 @@ set -euo pipefail
 
 REPO="dmoore-dwmmholdings/scribe-local"
 FFMPEG_URL="https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-# ffmpeg builds older than this cannot read the MP4 'ipcm' audio and 'chnl' boxes
-# that current phones write; those recordings fail in the transcode stage.
-FFMPEG_MIN_YEAR=2025
 
 INSTALL_DIR=""
 ASR_MODEL="parakeet-tdt-0.6b-v3"
@@ -202,21 +199,20 @@ ffmpeg_year() {
 }
 
 ensure_ffmpeg() {
-    local dir="$1" year=""
+    local dir="$1"
     if [ -x "$dir/ffmpeg.exe" ]; then
-        year="$(ffmpeg_year "$dir/ffmpeg.exe")"
-        if [ -n "$year" ] && [ "$year" -ge "$FFMPEG_MIN_YEAR" ]; then
-            ok "ffmpeg $(("$year")) already installed here"
-            return
-        fi
+        ok "ffmpeg $(ffmpeg_year "$dir/ffmpeg.exe") already installed here"
+        return
     fi
+    # The machine's PATH ffmpeg is deliberately NOT used, however new it looks.
+    # iOS writes a 'chnl' channel-layout box at version 1, and support for that
+    # only reached FFmpeg in mid-2026 — a December 2025 build still fails every
+    # phone recording with "Unsupported 'chnl' box with version 1". Guessing
+    # from the version string got this wrong once already, so the installer now
+    # always puts a known-good build beside scribe.exe, which Windows resolves
+    # ahead of PATH for a bare command name.
     if command -v ffmpeg >/dev/null 2>&1; then
-        year="$(ffmpeg_year ffmpeg)"
-        if [ -n "$year" ] && [ "$year" -ge "$FFMPEG_MIN_YEAR" ]; then
-            ok "using ffmpeg from PATH ($year)"
-            return
-        fi
-        note "the ffmpeg on PATH is from $year — too old to read current phone recordings"
+        note "ignoring the ffmpeg on PATH (from $(ffmpeg_year ffmpeg)); installing a known-good build"
     fi
     note "downloading a current ffmpeg (~110 MB) ..."
     local tmp="$dir/.ffmpeg-tmp"
