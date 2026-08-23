@@ -162,6 +162,19 @@ install_with_docker() {
 # ---------------------------------------------------------------------------
 # Native Windows install from the release bundle
 # ---------------------------------------------------------------------------
+# Stop a running install so its binary can be replaced. Services first, or they
+# would restart the process straight back into the file lock.
+stop_running() {
+    command -v powershell >/dev/null 2>&1 || return 0
+    # Every call is forced to succeed: PowerShell reports failure when there is
+    # simply no such service or process, and under `set -e` that would abort the
+    # install before it ever downloaded the new build.
+    powershell -NoProfile -Command "Get-Service scribe-serve,scribe-worker -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    powershell -NoProfile -Command "Get-Process scribe -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    sleep 3
+    return 0
+}
+
 extract_zip() {
     # Git Bash ships GNU tar, which cannot read a zip; Windows ships bsdtar, which can.
     local zip="$1" dest="$2"
@@ -230,26 +243,45 @@ install_native_windows() {
     step "Checking prerequisites"
     require_docker
 
-    if [ ! -x "$dir/scribe.exe" ]; then
+    # Re-running the installer is the documented upgrade path, so an existing
+    # install is version-checked rather than left alone.
+    local latest_url latest_ver installed_ver=""
+    latest_url="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+        grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*windows-x64[^"]*"' |
+        head -1 | sed 's/.*"\(https[^"]*\)"/\1/')"
+    [ -n "$latest_url" ] || die "no windows-x64 asset on the latest release of $REPO"
+    latest_ver="$(basename "$latest_url" | grep -o 'v[0-9][0-9.]*' | head -1 | tr -d 'v')"
+    [ -x "$dir/scribe.exe" ] && installed_ver="$("$dir/scribe.exe" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)"
+
+    if [ -z "$installed_ver" ]; then
         step "Downloading the latest release bundle"
-        local url
-        url="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-            grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*windows-x64[^"]*"' |
-            head -1 | sed 's/.*"\(https[^"]*\)"/\1/')"
-        [ -n "$url" ] || die "no windows-x64 asset on the latest release of $REPO"
-        note "$(basename "$url")"
-        curl -fL --progress-bar -o "$dir/bundle.zip" "$url"
+    elif [ "$installed_ver" != "$latest_ver" ]; then
+        step "Upgrading $installed_ver to $latest_ver"
+        # Windows will not replace a running binary, and upgrading while the old
+        # one still serves would be pointless anyway.
+        stop_running
+    else
+        ok "scribe $installed_ver is already the latest release"
+    fi
+
+    if [ "$installed_ver" != "$latest_ver" ]; then
+        note "$(basename "$latest_url")"
+        curl -fL --progress-bar -o "$dir/bundle.zip" "$latest_url"
         extract_zip "$dir/bundle.zip" "$dir"
         # The archive holds a scribe-server/ directory; lift its contents up.
+        # It carries deploy/ too, and a plain copy would overwrite the generated
+        # secrets, so the configured files are put back afterwards.
         if [ -x "$dir/scribe-server/scribe.exe" ]; then
+            [ -f "$dir/deploy/server.toml" ] && cp "$dir/deploy/server.toml" "$dir/.server.keep"
+            [ -f "$dir/deploy/devices.toml" ] && cp "$dir/deploy/devices.toml" "$dir/.devices.keep"
             cp -r "$dir/scribe-server/." "$dir/"
             rm -rf "$dir/scribe-server"
+            [ -f "$dir/.server.keep" ] && mv "$dir/.server.keep" "$dir/deploy/server.toml"
+            [ -f "$dir/.devices.keep" ] && mv "$dir/.devices.keep" "$dir/deploy/devices.toml"
         fi
         rm -f "$dir/bundle.zip"
         [ -x "$dir/scribe.exe" ] || die "the bundle did not contain scribe.exe"
-        ok "installed into $dir"
-    else
-        ok "using the bundle already in $dir"
+        ok "scribe $("$dir/scribe.exe" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1) installed into $dir"
     fi
 
     cd "$dir"
