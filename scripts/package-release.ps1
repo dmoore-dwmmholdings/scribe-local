@@ -112,7 +112,10 @@ if ($WithModels) {
 }
 Copy-Item (Join-Path $repo "deploy\server.toml") (Join-Path $dest "deploy")
 if (Test-Path (Join-Path $repo "deploy\devices.toml.example")) { Copy-Item (Join-Path $repo "deploy\devices.toml.example") (Join-Path $dest "deploy") }
-Copy-Item (Join-Path $repo "docker-compose.yml") $dest
+# The bundle gets the POSTGRES-ONLY compose file, not the repo's full-stack one:
+# a bundle has no Dockerfile and no sources, so `docker compose up --build` there
+# fails with "failed to read dockerfile". Native install = host binary + pgvector.
+Copy-Item (Join-Path $repo "deploy\docker-compose.postgres.yml") (Join-Path $dest "docker-compose.yml")
 Copy-Item (Join-Path $repo "scripts\run-server.ps1") (Join-Path $dest "scripts")
 Copy-Item (Join-Path $repo "scripts\install-service.ps1") (Join-Path $dest "scripts")
 
@@ -121,6 +124,11 @@ Copy-Item (Join-Path $repo "scripts\install-service.ps1") (Join-Path $dest "scri
 
 Runtime-only. No Rust/Visual Studio needed here. See docs/deploy-windows-server.md
 in the repo for the full walkthrough. Quick start on the server:
+
+This is the NATIVE install: scribe.exe runs on the host, and Docker only
+provides Postgres. Do NOT run `docker compose up --build` here - there is no
+Dockerfile in a bundle. That command belongs to the containerized install, which
+starts from a clone of the repo (see docs/install.md).
 
 1. Install prereqs: Docker Desktop, Visual C++ Redistributable 2015-2022 x64,
    ffmpeg (on PATH), an LLM (LM Studio or Ollama), Tailscale, and an NVIDIA
@@ -135,9 +143,13 @@ in the repo for the full walkthrough. Quick start on the server:
 
 Logs (services): .\logs\scribe-serve.log and .\logs\scribe-worker.log
 
-Prefer containers? `docker compose up -d --build` in the repo does all of the
-above on any OS - see docs/install.md. This bundle is the native Windows path,
-and it is the one that can use an NVIDIA GPU.
+CPU bundle note: deploy\server.toml ships with whisper-large-v3-turbo on CUDA.
+A CPU-only bundle has no CUDA DLLs, and Whisper-large on a CPU is slow. Set
+model = "parakeet-tdt-0.6b-v3" and device = "cpu" before step 2.
+
+Prefer containers? Clone the repo and run `docker compose up -d --build` there -
+it does all of the above on any OS. See docs/install.md. This bundle is the
+native Windows path, and it is the one that can use an NVIDIA GPU.
 '@ | Set-Content -Encoding utf8 (Join-Path $dest "README.md")
 
 # 4. Optional zip --------------------------------------------------------------

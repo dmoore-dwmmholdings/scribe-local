@@ -1,0 +1,42 @@
+# Postgres only — the database for a NATIVE install.
+#
+# scripts/package-release.ps1 copies this into the deploy bundle as
+# docker-compose.yml. The bundle runs scribe.exe on the host, so the only thing
+# Docker provides is pgvector. There is deliberately no scribe service here:
+# the bundle carries no Dockerfile and no sources, so `docker compose up
+# --build` in a bundle directory can only fail.
+#
+# For the containerized install — where Docker runs scribe too — clone the repo
+# and use the docker-compose.yml at its root. See docs/install.md.
+#
+# Usage from the bundle root:
+#   docker compose up -d postgres
+#
+# The project name matches the bundle folder, which is what an unnamed compose
+# file defaulted to before, so an existing bundle keeps its database volume.
+name: scribe-server
+
+services:
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: scribe
+      POSTGRES_USER: scribe
+      POSTGRES_PASSWORD: scribe
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # 5433 to match deploy/server.toml, and loopback only — the database must
+      # not be reachable from the LAN. The run/service scripts set this too.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scribe -d scribe"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:
