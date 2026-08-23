@@ -90,9 +90,28 @@ psql_q "select id, left(coalesce(title,''),28) as title, status, duration_ms, cr
         from recordings order by created_at desc limit 10;"
 
 hdr "segments of the most recent recording"
-psql_q "select seq, bytes, created_at from segments
+# start_ms/duration_ms come from the recorder. `overlap_ms` is the previous
+# segment's end minus this one's start: positive means the two segments contain
+# the same audio twice (audible as a stutter at the boundary), negative means a
+# gap where audio was never captured.
+psql_q "select seq, bytes, start_ms, duration_ms,
+               start_ms - lag(start_ms + duration_ms) over (order by seq) as gap_ms
+        from segments
         where recording_id = (select id from recordings order by created_at desc limit 1)
         order by seq;"
+
+hdr "transcript coverage vs audio length"
+psql_q "select r.duration_ms as audio_ms,
+               count(u.id) as utterances,
+               min(u.start_ms) as first_word_ms,
+               max(u.end_ms) as last_word_ms
+        from recordings r left join utterances u on u.recording_id = r.id
+        where r.id = (select id from recordings order by created_at desc limit 1)
+        group by r.duration_ms;"
+echo "(last_word_ms far below audio_ms = the transcript really is short, not a display problem)"
+
+hdr "marks on the most recent recording"
+psql_q "select marks from recordings order by created_at desc limit 1;"
 
 hdr "jobs (most recent 20)"
 psql_q "select id, kind, state, attempts, priority,
