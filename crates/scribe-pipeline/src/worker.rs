@@ -65,7 +65,10 @@ pub(crate) async fn run_stage(
             stages::transcribe::run(cfg, db, &engines.speech, recording_id).await
         }
         JobKind::Merge => stages::merge::run(cfg, db, &engines.ollama, recording_id).await,
-        JobKind::Embed => stages::embed::run(cfg, db, &engines.embedder, recording_id).await,
+        JobKind::Embed => {
+            let embedder = engines.embedder.get().await?;
+            stages::embed::run(cfg, db, &embedder, recording_id).await
+        }
         JobKind::Summarize => {
             let template = summarize_template(cfg, payload);
             stages::summarize::run(cfg, db, &engines.ollama, recording_id, &template).await
