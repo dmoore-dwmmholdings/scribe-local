@@ -116,6 +116,9 @@ if (Test-Path (Join-Path $repo "deploy\devices.toml.example")) { Copy-Item (Join
 # a bundle has no Dockerfile and no sources, so `docker compose up --build` there
 # fails with "failed to read dockerfile". Native install = host binary + pgvector.
 Copy-Item (Join-Path $repo "deploy\docker-compose.postgres.yml") (Join-Path $dest "docker-compose.yml")
+# The one-command installer works from inside an unzipped bundle too: it finds
+# scribe.exe in the current directory and skips straight to configuring it.
+Copy-Item (Join-Path $repo "install.sh") $dest
 Copy-Item (Join-Path $repo "scripts\run-server.ps1") (Join-Path $dest "scripts")
 Copy-Item (Join-Path $repo "scripts\install-service.ps1") (Join-Path $dest "scripts")
 
@@ -125,10 +128,20 @@ Copy-Item (Join-Path $repo "scripts\install-service.ps1") (Join-Path $dest "scri
 Runtime-only. No Rust/Visual Studio needed here. See docs/deploy-windows-server.md
 in the repo for the full walkthrough. Quick start on the server:
 
+One command does everything below. In Git Bash:
+
+    ./install.sh
+
+It provisions a current ffmpeg, generates the secrets, starts Postgres, applies
+migrations, downloads the models, and starts the API and the worker. Add
+--service to install always-on Windows services instead (Administrator + NSSM).
+
 This is the NATIVE install: scribe.exe runs on the host, and Docker only
 provides Postgres. Do NOT run `docker compose up --build` here - there is no
 Dockerfile in a bundle. That command belongs to the containerized install, which
 starts from a clone of the repo (see docs/install.md).
+
+The manual steps, if you would rather do them yourself:
 
 1. Install prereqs: Docker Desktop, Visual C++ Redistributable 2015-2022 x64,
    ffmpeg (on PATH), an LLM (LM Studio or Ollama), Tailscale, and an NVIDIA

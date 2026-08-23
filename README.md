@@ -11,7 +11,7 @@ with no cloud APIs and no data leaving your network.
 
 Install and run:
 
-- [Quickstart with Docker](#quickstart-with-docker)
+- [Install with one command](#install-with-one-command)
 - [Prerequisites](#prerequisites)
 - [Quickstart (stub build — no GPU / ONNX required)](#quickstart-stub-build)
 - [Real-ML build (ONNX + GPU)](#real-ml-build)
@@ -29,30 +29,62 @@ How it works:
 
 ---
 
-## Quickstart with Docker
+## Install with one command
 
-One command starts the full system: the database, the API, and the worker.
+On Windows, in Git Bash:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/master/install.sh | bash
+```
+
+On Linux or macOS, in a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/master/install.sh | bash
+```
+
+The command does all of these steps:
+
+- It downloads the server, or it makes the container image.
+- It installs a current ffmpeg, because builds before 2025 cannot read the audio
+  that current phones write.
+- It makes the URL signature secret and the device token for the phone.
+- It starts Postgres and applies the migrations.
+- It downloads the ASR models (about 750 MB).
+- It publishes the API on your tailnet.
+- It starts the API and the worker.
+
+At the end it shows the server URL and the device token. Put the two values in
+the app.
+
+No setup is necessary before the command, and the command has no questions for
+you. To start again safely, do the command again: it keeps your secrets, your
+models, and your database.
+
+These alternatives go after `bash -s --`. An example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/master/install.sh | bash -s -- --service
+```
+
+- `--service` — install always-on Windows services. Start Git Bash as
+  Administrator, and install NSSM first with `winget install NSSM.NSSM`.
+- `--dir PATH` — install to a different directory (default `~/scribe`).
+- `--model NAME` — `parakeet-tdt-0.6b-v3` (default) or `whisper-large-v3-turbo`.
+- `--no-tailscale` — do not publish the API on your tailnet.
+- `--docker` — use the containers on Windows, not the server bundle.
+
+If a port is in use, the installer moves to the next free port and tells you.
+
+The installer picks the right method for the machine: the prebuilt server bundle
+on Windows, the container stack on Linux and macOS. To use the containers
+directly:
 
 ```bash
 git clone https://github.com/dmoore-dwmmholdings/scribe-local.git
 cd scribe-local
 docker compose up -d --build
 ```
-
-Docker makes the image, applies the migrations, downloads the ASR models, and
-starts the API and the worker. A change to the configuration is not necessary
-before the first start. The API makes its own URL signature secret and one
-device token for the phone.
-
-On Windows, this script does the same steps. It also publishes the API on your
-tailnet and shows the device token at the end:
-
-```powershell
-.\scripts\quickstart.ps1 -Tailscale
-```
-
-The image does the transcription on the CPU. For an NVIDIA GPU, use the install
-without containers that the sections below give.
 
 Full procedure: **[docs/install.md](docs/install.md)**.
 

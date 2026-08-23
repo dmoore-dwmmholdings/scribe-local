@@ -53,36 +53,50 @@ The first time, Docker compiles the ASR stack. This continues for 15 minutes to
 
 ## Install with one command
 
-The quickstart script does each step of the manual procedure. It also writes the
-`.env` file, publishes the API on your tailnet, and shows the device token.
+On Windows, in Git Bash:
 
-1. Download the repository:
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/master/install.sh | bash
+```
 
-   ```bash
-   git clone https://github.com/dmoore-dwmmholdings/scribe-local.git
-   cd scribe-local
-   ```
+On Linux or macOS, in a terminal:
 
-2. On Windows, start the script in PowerShell:
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/master/install.sh | bash
+```
 
-   ```powershell
-   .\scripts\quickstart.ps1 -Tailscale
-   ```
+The command does all of these steps:
 
-   On Linux or macOS, start the script in a terminal:
+- It downloads the server, or it makes the container image.
+- It installs a current ffmpeg, because builds before 2025 cannot read the audio
+  that current phones write.
+- It makes the URL signature secret and the device token for the phone.
+- It starts Postgres and applies the migrations.
+- It downloads the ASR models (about 750 MB).
+- It publishes the API on your tailnet.
+- It starts the API and the worker.
 
-   ```bash
-   ./scripts/quickstart.sh --tailscale
-   ```
+At the end it shows the server URL and the device token. Put the two values in
+the app.
 
-3. Wait for the script to complete.
+No setup is necessary before the command, and the command has no questions for
+you. To start again safely, do the command again: it keeps your secrets, your
+models, and your database.
 
-4. Write down the server URL and the device token. The script shows the two
-   values at the end.
+These alternatives go after `bash -s --`. An example:
 
-If you do not have Tailscale, remove `-Tailscale` from the command. The stack
-starts on `http://127.0.0.1:8443`. The phone cannot connect to that address. But
-the API and the search operate correctly on the server.
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/master/install.sh | bash -s -- --service
+```
+
+- `--service` — install always-on Windows services. Start Git Bash as
+  Administrator, and install NSSM first with `winget install NSSM.NSSM`.
+- `--dir PATH` — install to a different directory (default `~/scribe`).
+- `--model NAME` — `parakeet-tdt-0.6b-v3` (default) or `whisper-large-v3-turbo`.
+- `--no-tailscale` — do not publish the API on your tailnet.
+- `--docker` — use the containers on Windows, not the server bundle.
+
+If a port is in use, the installer moves to the next free port and tells you.
 
 ---
 
