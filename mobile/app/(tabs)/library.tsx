@@ -183,7 +183,7 @@ function FilterChip({
 export default function LibraryScreen() {
   const router = useRouter();
   const { baseUrl, deviceId } = useSettingsStore();
-  const { recordings, hydrated, refresh, removeRecording } = useRecordingsStore();
+  const { recordings, hydrated, refresh, removeRecording, authError } = useRecordingsStore();
   const [importing, setImporting] = useState(false);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
@@ -407,6 +407,14 @@ export default function LibraryScreen() {
           </View>
         }
       />
+      {authError && (
+        <View style={styles.authBanner}>
+          <Ionicons name="lock-closed-outline" size={16} color={colors.accentDeep} />
+          <Text style={styles.authBannerText}>
+            {authError} The list below is the last cached copy, not this server.
+          </Text>
+        </View>
+      )}
       {allTags.length > 0 && (
         <ScrollView
           horizontal
@@ -468,6 +476,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentFaint,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  authBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.accentDeep,
+  },
+  authBannerText: {
+    flex: 1,
+    color: colors.accentDeep,
+    fontSize: 13,
+    lineHeight: 18,
   },
   emptyTitle: {
     fontSize: 17,

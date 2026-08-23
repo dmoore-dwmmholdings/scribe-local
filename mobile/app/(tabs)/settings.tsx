@@ -107,17 +107,30 @@ export default function SettingsScreen() {
       // Persist the typed URL first so the test (and the rest of the app, which
       // all read baseUrl from the store) actually uses what's in the box — not a
       // stale saved value. Otherwise "Test connection" silently tests nothing.
-      await store.update({ baseUrl: baseUrl.trim().replace(/\/$/, '') });
+      await store.update({
+        baseUrl: baseUrl.trim().replace(/\/$/, ''),
+        deviceKey: deviceKey.trim(),
+      });
       const health = await api.health();
+      // GET /health is mounted outside the auth layer, so it proves only that
+      // the server is reachable. Without a second, authenticated call, a wrong
+      // device key reports "Connected" and then fails on every real request —
+      // while the Library keeps showing another server's cached recordings.
+      await api.listRecordings({ limit: 1 });
       setConnected(true);
-      setTestResult(`Connected · v${health.version} · DB ${health.db}`);
+      setTestResult(`Connected · v${health.version} · DB ${health.db} · token OK`);
     } catch (err) {
       setConnected(false);
-      setTestResult(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      setTestResult(
+        /API (401|403) /.test(msg)
+          ? 'Failed: the server rejected this device token. Copy the one from deploy/devices.toml on the server.'
+          : `Failed: ${msg}`,
+      );
     } finally {
       setTesting(false);
     }
-  }, [store, baseUrl]);
+  }, [store, baseUrl, deviceKey]);
 
   const deviceInitial = (deviceId || 'S').slice(0, 2).toUpperCase();
 

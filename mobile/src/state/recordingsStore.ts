@@ -13,7 +13,7 @@
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { Recording } from '../types';
 
 const CACHE_KEY = 'scribe_recordings_cache';
@@ -26,6 +26,8 @@ interface RecordingsState {
 
   hydrate: () => Promise<void>;
   setRecordings: (recordings: Recording[]) => Promise<void>;
+  /** Set when the server rejected the device token, so the list can say so. */
+  authError: string | null;
   /** Fetch the latest list from the server and update the cache. */
   refresh: () => Promise<void>;
   upsertRecording: (recording: Recording) => void;
@@ -38,6 +40,7 @@ export const useRecordingsStore = create<RecordingsState>((set, get) => ({
   recordings: [],
   uploadProgress: {},
   hydrated: false,
+  authError: null,
 
   hydrate: async () => {
     try {
@@ -65,8 +68,15 @@ export const useRecordingsStore = create<RecordingsState>((set, get) => ({
     try {
       const res = await api.listRecordings({ limit: 100 });
       await get().setRecordings(res.recordings);
-    } catch {
-      // Keep cached data on network error
+      set({ authError: null });
+    } catch (err) {
+      // Keeping the cache through a network blip is the point of the cache. A
+      // rejected token is different: the cache then shows another server's
+      // recordings as though they were live, and the first hint of trouble is
+      // an auth error when one is opened. Surface that instead of hiding it.
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        set({ authError: 'The server rejected this device token. Check Settings.' });
+      }
     }
   },
 
