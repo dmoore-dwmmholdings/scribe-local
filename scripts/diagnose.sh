@@ -40,6 +40,30 @@ psql_q() {
 echo "Scribe diagnostic — $(date -u '+%Y-%m-%d %H:%M:%SZ')"
 echo "install: $DIR   api port: $API_PORT   db port: $DB_PORT"
 
+# --- verdict, first, because reports get truncated when they are pasted -------
+hdr "SUMMARY (read this first)"
+WORKER_N="$(powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \"Name='scribe.exe'\" | Where-Object { \$_.CommandLine -like '*worker*' } | Measure-Object).Count" 2>/dev/null | tr -dc '0-9')"
+if [ "${WORKER_N:-0}" = "0" ]; then
+    echo "WORKER: NOT RUNNING  <-- nothing will ever be processed"
+else
+    echo "WORKER: running ($WORKER_N process)"
+fi
+echo "API:    $(curl -fsS -m 5 "http://127.0.0.1:$API_PORT/health" 2>/dev/null || echo 'no answer')"
+echo
+echo "job states:"
+psql_q "select kind, state, max(attempts) as attempts, count(*)
+        from jobs group by kind, state order by kind;" | sed 's/^/  /'
+echo
+echo "most recent job error:"
+psql_q "select kind, attempts, error from jobs
+        where error is not null and error <> ''
+        order by id desc limit 1;" | sed 's/^/  /'
+echo
+echo "last errors in the worker log:"
+for f in worker.log logs/scribe-worker.log; do
+    [ -f "$f" ] && grep -iE "ERROR|error:" "$f" | tail -5 | cut -c1-400 | sed 's/^/  /'
+done
+
 hdr "config (secrets redacted)"
 sed -E 's/^(signing_secret|token|api_key)([[:space:]]*)=.*/\1\2= <redacted>/' "$CFG" |
     grep -vE '^[[:space:]]*#' | grep -vE '^[[:space:]]*$'
