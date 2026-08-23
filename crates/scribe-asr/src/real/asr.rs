@@ -37,6 +37,52 @@ const WHISPER_WINDOW_MS: i64 = 28_000;
 /// 150 s (1875 frames) leaves clear headroom under the 2500-frame ceiling.
 const TRANSDUCER_WINDOW_MS: i64 = 150_000;
 
+/// A decode is trusted when its word timings reach this fraction of the clip.
+/// Real speech ends before the audio does — a pause, a closing silence — so this
+/// is deliberately forgiving; it is aimed at a decode that stopped less than
+/// halfway, not at the last second of a recording.
+const MIN_COVERAGE: f64 = 0.75;
+
+/// Never re-decode a remainder shorter than this. Below a few seconds the tail
+/// is almost certainly trailing silence, and another pass buys nothing.
+const MIN_RECOVER_MS: i64 = 4_000;
+
+/// Bound on extra passes, so a model that emits one word per attempt cannot
+/// turn one recording into an unbounded decode loop.
+const MAX_RECOVERY_PASSES: usize = 6;
+
+fn samples_to_ms(samples: usize, sample_rate: u32) -> i64 {
+    if sample_rate == 0 {
+        return 0;
+    }
+    (samples as i64 * 1000) / sample_rate as i64
+}
+
+fn ms_to_samples(ms: i64, sample_rate: u32) -> usize {
+    if ms <= 0 {
+        return 0;
+    }
+    ((ms * sample_rate as i64) / 1000) as usize
+}
+
+/// Whether a decode that consumed up to `next` of `total` samples left enough
+/// audio uncovered to be worth decoding again.
+///
+/// Split out from the decode loop so the rule can be tested without a model.
+fn needs_recovery(cursor: usize, next: usize, total: usize, sample_rate: u32) -> bool {
+    // The cursor must advance, or the next pass would decode the same samples.
+    if next <= cursor || next >= total {
+        return false;
+    }
+    let span = total - cursor;
+    let remaining = total - next;
+    if samples_to_ms(remaining, sample_rate) < MIN_RECOVER_MS {
+        return false;
+    }
+    let covered = (next - cursor) as f64 / span as f64;
+    covered < MIN_COVERAGE
+}
+
 /// Wraps an `OfflineRecognizer` configured for the discovered ASR model.
 pub struct SherpaTranscriber {
     recognizer: OfflineRecognizer,
@@ -127,6 +173,61 @@ impl SherpaTranscriber {
         })
     }
 
+    /// Decode a span, and decode again from where the words stopped if the
+    /// result does not reach the end of the audio.
+    ///
+    /// A transducer is supposed to decode a whole clip in one pass, and usually
+    /// does. But on some recordings sherpa stops emitting partway and returns a
+    /// short result with no error: a 65-second recording came back with words
+    /// only up to 29.2 s, while the same audio from 29 s onward transcribed
+    /// fine on its own. Nothing downstream could tell that from a person who
+    /// simply stopped talking, so the rest of the meeting was silently missing
+    /// from the transcript.
+    ///
+    /// So: measure how far the emitted word timings actually reach, and if they
+    /// fall well short, decode the uncovered remainder and append it. Healthy
+    /// audio covers its clip and returns after the first pass, keeping the
+    /// full-file context that makes the text and punctuation better.
+    fn decode_span(&self, sample_rate: u32, samples: &[f32], offset_ms: i64) -> Result<Transcript> {
+        let mut text = String::new();
+        let mut words: Vec<AsrWord> = Vec::new();
+        let mut cursor = 0usize; // samples consumed within this span
+
+        for _ in 0..=MAX_RECOVERY_PASSES {
+            let part = self.decode_clip(
+                sample_rate,
+                &samples[cursor..],
+                offset_ms + samples_to_ms(cursor, sample_rate),
+            )?;
+            let piece = part.text.trim();
+            if !piece.is_empty() {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(piece);
+            }
+            let last_end_ms = part.words.last().map(|w| w.end_ms);
+            words.extend(part.words);
+
+            // Nothing came back: there is no more speech to recover, and
+            // re-decoding the same samples would not terminate.
+            let Some(last_end_ms) = last_end_ms else { break };
+
+            let next = ms_to_samples(last_end_ms - offset_ms, sample_rate);
+            if !needs_recovery(cursor, next, samples.len(), sample_rate) {
+                break;
+            }
+            tracing::warn!(
+                covered_ms = last_end_ms - offset_ms,
+                span_ms = samples_to_ms(samples.len(), sample_rate),
+                "ASR stopped short of the clip; decoding the remainder"
+            );
+            cursor = next;
+        }
+
+        Ok(Transcript { text, words })
+    }
+
     /// Decode one clip in a single pass, offsetting word timings by `offset_ms`
     /// so chunked transcription lands on the global recording timeline.
     fn decode_clip(&self, sample_rate: u32, samples: &[f32], offset_ms: i64) -> Result<Transcript> {
@@ -173,7 +274,7 @@ impl Transcriber for SherpaTranscriber {
         // Single pass whenever the clip already fits the model's window.
         let window = ((self.max_clip_ms * sr as i64) / 1000) as usize;
         if window == 0 || audio.samples.len() <= window {
-            return self.decode_clip(sr, &audio.samples, 0);
+            return self.decode_span(sr, &audio.samples, 0);
         }
 
         // Long audio: decode a window at a time, offsetting each window's word
@@ -187,7 +288,7 @@ impl Transcriber for SherpaTranscriber {
         while start < audio.samples.len() {
             let end = (start + window).min(audio.samples.len());
             let offset_ms = (start as i64 * 1000) / sr as i64;
-            let part = self.decode_clip(sr, &audio.samples[start..end], offset_ms)?;
+            let part = self.decode_span(sr, &audio.samples[start..end], offset_ms)?;
             let piece = part.text.trim();
             if !piece.is_empty() {
                 if !text.is_empty() {
@@ -391,5 +492,52 @@ mod tests {
         let words = build_words("hello world", &[], &None, &None, 0);
         assert_eq!(words.len(), 2);
         assert!(words.iter().all(|w| w.start_ms == 0 && w.end_ms == 0));
+    }
+
+    // ---- coverage recovery ------------------------------------------------
+    // 16 kHz throughout: 16 samples per millisecond.
+    const SR: u32 = 16_000;
+    fn secs(n: i64) -> usize {
+        ms_to_samples(n * 1000, SR)
+    }
+
+    #[test]
+    fn recovers_when_the_decode_stops_less_than_halfway() {
+        // The reported case: 65 s of audio, words only to 29.2 s.
+        assert!(needs_recovery(0, ms_to_samples(29_200, SR), secs(65), SR));
+    }
+
+    #[test]
+    fn leaves_a_healthy_decode_alone() {
+        // Words to 65.36 s of a 65.4 s clip: a normal closing silence.
+        assert!(!needs_recovery(0, ms_to_samples(65_360, SR), secs(65) + 6400, SR));
+    }
+
+    #[test]
+    fn ignores_a_short_tail() {
+        // 3 s uncovered is below MIN_RECOVER_MS even though coverage is low.
+        assert!(!needs_recovery(0, secs(4), secs(7), SR));
+    }
+
+    #[test]
+    fn refuses_to_loop_when_the_cursor_cannot_advance() {
+        assert!(!needs_recovery(secs(10), secs(10), secs(65), SR));
+        assert!(!needs_recovery(secs(10), secs(5), secs(65), SR));
+    }
+
+    #[test]
+    fn a_second_pass_is_measured_against_the_remaining_span() {
+        // Already at 30 s of 65 s; the next pass reached 40 s, so 25 s of the
+        // 35 s remainder is still uncovered and another pass is warranted.
+        assert!(needs_recovery(secs(30), secs(40), secs(65), SR));
+        // Reaching 62 s of that same remainder is fine.
+        assert!(!needs_recovery(secs(30), secs(62), secs(65), SR));
+    }
+
+    #[test]
+    fn sample_and_ms_conversions_round_trip() {
+        assert_eq!(samples_to_ms(ms_to_samples(29_200, SR), SR), 29_200);
+        assert_eq!(ms_to_samples(-5, SR), 0);
+        assert_eq!(samples_to_ms(1000, 0), 0);
     }
 }
