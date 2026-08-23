@@ -165,12 +165,21 @@ install_with_docker() {
 # Stop a running install so its binary can be replaced. Services first, or they
 # would restart the process straight back into the file lock.
 stop_running() {
+    local dir="${1:-}"
     command -v powershell >/dev/null 2>&1 || return 0
     # Every call is forced to succeed: PowerShell reports failure when there is
     # simply no such service or process, and under `set -e` that would abort the
     # install before it ever downloaded the new build.
     powershell -NoProfile -Command "Get-Service scribe-serve,scribe-worker -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-    powershell -NoProfile -Command "Get-Process scribe -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    if [ -n "$dir" ]; then
+        # Only this install's processes. Another Scribe elsewhere on the machine
+        # is not ours to kill.
+        local win
+        win="$(cygpath -w "$dir" 2>/dev/null || echo "$dir")"
+        powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='scribe.exe'\" | Where-Object { \$_.ExecutablePath -like '$win*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
+    else
+        powershell -NoProfile -Command "Get-Process scribe -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    fi
     sleep 3
     return 0
 }
@@ -259,7 +268,7 @@ install_native_windows() {
         step "Upgrading $installed_ver to $latest_ver"
         # Windows will not replace a running binary, and upgrading while the old
         # one still serves would be pointless anyway.
-        stop_running
+        stop_running "$dir"
     else
         ok "scribe $installed_ver is already the latest release"
     fi
@@ -386,6 +395,10 @@ install_native_windows() {
     local logcmd="tail -f $dir/serve.log $dir/worker.log"
     local stopcmd="pkill -f 'scribe.exe .* serve' ; pkill -f 'scribe.exe .* worker'"
     if [ "$DO_START" = 1 ]; then
+        # A previous run may have left serve/worker running in the background.
+        # They still hold the API port, so starting again — as a service or
+        # otherwise — fails to bind with a bare OS error 10048.
+        stop_running "$dir"
         if [ "$AS_SERVICE" = 1 ]; then
             step "Installing the Windows services"
             powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-service.ps1 -DbPort "$DB_PORT" -ApiPort "$API_PORT" ||
