@@ -364,10 +364,25 @@ install_native_windows() {
             step "Starting the API and the worker"
             ./scribe.exe --config "$cfg" serve > serve.log 2>&1 &
             ./scribe.exe --config "$cfg" worker > worker.log 2>&1 &
+            local worker_pid=$!
             for _ in $(seq 1 60); do
                 curl -fsS "http://127.0.0.1:$API_PORT/health" >/dev/null 2>&1 && break
                 sleep 1
             done
+            # The worker loads its models after the API is already answering, so
+            # give it a moment and then confirm it is still there. A worker that
+            # dies at startup is invisible otherwise: the API is healthy, uploads
+            # succeed, and every recording sits at 0/6 forever with the reason in
+            # a log nobody has a reason to open.
+            sleep 20
+            if ! kill -0 "$worker_pid" 2>/dev/null; then
+                printf '
+[31mThe worker started and then exited. Recordings will upload but never process.[0m
+' >&2
+                note "last line of worker.log:"
+                tail -1 worker.log 2>/dev/null | sed 's/^/      /'
+                note "full log: $dir/worker.log"
+            fi
         fi
         if curl -fsS "http://127.0.0.1:$API_PORT/health" >/dev/null 2>&1; then
             ok "API health: $(curl -s "http://127.0.0.1:$API_PORT/health")"
