@@ -22,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import 'react-native-get-random-values'; // for crypto.randomUUID()
 import { useSettingsStore } from '../../src/state/settingsStore';
+import * as discovery from '../../modules/scribe-discovery';
 import { api } from '../../src/api/client';
 import type { AppSettings } from '../../src/types';
 import { Screen, ScreenTitle, SectionLabel } from '../../src/components/ui';
@@ -51,6 +52,7 @@ export default function SettingsScreen() {
   const [defaultParticipants, setDefaultParticipants] = useState(String(store.defaultParticipants));
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
 
@@ -133,6 +135,54 @@ export default function SettingsScreen() {
       setTesting(false);
     }
   }, [store, baseUrl, deviceKey]);
+
+  // Find the server on the local network, so pairing does not require reading
+  // a URL off the server's terminal. What comes back is the server's *tailnet*
+  // URL — the LAN is used to ask the question, not to carry traffic.
+  const scanForServers = useCallback(async () => {
+    setScanning(true);
+    setTestResult(null);
+    try {
+      const servers = await discovery.discover(3000);
+      if (servers.length === 0) {
+        Alert.alert(
+          'No servers found',
+          'Nothing answered on this network. Check that the phone is on the same Wi-Fi as the server, ' +
+            'and that the server runs with api.advertise_lan enabled.',
+        );
+        return;
+      }
+
+      const choose = (s: (typeof servers)[number]) => {
+        setBaseUrl(s.url);
+        // A server authenticating by tailnet identity wants no key at all, and
+        // leaving a stale one in the field would send a credential it never
+        // asked for. Clear it rather than leave the user to work that out.
+        if (s.auth === 'tailnet') setDeviceKey('');
+        setTestResult(
+          s.auth === 'tailnet'
+            ? `Found ${s.name} — no device key needed. Save, then test.`
+            : `Found ${s.name} — paste its device key below, then save.`,
+        );
+      };
+
+      if (servers.length === 1) {
+        choose(servers[0]);
+        return;
+      }
+      Alert.alert('Choose a server', undefined, [
+        ...servers.map((s) => ({ text: `${s.name} (${s.url})`, onPress: () => choose(s) })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]);
+    } catch (err) {
+      Alert.alert(
+        'Could not search',
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      setScanning(false);
+    }
+  }, []);
 
   const deviceInitial = (deviceId || 'S').slice(0, 2).toUpperCase();
 
@@ -222,6 +272,15 @@ export default function SettingsScreen() {
                 <Text style={styles.ghostButtonText}>Test connection</Text>
               )}
             </TouchableOpacity>
+            {discovery.isAvailable && (
+              <TouchableOpacity style={styles.ghostButton} onPress={scanForServers} disabled={scanning}>
+                {scanning ? (
+                  <ActivityIndicator color={colors.accent} />
+                ) : (
+                  <Text style={styles.ghostButtonText}>Find server</Text>
+                )}
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.ghostButton} onPress={() => router.push('/admin/update')}>
               <Text style={styles.ghostButtonText}>Backend update…</Text>
             </TouchableOpacity>

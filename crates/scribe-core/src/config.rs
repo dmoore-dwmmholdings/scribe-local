@@ -63,6 +63,14 @@ pub struct ApiConfig {
     pub max_segment_bytes: usize,
     /// Public base URL the worker uses to pull audio (tailnet MagicDNS name).
     pub public_base_url: String,
+    /// Announce this server over mDNS as `_scribe._tcp`, so the app can find it
+    /// on the local network instead of being told the URL by hand.
+    ///
+    /// What is advertised is `public_base_url` — the tailnet address — not this
+    /// machine's LAN address, so `bind` can stay loopback-only. mDNS is
+    /// link-local multicast: a container on Docker's default bridge network
+    /// cannot send it, so this needs host networking to reach the LAN.
+    pub advertise_lan: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,6 +303,7 @@ impl Default for ApiConfig {
             tus_upstream: None,
             max_segment_bytes: 16 * 1024 * 1024,
             public_base_url: "http://127.0.0.1:8443".to_string(),
+            advertise_lan: false,
         }
     }
 }
@@ -413,5 +422,33 @@ impl Config {
                 .filter_map(|s| s.parse::<JobKind>().ok())
                 .collect()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use figment::{providers::Env, Figment};
+
+    /// `deploy/docker-compose.lan.yml` turns discovery on with
+    /// `SCRIBE_API__ADVERTISE_LAN=true`, which only works if figment coerces the
+    /// string to a bool. A silent failure here would leave the overlay looking
+    /// applied while the server never advertises.
+    #[test]
+    fn bool_config_can_be_set_from_the_environment() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("SCRIBE_API__ADVERTISE_LAN", "true");
+            let cfg: Config = Figment::from(Serialized::defaults(Config::default()))
+                .merge(Env::prefixed("SCRIBE_").split("__"))
+                .extract()
+                .expect("extract");
+            assert!(cfg.api.advertise_lan);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn advertise_lan_is_off_without_the_environment() {
+        assert!(!Config::default().api.advertise_lan);
     }
 }

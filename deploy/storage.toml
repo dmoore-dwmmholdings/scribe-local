@@ -64,6 +64,17 @@ max_segment_bytes = 16777216   # 16 MiB
 # it resolves from anywhere on the tailnet.
 public_base_url = "https://scribe.<your-tailnet>.ts.net"
 
+# Announce this server on the local network (Bonjour / mDNS `_scribe._tcp`), so
+# the app's "Find server" button can discover it instead of anyone reading this
+# URL off a terminal. What is advertised is `public_base_url` above — the
+# tailnet address — plus the version and which credential the server wants.
+# No token is ever broadcast, and `bind` stays loopback-only: the LAN is used to
+# ask where the server is, never to carry traffic.
+#
+# mDNS is link-local multicast, so in Docker this needs host networking:
+# see deploy/docker-compose.lan.yml (Linux only).
+advertise_lan = false
+
 # ─────────────────────────────────────────────────────────────
 # Auth (per-device API keys — defense in depth behind Tailscale)
 # ─────────────────────────────────────────────────────────────

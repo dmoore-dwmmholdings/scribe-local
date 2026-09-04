@@ -207,6 +207,37 @@ Then:
 
 6. Open the library screen. It shows the transcript.
 
+### Let the phone find the server (optional)
+
+Both routes above still start at the server: someone has to read a URL off it.
+The server can instead announce itself on the local network, and the app finds
+it — Settings → **Find server**.
+
+```toml
+[api]
+public_base_url = "https://my-server.tail1234.ts.net"   # what gets advertised
+advertise_lan   = true
+```
+
+The phone must be on the same Wi-Fi as the server for the search itself. What it
+learns is the **tailnet** URL, so everything after that goes over the tailnet as
+before, and works when you leave the house. The API stays bound to `127.0.0.1`;
+the local network is used to ask where the server is, never to carry traffic.
+Nothing secret is broadcast — the announcement carries the URL, the version, and
+whether a device key is wanted. With `trust_tailscale_identity` on as well,
+"Find server" is the entire setup.
+
+In Docker this needs host networking, because mDNS is link-local multicast and a
+container on the default bridge network cannot send it:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/docker-compose.lan.yml up -d
+```
+
+That is Linux only. On Docker Desktop (macOS, Windows) containers run inside a
+VM with no access to the real LAN, so discovery will not work there — enter the
+URL by hand, or run the server natively.
+
 ### Drop the device token (optional)
 
 On a tailnet the token is a second lock on a door Tailscale has already locked.

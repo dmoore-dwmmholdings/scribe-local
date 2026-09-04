@@ -48,6 +48,7 @@
 //! (a no-op unless `cfg.auth.require_device_token`).
 
 mod auth;
+mod discovery;
 mod error;
 mod handlers;
 mod range;
@@ -186,6 +187,8 @@ pub fn router(state: AppState) -> Router {
 /// Plain HTTP — `tailscale serve` terminates TLS in front (design §5).
 pub async fn serve(cfg: Config) -> Result<()> {
     let bind = cfg.api.bind.clone();
+    // build_state consumes the config; discovery needs it afterwards.
+    let cfg_for_discovery = cfg.clone();
     let state = build_state(cfg).await?;
     let app = router(state);
 
@@ -200,6 +203,10 @@ pub async fn serve(cfg: Config) -> Result<()> {
         .local_addr()
         .map_err(|e| Error::Internal(format!("reading local addr: {e}")))?;
     tracing::info!(%local, "scribe-api listening");
+
+    // Held for the process lifetime: dropping the advertiser retracts the mDNS
+    // record. `None` when api.advertise_lan is off, which is the default.
+    let _advertiser = discovery::advertise(&cfg_for_discovery);
 
     // `into_make_service_with_connect_info` (rather than plain `app`) is what
     // puts the peer address in request extensions. `auth::require_auth` needs

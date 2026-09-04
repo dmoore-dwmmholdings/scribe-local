@@ -21,7 +21,11 @@
         ],
         "NSMicrophoneUsageDescription": "Scribe records meetings; microphone access is required.",
         "NSSpeechRecognitionUsageDescription": "Scribe transcribes meetings locally.",
-        "NSSupportsLiveActivities": true
+        "NSSupportsLiveActivities": true,
+        "NSLocalNetworkUsageDescription": "Scribe looks for your server on this network so you can connect without typing its address.",
+        "NSBonjourServices": [
+          "_scribe._tcp"
+        ]
       },
       "appleTeamId": "P5GS55MLHL"
     },

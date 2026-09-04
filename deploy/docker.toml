@@ -30,6 +30,17 @@ max_segment_bytes = 16777216
 # Override with SCRIBE_API__PUBLIC_BASE_URL (see .env) once Tailscale is up.
 public_base_url   = "http://127.0.0.1:8443"
 
+# Announce this server on the local network (Bonjour / mDNS `_scribe._tcp`), so
+# the app's "Find server" button can discover it instead of anyone reading this
+# URL off a terminal. What is advertised is `public_base_url` above — the
+# tailnet address — plus the version and which credential the server wants.
+# No token is ever broadcast, and `bind` stays loopback-only: the LAN is used to
+# ask where the server is, never to carry traffic.
+#
+# mDNS is link-local multicast, so in Docker this needs host networking:
+# see deploy/docker-compose.lan.yml (Linux only).
+advertise_lan = false
+
 [auth]
 # Closed by default. The entrypoint mints a device key on first start and prints
 # it in the scribe-serve log; paste it into the app under Settings.

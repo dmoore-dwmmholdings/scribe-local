@@ -1,0 +1,33 @@
+# LAN discovery overlay — lets the app find this server over Bonjour.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.lan.yml up -d
+#
+# Why an overlay rather than a flag in the main file: mDNS is link-local
+# multicast, and a container on Docker's default bridge network cannot send or
+# receive it. The advertisement only reaches the LAN if the container shares the
+# host's network stack, and `network_mode: host` is a trade the base file should
+# not make on everyone's behalf.
+#
+# LINUX ONLY. On Docker Desktop (macOS, Windows) containers run inside a VM, so
+# host networking does not give access to the real LAN and discovery will not
+# work — run the server natively there, or pair by entering the URL by hand.
+#
+# What host networking changes:
+#   * `ports:` no longer applies — the API listens on the host's own interfaces,
+#     at whatever `api.bind` says. Keep that loopback-only (127.0.0.1:8443, the
+#     default). Discovery does NOT need the API on the LAN: the advertisement
+#     carries the tailnet URL, and the phone connects over the tailnet.
+#   * The container reaches Postgres on 127.0.0.1 rather than by service name,
+#     so the database URL has to change with it.
+#
+# Set `advertise_lan = true` under `[api]` in your config as well; this file only
+# makes the multicast possible, it does not turn the feature on.
+
+services:
+  scribe-serve:
+    network_mode: host
+    environment:
+      # Service-name DNS is gone with host networking; postgres is published on
+      # the host at ${POSTGRES_PORT:-5433} by the base compose file.
+      SCRIBE_DATABASE__URL: "postgres://scribe:scribe@127.0.0.1:${POSTGRES_PORT:-5433}/scribe"
+      SCRIBE_API__ADVERTISE_LAN: "true"

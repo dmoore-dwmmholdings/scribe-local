@@ -18,6 +18,13 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "status": "ok",
         "version": scribe_core::VERSION,
         "db": db_ok,
+        // Where this server considers itself to live, and which credential it
+        // wants. The app reads these after finding a server on the network, so
+        // it can store the canonical (tailnet) URL rather than whatever address
+        // discovery happened to reach it on, and can tell the user up front
+        // whether a device key is needed. Neither value is secret.
+        "public_base_url": state.cfg.api.public_base_url,
+        "auth": if state.auth.trust_tailscale_identity { "tailnet" } else { "token" },
     }))
 }
 

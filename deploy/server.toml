@@ -26,6 +26,17 @@ max_segment_bytes = 16777216
 # CHANGE THIS to the SERVER's tailnet MagicDNS name (tailscale status --json -> Self.DNSName).
 public_base_url   = "https://YOUR-SERVER.your-tailnet.ts.net"
 
+# Announce this server on the local network (Bonjour / mDNS `_scribe._tcp`), so
+# the app's "Find server" button can discover it instead of anyone reading this
+# URL off a terminal. What is advertised is `public_base_url` above — the
+# tailnet address — plus the version and which credential the server wants.
+# No token is ever broadcast, and `bind` stays loopback-only: the LAN is used to
+# ask where the server is, never to carry traffic.
+#
+# mDNS is link-local multicast, so in Docker this needs host networking:
+# see deploy/docker-compose.lan.yml (Linux only).
+advertise_lan = false
+
 [auth]
 # Real deployment: REQUIRE device tokens so the tailnet-exposed API isn't open.
 # Put `device_id = "api_key"` pairs in deploy/devices.toml (see devices.toml.example),
