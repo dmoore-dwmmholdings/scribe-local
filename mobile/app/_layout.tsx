@@ -2,9 +2,12 @@ import '../src/util/polyfills'; // crypto.getRandomValues + randomUUID — must 
 import { installCrashLogging, log } from '../src/util/logger';
 installCrashLogging(); // install global JS error handler before anything renders
 import { useEffect } from 'react';
+import { Alert } from 'react-native';
+import * as Linking from 'expo-linking';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSettingsStore } from '../src/state/settingsStore';
+import { parsePairingLink, describePairing } from '../src/state/pairing';
 import { useRecordingsStore } from '../src/state/recordingsStore';
 import { uploadQueue } from '../src/recording/uploadQueue';
 import { colors } from '../src/theme';
@@ -35,6 +38,45 @@ export default function RootLayout() {
       if (n > 0) log('app', `cleared ${n} stale live activity/activities`);
     });
   }, [hydrateSettings, hydrateRecordings]);
+
+  // Pairing deep links (scribe://pair?url=…&key=…), handled here rather than on
+  // the Settings screen so a scanned QR works whatever the app has open — and
+  // works on a cold start, which is the usual case for a first pairing.
+  useEffect(() => {
+    const apply = async (link: string) => {
+      const payload = parsePairingLink(link);
+      if (!payload) return; // not a pairing link, or malformed — ignore quietly
+      log('app', `pairing link for ${payload.baseUrl}`);
+
+      // Confirm before saving. Anything that can open a URL can offer a pairing
+      // link, and accepting one silently would repoint every future recording
+      // at a server the user never chose.
+      const accept = await new Promise<boolean>((resolve) => {
+        Alert.alert('Connect to this server?', describePairing(payload), [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Connect', onPress: () => resolve(true) },
+        ]);
+      });
+      if (!accept) return;
+
+      // Settings hydrate concurrently on startup; awaiting that first stops a
+      // late hydrate from overwriting what we just paired.
+      await hydrateSettings();
+      await useSettingsStore.getState().update({
+        baseUrl: payload.baseUrl,
+        deviceKey: payload.deviceKey,
+      });
+      log('app', 'pairing saved');
+    };
+
+    // A cold start delivers the link here...
+    void Linking.getInitialURL().then((url) => {
+      if (url) void apply(url);
+    });
+    // ...and a warm one here.
+    const sub = Linking.addEventListener('url', ({ url }) => void apply(url));
+    return () => sub.remove();
+  }, [hydrateSettings]);
 
   return (
     <ErrorBoundary>

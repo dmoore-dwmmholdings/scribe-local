@@ -76,6 +76,23 @@ device_keys = "/etc/scribe/devices.toml"
 # The `Authorization: Bearer <key>` header carries it.
 require_device_token = true
 
+# Skip the token entirely for phones on your tailnet. `tailscale serve` already
+# authenticates every peer it proxies and injects the login as a header, so
+# asking the user to also copy a 64-character secret onto a phone keyboard buys
+# nothing. With this on, pairing is just the server URL.
+#
+# ONLY sound while `api.bind` stays loopback-only, so that the local
+# `tailscale serve` is the one process that can reach it — the header is
+# forgeable by anyone who can connect directly. The middleware also refuses the
+# header from a non-loopback peer, but do not rely on that alone: if you publish
+# the API on 0.0.0.0 or a LAN address, leave this off.
+trust_tailscale_identity = false
+
+# Restrict which tailnet logins are accepted. Empty (the default) trusts anyone
+# your tailnet vouches for — right for a personal tailnet, wrong for a shared
+# one.
+# tailnet_users = ["you@example.com"]
+
 # ─────────────────────────────────────────────────────────────
 # ASR — NOT used by `serve` but present so the same file works
 # for both subcommands if you ever co-locate them.

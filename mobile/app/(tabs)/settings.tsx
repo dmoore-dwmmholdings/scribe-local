@@ -124,7 +124,9 @@ export default function SettingsScreen() {
       const msg = err instanceof Error ? err.message : String(err);
       setTestResult(
         /API (401|403) /.test(msg)
-          ? 'Failed: the server rejected this device token. Copy the one from deploy/devices.toml on the server.'
+          ? deviceKey.trim()
+            ? 'Failed: the server rejected this device token. Copy the one from deploy/devices.toml on the server.'
+            : 'Failed: no device key, and the server did not accept this phone by its tailnet identity. Either paste a key from deploy/devices.toml, or set auth.trust_tailscale_identity on the server.'
           : `Failed: ${msg}`,
       );
     } finally {

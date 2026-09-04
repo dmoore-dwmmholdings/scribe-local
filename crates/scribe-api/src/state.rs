@@ -37,9 +37,25 @@ pub struct AuthState {
     pub require_device_token: bool,
     /// Valid keys, by value, for O(1) lookup. The device id is the value.
     pub keys: HashMap<String, String>,
+    /// Accept `tailscale serve`'s identity headers instead of a device token.
+    pub trust_tailscale_identity: bool,
+    /// Logins permitted when the above is on. Empty = any tailnet user.
+    pub tailnet_users: Vec<String>,
 }
 
 impl AuthState {
+    /// Is `login` a tailnet user this server accepts? An empty allowlist trusts
+    /// whoever the tailnet authenticated, which is the sane default for a
+    /// personal tailnet and the wrong one for a shared tailnet — hence the
+    /// config knob rather than a hardcoded policy.
+    pub fn tailnet_user_allowed(&self, login: &str) -> bool {
+        self.tailnet_users.is_empty()
+            || self
+                .tailnet_users
+                .iter()
+                .any(|u| u.eq_ignore_ascii_case(login))
+    }
+
     /// Is this bearer token recognised?
     pub fn is_valid(&self, token: &str) -> bool {
         self.keys.contains_key(token)
@@ -59,6 +75,8 @@ impl AppState {
         let auth = Arc::new(AuthState {
             require_device_token: cfg.auth.require_device_token,
             keys,
+            trust_tailscale_identity: cfg.auth.trust_tailscale_identity,
+            tailnet_users: cfg.auth.tailnet_users.clone(),
         });
 
         Ok(AppState {

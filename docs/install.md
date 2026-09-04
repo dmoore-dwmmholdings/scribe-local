@@ -181,17 +181,51 @@ stable name and encrypts the connection.
 
 ### Set up the app
 
+`scripts/quickstart.sh` prints a pairing link at the end, as a QR code when
+`qrencode` is installed:
+
+```
+scribe://pair?url=https://my-server.tail1234.ts.net&key=…
+```
+
+Scan it with the phone's camera, or open the link on the phone by any other
+route. The app asks which server it is about to connect to, and fills in both
+fields when you confirm. Enter them by hand only if the link cannot reach the
+phone:
+
 1. In the app, open `Settings`.
 
 2. Put the server URL in the `Server` field.
 
 3. Put the device token in the `Device API key` field.
 
+Then:
+
 4. Make a short test recording.
 
 5. Wait for the worker to complete the pipeline.
 
 6. Open the library screen. It shows the transcript.
+
+### Drop the device token (optional)
+
+On a tailnet the token is a second lock on a door Tailscale has already locked.
+`tailscale serve` authenticates every peer it proxies and passes the login to
+the API, so the API can accept that instead and the phone needs no key at all:
+
+```toml
+[auth]
+trust_tailscale_identity = true
+# tailnet_users = ["you@example.com"]   # empty = any user on your tailnet
+```
+
+Pairing is then just the server URL, and `Device API key` can stay empty.
+
+CAUTION: this is only safe while the API stays bound to `127.0.0.1`, so that the
+local `tailscale serve` is the only thing that can reach it. The header carrying
+the login is forgeable by anything able to connect directly. If you bind the API
+to `0.0.0.0` or a LAN address, leave this off and keep using tokens. On a shared
+tailnet, set `tailnet_users` — otherwise every user on it is admitted.
 
 CAUTION: DO NOT PUBLISH THE API ON THE INTERNET.
 

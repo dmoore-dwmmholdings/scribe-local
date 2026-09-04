@@ -201,8 +201,15 @@ pub async fn serve(cfg: Config) -> Result<()> {
         .map_err(|e| Error::Internal(format!("reading local addr: {e}")))?;
     tracing::info!(%local, "scribe-api listening");
 
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| Error::Internal(format!("server error: {e}")))?;
+    // `into_make_service_with_connect_info` (rather than plain `app`) is what
+    // puts the peer address in request extensions. `auth::require_auth` needs
+    // it to refuse `tailscale serve`'s identity headers on any connection that
+    // did not come from loopback; without this the check silently sees no peer.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|e| Error::Internal(format!("server error: {e}")))?;
     Ok(())
 }

@@ -119,11 +119,38 @@ done
 token="$(docker compose exec -T scribe-serve sh -c "sed -n 's/^phone = \"\(.*\)\"/\1/p' /data/devices.toml" 2>/dev/null | tr -d '\r\n' || true)"
 
 printf '\n\033[32m== Scribe is running ==\033[0m\n'
-echo "  Server URL (enter in the app):   $public_url"
-if [ -n "$token" ]; then
-    echo "  Device token (enter in the app): $token"
+
+# Pairing link. The app registers the `scribe://` scheme and handles
+# `scribe://pair`, so scanning this carries both values across in one step
+# instead of asking anyone to retype a 64-character token on a phone keyboard.
+#
+# The token is still included: it is what authenticates the phone unless the
+# server is running with auth.trust_tailscale_identity, and a link that works in
+# both configurations is better than one that works in the newer one only.
+pair_url="scribe://pair?url=$public_url"
+[ -n "$token" ] && pair_url="$pair_url&key=$token"
+
+if command -v qrencode >/dev/null 2>&1; then
+    echo "  Scan this with the phone's camera to pair:"
+    echo
+    qrencode -t ANSIUTF8 -m 2 "$pair_url"
 else
-    echo "  Device token: docker compose exec scribe-serve cat /data/devices.toml"
+    # No hard dependency on qrencode: the link works however it reaches the
+    # phone (AirDrop, Messages, a tap on the phone's own browser).
+    echo "  Pairing link — open this on the phone to pair in one tap:"
+    echo
+    echo "    $pair_url"
+    echo
+    echo "  (install qrencode to get this as a scannable QR code here)"
+fi
+
+echo
+echo "  Or enter these by hand in Settings:"
+echo "    Server URL:   $public_url"
+if [ -n "$token" ]; then
+    echo "    Device token: $token"
+else
+    echo "    Device token: docker compose exec scribe-serve cat /data/devices.toml"
 fi
 echo
 echo "  Logs:     docker compose logs -f scribe-serve scribe-worker"

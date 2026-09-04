@@ -72,6 +72,19 @@ pub struct AuthConfig {
     pub device_keys: Option<PathBuf>,
     /// If true, reject any request without a recognised device token.
     pub require_device_token: bool,
+    /// Accept the identity headers `tailscale serve` injects (`Tailscale-User-Login`)
+    /// in place of a device token, so a phone on the tailnet needs no key at all.
+    ///
+    /// Off by default, and deliberately so: headers are forgeable, and this is
+    /// only sound when nothing but the local `tailscale serve` process can reach
+    /// `api.bind`. The middleware additionally refuses the header on any
+    /// connection that did not arrive from loopback, but that check cannot save
+    /// a deployment that publishes the port on `0.0.0.0`.
+    pub trust_tailscale_identity: bool,
+    /// Tailnet logins allowed in when `trust_tailscale_identity` is on. Empty
+    /// means any user the tailnet vouches for — right for a personal tailnet,
+    /// wrong for a shared one.
+    pub tailnet_users: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +304,8 @@ impl Default for AuthConfig {
         Self {
             device_keys: None,
             require_device_token: false,
+            trust_tailscale_identity: false,
+            tailnet_users: Vec::new(),
         }
     }
 }
