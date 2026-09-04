@@ -12,8 +12,17 @@
 # the container stack, which ends in the same place.
 #
 # Nothing has to be edited first and nothing is prompted for, so it is safe to
-# pipe into bash. Re-running is safe too: existing secrets, models, and the
-# database are kept.
+# pipe into bash.
+#
+# RE-RUNNING IS HOW YOU UPDATE. It fast-forwards the checkout, rebuilds, and
+# restarts. Your data is kept: recordings, the database, the device token and
+# the URL signing secret live in Docker volumes (pgdata, scribe-data) that this
+# script never removes, and schema changes are applied on start. Only
+# `docker compose down -v` destroys those, and nothing here runs it.
+#
+# If the checkout cannot be fast-forwarded — local edits, a diverged branch, no
+# network — the script STOPS rather than rebuilding the version you already
+# have and reporting success.
 #
 # Options (with a pipe, pass them after `bash -s --`):
 #   --dir PATH      install location (default: ~/scribe)
@@ -48,7 +57,10 @@ while [ $# -gt 0 ]; do
     --docker) FORCE_DOCKER=1 ;;
     --api-port) API_PORT="$2"; API_PORT_PINNED=1; shift ;;
     --db-port) DB_PORT="$2"; DB_PORT_PINNED=1; shift ;;
-    -h | --help) sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the header block: every comment line from line 2 up to the first
+    # line that is not a comment. Derived rather than hardcoded, so editing the
+    # header above cannot silently truncate --help.
+    -h | --help) sed -n '2,/^[^#]/p' "$0" 2>/dev/null | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -110,6 +122,58 @@ require_docker() {
 # ---------------------------------------------------------------------------
 # Container install (Linux, macOS, or --docker)
 # ---------------------------------------------------------------------------
+# Fast-forward an existing checkout, and say plainly what happened.
+#
+# Re-running this script is how the server is updated, and the image is built
+# from this checkout — so a pull that quietly does nothing means the rebuild
+# below produces the version already running while reporting success. That is
+# worse than stopping: the operator believes they upgraded. Every failure here
+# is therefore fatal and explains how to clear it.
+#
+# Data is not at risk either way. The database, blobs, device token and signing
+# secret live in named Docker volumes (pgdata, scribe-data) that nothing in this
+# script removes; `docker compose up -d --build` replaces containers and images,
+# never volumes. Schema changes are applied by the scribe-init service on start.
+update_checkout() {
+    local dir="$1" before after
+
+    git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        note "not a git checkout — leaving $dir as it is"
+        return 0
+    }
+
+    before="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+    if ! git -C "$dir" fetch --quiet 2>/dev/null; then
+        die "could not reach GitHub to check for updates.
+    Retry when you have a connection, or skip the update and rebuild what is
+    already in $dir with:  cd $dir && docker compose up -d --build"
+    fi
+
+    if ! git -C "$dir" merge --ff-only '@{u}' --quiet 2>/dev/null; then
+        # Either local commits/edits are in the way, or there is no upstream.
+        if [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
+            die "$dir has uncommitted local changes, so it cannot be updated.
+    Keep them:     cd $dir && git stash
+    Or discard:    cd $dir && git reset --hard @{u}
+    Then re-run this script. Your recordings and database are untouched either
+    way — they live in Docker volumes, not in this directory."
+        fi
+        die "$dir could not be fast-forwarded (its branch has diverged from the
+    remote). Inspect it with:  cd $dir && git status
+    To discard local commits:  cd $dir && git reset --hard @{u}
+    Your recordings and database are untouched either way — they live in Docker
+    volumes, not in this directory."
+    fi
+
+    after="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    if [ "$before" = "$after" ]; then
+        ok "already up to date at $after"
+    else
+        ok "updated $before -> $after"
+    fi
+}
+
 install_with_docker() {
     step "Container install"
     require_docker
@@ -118,7 +182,7 @@ install_with_docker() {
     local dir="${INSTALL_DIR:-$HOME/scribe}"
     if [ -f "$dir/Dockerfile" ]; then
         note "using the existing checkout at $dir"
-        git -C "$dir" pull --ff-only >/dev/null 2>&1 || true
+        update_checkout "$dir"
     elif [ -f "./Dockerfile" ] && [ -f "./docker-compose.yml" ]; then
         dir="$PWD"
         note "using the checkout in the current directory"
@@ -442,9 +506,37 @@ summary() {
     local url="$1" token="$2" dir="$3" logcmd="$4" stopcmd="$5"
     printf '\n\033[32m== Scribe is installed ==\033[0m\n'
     echo "  Server URL   (enter in the app): $url"
-    [ -n "$token" ] && echo "  Device token (enter in the app): $token"
     echo "  Directory:  $dir"
+
+    # Report the version the API actually answers with, not the version the
+    # checkout claims. On an update these differ whenever the rebuild did not
+    # take, which is exactly the case worth catching here.
+    # `|| true`: under `set -euo pipefail` a server that is not up yet would
+    # otherwise abort the script at its final, purely informational step.
+    local running=""
+    running="$(curl -fsS "http://127.0.0.1:$API_PORT/health" 2>/dev/null |
+        sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" || true
+    [ -n "$running" ] && echo "  Running:    v$running"
     echo
+
+    # Pairing link — the app handles `scribe://pair`, so this carries the server
+    # URL and the token across in one scan instead of asking anyone to retype a
+    # 64-character secret on a phone keyboard.
+    local pair="scribe://pair?url=$url"
+    [ -n "$token" ] && pair="$pair&key=$token"
+    if command -v qrencode >/dev/null 2>&1; then
+        echo "  Scan to pair the phone:"
+        echo
+        qrencode -t ANSIUTF8 -m 2 "$pair" || echo "    $pair"
+        echo
+    else
+        echo "  Pairing link (open it on the phone, one tap to pair):"
+        echo "    $pair"
+        echo
+        echo "  Or enter by hand in Settings:"
+        [ -n "$token" ] && echo "    Device token: $token"
+        echo
+    fi
     echo "  Logs: $logcmd"
     echo "  Stop: $stopcmd"
     case "$url" in
