@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.dwmmholdings.scribe",
+      "bundleIdentifier": "com.dwmmholdings.scribeapp",
       "infoPlist": {
         "UIBackgroundModes": [
           "audio"
@@ -23,7 +23,7 @@
         "NSSpeechRecognitionUsageDescription": "Scribe transcribes meetings locally.",
         "NSSupportsLiveActivities": true
       },
-      "appleTeamId": "H2JKUP2Q7Z"
+      "appleTeamId": "P5GS55MLHL"
     },
     "android": {
       "adaptiveIcon": {
