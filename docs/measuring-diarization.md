@@ -128,7 +128,7 @@ back over them:
 | participant floor (3 s + 1%) | yes, twice | a duration alone is length-blind; see below |
 | enrolment floor (0.5) | yes | 0.5–0.6 identical; 0.65 loses a bad room |
 | match consistency (0.75) | yes | cannot be loosened — the numbers collide |
-| silence for a split (250 ms) | yes | 180–250 identical; 350+ costs short turns |
+| silence for a split (250 ms) | yes, twice | "180–250 identical" was a clean-audio result; see below |
 | silence ratio (0.15) | yes, and the sweep lied | see "the sweep that found nothing" |
 | **per-window clustering (0.8)** | **yes** | **was 0.5, and 0.5 was worse** |
 
@@ -191,6 +191,30 @@ The lesson is about the sweep, not the constant. A parameter that governs how
 the code copes with noise cannot be sized on recordings that have none; the
 sweep will report it inert and it will be inert, on that material. Two of the
 rows in the table above were swept the same way and deserve the same suspicion.
+
+### Re-sweeping the other one
+
+The same table said the minimum silence for a split was flat from 180 to 250 ms.
+Swept again on noisy material it is not flat anywhere, and the value is
+quantized: `min_run` counts 20 ms frames, so 175 and 190 are 8 and 9 frames and
+behave nothing alike.
+
+| ms | frames | 11 min, degraded | 6 voices, 15 dB | 6 voices, 10 dB |
+|---|---|---|---|---|
+| 190 | 9 | 3 spk, 75.8% | 6 spk, 97.4% | **6 spk, 94.3%** |
+| 210 | 10 | 3 spk, 75.9% | 6 spk, 97.4% | **6 spk, 94.3%** |
+| 230 | 11 | 3 spk, 75.9% | 6 spk, 97.4% | **6 spk, 94.3%** |
+| **250** | **12** | **4 spk, 99.5%** | 6 spk, 97.4% | 6 spk, 87.2% |
+| 270 | 13 | **4 spk, 99.5%** | 6 spk, 97.4% | 6 spk, 87.2% |
+
+Below 12 frames the long windowed recording loses a speaker outright; at 12 and
+above the short high-noise one gives up 7 points. Nothing satisfies both, and
+below 9 frames everything collapses together — a six-voice recording comes back
+as one speaker at 18.1%, the turns cut into pieces too short to embed.
+
+250 is the right value, which is what the first sweep concluded. It reached that
+answer by measuring recordings where the choice did not matter, and the range it
+reported as safe contains values that lose a speaker.
 
 ## The fixtures are synthetic, and that has bitten four times
 
