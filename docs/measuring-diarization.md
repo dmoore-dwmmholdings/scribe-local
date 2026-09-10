@@ -166,6 +166,42 @@ Speaker attribution barely moves under degradation: 99.9% of words on the right
 person on the dirty eleven-minute fixture, against 100.0% clean. The splitting
 and clustering work described above is not what these conditions break.
 
+## Overlapping speech
+
+`make-diar-fixture.py` takes an overlap in milliseconds as its third argument,
+making every third turn start that far inside the one before it. On the
+two-and-a-half-minute fixture:
+
+| overlap | time with two voices | WER | right speaker |
+|---|---|---|---|
+| none | 0.0 s | 1.5% | 100.0% |
+| 600 ms | 5.4 s | 7.8% | 100.0% |
+| 1500 ms | 13.5 s | 26.6% | 100.0% |
+
+Overlap is an ASR problem, not a diarization one. Attribution does not move;
+the words do, because a single channel carrying two voices is a single channel
+carrying two voices and the transcriber can only have one of them. Words spoken
+over somebody are scored right if they land on either speaker, and separately
+reported.
+
+## The smoothing that never fired
+
+The merge stage used to repair brief speaker flickers — a word mid-sentence
+handed to whoever spoke next, because a diarization turn boundary and an ASR
+word boundary disagreed by a few hundred milliseconds. It was written from a
+plausible failure and never measured.
+
+Across every condition here — clean, pink noise at 20 dB and 10 dB, reverb, a
+speaker at a third of the level, whole sentences overlapping, and short
+backchannels spoken into the middle of somebody's turn — it fired zero times.
+Not "rarely": the runs it looked for never existed. Splitting turns at pauses
+removed the fragmentation that produced them, and a backchannel over an open
+microphone is usually not transcribed at all, so there is no stray word to move.
+
+It is now a count rather than a repair, logged at debug level. If a real
+recording produces these, the log says so, which is the evidence a repair would
+need and more than the original ever had.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —

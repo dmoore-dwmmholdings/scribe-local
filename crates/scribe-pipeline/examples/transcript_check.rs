@@ -85,7 +85,7 @@ fn main() {
         })
         .collect();
     let t2 = std::time::Instant::now();
-    let smoothed = label_words(&mut words, &diarization.turns);
+    let islands = label_words(&mut words, &diarization.turns);
     let merge_secs = t2.elapsed().as_secs_f64();
 
     println!("── transcript_check ──────────────────────────────────────");
@@ -105,7 +105,7 @@ fn main() {
         audio_secs / (asr_secs + diar_secs + merge_secs).max(1e-9)
     );
     println!("words            {}", words.len());
-    println!("smoothed         {smoothed}");
+    println!("speaker islands  {islands}  (brief runs both neighbours disagree with)");
 
     let spoken: Vec<String> = truth.turns.iter().flat_map(|t| normalise(&t.text)).collect();
     if !spoken.is_empty() {
@@ -118,19 +118,25 @@ fn main() {
         );
     }
 
-    // A word's true speaker is whoever was talking at its midpoint.
-    let truth_at = |ms: i64| -> Option<&str> {
+    // Who was talking at a given moment — plural, because two people can be.
+    // A word spoken over somebody else has two defensible answers and is scored
+    // right for either, which is the usual lenient treatment of overlap.
+    let truth_at = |ms: i64| -> Vec<&str> {
         truth
             .turns
             .iter()
-            .find(|t| ms >= t.start_ms && ms <= t.end_ms)
+            .filter(|t| ms >= t.start_ms && ms <= t.end_ms)
             .map(|t| t.speaker.as_str())
+            .collect()
     };
 
+    // Map clusters to people using only the words nobody was talking over, so a
+    // contested moment cannot decide who a cluster is.
     let mut pair: HashMap<(&str, i32), usize> = HashMap::new();
     for w in &words {
-        if let (Some(name), Some(idx)) = (truth_at((w.start_ms + w.end_ms) / 2), w.local_idx) {
-            *pair.entry((name, idx)).or_insert(0) += 1;
+        let who = truth_at((w.start_ms + w.end_ms) / 2);
+        if let (1, Some(idx)) = (who.len(), w.local_idx) {
+            *pair.entry((who[0], idx)).or_insert(0) += 1;
         }
     }
     let mut pairs: Vec<((&str, i32), usize)> = pair.into_iter().collect();
@@ -146,16 +152,26 @@ fn main() {
     }
 
     let (mut scored, mut correct, mut unlabelled) = (0usize, 0usize, 0usize);
+    let (mut contested, mut contested_ok) = (0usize, 0usize);
     for w in &words {
-        let Some(name) = truth_at((w.start_ms + w.end_ms) / 2) else {
+        let who = truth_at((w.start_ms + w.end_ms) / 2);
+        if who.is_empty() {
             continue;
-        };
+        }
         scored += 1;
+        let overlapped = who.len() > 1;
+        if overlapped {
+            contested += 1;
+        }
         match w.local_idx {
             None => unlabelled += 1,
             Some(idx) => {
-                if map.get(&idx) == Some(&name) {
+                let hit = map.get(&idx).is_some_and(|name| who.contains(name));
+                if hit {
                     correct += 1;
+                    if overlapped {
+                        contested_ok += 1;
+                    }
                 }
             }
         }
@@ -166,6 +182,19 @@ fn main() {
     println!("right speaker    {:.1}%", pct(correct));
     println!("wrong speaker    {:.1}%", pct(scored - correct - unlabelled));
     println!("no speaker       {:.1}%", pct(unlabelled));
+    if contested > 0 {
+        println!(
+            "  spoken over    {contested} words ({:.1}%), {:.1}% of those on one of the two",
+            pct(contested),
+            100.0 * contested_ok as f64 / contested as f64
+        );
+        let clear = scored - contested;
+        let clear_ok = correct - contested_ok;
+        println!(
+            "  in the clear   {clear} words, {:.1}% right",
+            100.0 * clear_ok as f64 / clear.max(1) as f64
+        );
+    }
 
     let spans = utterance_spans(&words);
     println!("utterances       {} (from {} spoken turns)", spans.len(), truth.turns.len());
