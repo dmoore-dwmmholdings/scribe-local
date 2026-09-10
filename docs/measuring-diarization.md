@@ -374,6 +374,41 @@ no one is talking, so the playback highlighter lights the wrong word and tapping
 a word seeks to the wrong moment. `deploy/server.toml` ships Whisper and now
 says this next to the setting.
 
+## The one who only says "yes"
+
+`make-diar-fixture.py` builds turns of roughly equal length in rotation, which
+is not how anybody talks. A fixture with turns from 0.4 s to 12 s — one-word
+answers next to monologues — is the only one here that scores below 100%, and
+what it fails at is worth knowing.
+
+One participant's entire contribution was "Yes.", "That tracks." and "I can take
+that.": 2.5 seconds across three turns. He does not appear in the transcript at
+all. The recording comes back with three speakers instead of four, and his three
+turns are credited to whoever was nearest.
+
+A cluster has to hold `MIN_SPEAKER_SPEECH_MS` of speech to stand as a
+participant rather than be folded into the voice it most resembles, and 2.5 s is
+under it. Two ways out were tried:
+
+**Lowering the floor.** Swept from 1 s to 5 s across seven fixtures. Every value
+from 1.5 s upward gives an identical answer on all of them; 1 s produces phantom
+participants on four of the seven and drops attribution several points. The
+floor is a plateau, not a tuned edge — and it does not recover him anyway,
+because his three turns never cluster into one 2.5 s cluster. They arrive as
+separate slivers of about a second each, and no floor above 1 s keeps those.
+
+**Letting a cluster stand if it resembles nobody**, on the reasoning that a
+fragment of somebody present looks like them and a quiet stranger does not. This
+is wrong for a reason worth writing down: a one-second embedding is *unreliable*,
+not *distinctive*. "Resembles nobody" and "too brief to measure" are the same
+reading, so every sliver stands. The same recording came back with twelve
+speakers and attribution fell from 95.5% to 92.4%.
+
+So this is a limit of the embedding model on sub-second speech rather than a
+threshold that wants adjusting. Somebody who only ever interjects will be folded
+into a neighbour, and the transcript will under-count the room. Naming them by
+hand still works, and a name given that way is not affected by any of this.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —

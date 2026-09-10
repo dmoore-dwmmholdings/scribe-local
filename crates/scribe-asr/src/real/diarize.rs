@@ -354,7 +354,33 @@ struct Fragment {
 ///
 /// A stated count is a count of people who clear this, not of clusters — see
 /// the stop condition in `cluster_fragments`.
-const MIN_SPEAKER_SPEECH_MS: i64 = 3_000;
+/// Swept across seven fixtures: every value from 1.5 s to 5 s gives an
+/// identical answer on all of them, and 1 s is clearly worse — phantom
+/// participants on four of the seven and attribution down several points. So
+/// this sits in the middle of a wide plateau rather than on a tuned edge, and
+/// moving it is not the lever it looks like.
+///
+/// What it cannot rescue is somebody whose whole contribution is brief
+/// interjections. On a fixture where one participant said only "Yes.", "That
+/// tracks." and "I can take that." — 2.5 s across three turns of 0.4 s to 1.1 s —
+/// he is folded into whoever he is nearest and the recording comes back with
+/// three speakers instead of four. Lowering the floor does not recover him,
+/// because his turns are too short to embed consistently enough to cluster
+/// together in the first place: they arrive as separate slivers, none of which
+/// reaches even 1.5 s. Letting slivers stand on dissimilarity instead was tried
+/// and is worse — a short embedding is unreliable rather than distinctive, so
+/// "resembles nobody" and "too brief to tell" are the same measurement, and the
+/// same recording came back with twelve speakers.
+const MIN_SPEAKER_SPEECH_MS_DEFAULT: i64 = 3_000;
+
+/// Experiment hook: `SCRIBE_MIN_SPEAKER_MS` overrides the floor, which is how
+/// its value was chosen. See docs/measuring-diarization.md.
+fn min_speaker_speech_ms() -> i64 {
+    std::env::var("SCRIBE_MIN_SPEAKER_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MIN_SPEAKER_SPEECH_MS_DEFAULT)
+}
 
 /// Most speakers we will infer when the count was not stated.
 ///
@@ -439,9 +465,10 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     // `substantial[k]` is that count once `k` merges have been applied — which
     // is how a stated number of *people* is located in a sequence of merges
     // between *clusters*.
+    let floor = min_speaker_speech_ms();
     let count_substantial = |alive: &[bool], speech: &[i64]| -> usize {
         (0..alive.len())
-            .filter(|&k| alive[k] && speech[k] >= MIN_SPEAKER_SPEECH_MS)
+            .filter(|&k| alive[k] && speech[k] >= floor)
             .count()
     };
     let mut substantial: Vec<usize> = vec![count_substantial(&alive, &speech)];
@@ -553,6 +580,7 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
 /// the nearest in time: a sliver is usually a fragment of somebody already
 /// present, and its embedding says which.
 fn fold_slight_speakers(fragments: &[Fragment], assignment: &mut [i32]) {
+    let floor = min_speaker_speech_ms();
     let mut speech: HashMap<i32, i64> = HashMap::new();
     for (frag, &cluster) in fragments.iter().zip(assignment.iter()) {
         *speech.entry(cluster).or_insert(0) += frag.speech_ms.max(0);
@@ -560,7 +588,7 @@ fn fold_slight_speakers(fragments: &[Fragment], assignment: &mut [i32]) {
 
     let surviving: Vec<i32> = speech
         .iter()
-        .filter(|(_, ms)| **ms >= MIN_SPEAKER_SPEECH_MS)
+        .filter(|(_, ms)| **ms >= floor)
         .map(|(c, _)| *c)
         .collect();
     // Everything is slight - a very short recording. Nothing to fold into.
