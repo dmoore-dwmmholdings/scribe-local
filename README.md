@@ -368,6 +368,13 @@ python3 scripts/degrade-audio.py in.wav out.wav \
 python3 scripts/add-room-noise.py in.wav out.wav --truth truth.json
 ```
 
+The two stages that call a language model — fixing misheard names, and
+summarising — can be exercised without one:
+
+```bash
+python3 scripts/stub-llm.py 8799 &     # or: 8799 garbage, to check it degrades
+```
+
 Synthesised voices are cleaner and more separable than a room of people, so
 these numbers are an upper bound and a way to compare one change against
 another. **Run `e2e-check.sh` on a recording of real people** — it is worth more

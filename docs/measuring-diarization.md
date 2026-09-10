@@ -413,9 +413,33 @@ log said biasing was enabled.
 hotwords are set without it. The checkpoint `scribe models pull` installs does
 not publish one, so on a default install hotwords are inert and now say so.
 
-What does work on a default install is `[llm].correct_transcript`, which has the
-LLM read the finished transcript with the known speaker names as hints and fix
-misheard proper nouns after the fact.
+### What does work: the LLM correction pass
+
+`[llm].correct_transcript` has the model read the finished transcript, with the
+known speaker names as hints, and fix misheard proper nouns after the fact. On
+the same fixture that hotwords could not touch, it takes the word error rate
+from **16.7% to 1.0%** — every one of Shivon, Cuba Needs, rotor, Efa, Nayam and
+Ian back to the name that was said.
+
+`scripts/stub-llm.py` is how that was measured without a model, and how the
+stage's safety claims were checked. It answers both the Ollama and OpenAI
+request shapes and applies a fixed glossary read out of the prompt, which
+exercises everything except the model's judgement.
+
+```bash
+python3 scripts/stub-llm.py 8799 &
+# [llm] base_url = "http://127.0.0.1:8799", provider = "ollama", summarize_model = "stub"
+```
+
+It also has three modes for misbehaving: returning summaries instead of
+corrections, replacing every line with "ok", and replying with something that is
+not JSON. The merge stage claims none of those can corrupt a transcript, and
+with all three the transcript comes back exactly as the recogniser produced it.
+That claim now has a test rather than a comment.
+
+Both LLM stages are written to degrade rather than fail when no model is
+reachable, which `e2e-check.sh` checks by pointing them at a closed port. The
+stub checks the other direction.
 
 ## Whisper's word timings
 
