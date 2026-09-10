@@ -65,6 +65,9 @@ enum Command {
     /// Manually ingest an audio file (backfill / testing / desktop capture).
     Ingest(IngestArgs),
 
+    /// Print a recording's transcript, with the speaker of each line.
+    Transcript(TranscriptArgs),
+
     /// Recompute derived data (embeddings / summaries) over existing recordings.
     Reindex(ReindexArgs),
 
@@ -184,6 +187,12 @@ struct IngestArgs {
     /// Run the whole pipeline synchronously now (no worker needed).
     #[arg(long)]
     inline: bool,
+}
+
+#[derive(Debug, Args)]
+struct TranscriptArgs {
+    /// Recording id. Omit for the most recent recording.
+    id: Option<Uuid>,
 }
 
 #[derive(Debug, Args)]
@@ -372,6 +381,12 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Transcript(args) => {
+            let db = connect(&cfg).await?;
+            print_transcript(&db, args.id).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Enroll(args) => {
             let db = connect(&cfg).await?;
             let id = scribe_pipeline::enroll(&cfg, &db, &args.name, &args.audio).await?;
@@ -415,6 +430,64 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Print a recording's transcript: one line per utterance, timestamped, with
+/// whoever it was attributed to.
+///
+/// The operator's answer to "did speaker detection work on this?", on a machine
+/// with no database client and no phone. Names come from enrolled speakers where
+/// a voice was recognised, and `Speaker N` where it was not.
+async fn print_transcript(db: &Db, id: Option<Uuid>) -> anyhow::Result<()> {
+    let id = match id {
+        Some(id) => id,
+        None => db
+            .list_recordings(1, 0, None)
+            .await?
+            .first()
+            .map(|r| r.id)
+            .ok_or_else(|| anyhow::anyhow!("no recordings"))?,
+    };
+
+    let recording = db.get_recording(id).await?;
+    let speakers = db.list_recording_speakers(id).await?;
+    let names: std::collections::HashMap<i32, String> = speakers
+        .iter()
+        .map(|s| {
+            (
+                s.local_idx,
+                s.display_name
+                    .clone()
+                    .unwrap_or_else(|| format!("Speaker {}", s.local_idx)),
+            )
+        })
+        .collect();
+
+    println!(
+        "{}  [{}]  {} speakers",
+        recording.title.as_deref().unwrap_or("(untitled)"),
+        recording.status.as_str(),
+        speakers.len()
+    );
+
+    let utterances = db.list_utterances_by_recording(id).await?;
+    for u in &utterances {
+        let who = u
+            .local_idx
+            .and_then(|i| names.get(&i).cloned())
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "{:>3}:{:02}  {:<14} {}",
+            u.start_ms / 60_000,
+            (u.start_ms / 1000) % 60,
+            who,
+            u.text
+        );
+    }
+    if utterances.is_empty() {
+        println!("(no transcript - still processing, or the pipeline failed)");
+    }
+    Ok(())
+}
 
 /// Connect to Postgres, wrapping the failure in actionable context.
 async fn connect(cfg: &Config) -> anyhow::Result<Db> {

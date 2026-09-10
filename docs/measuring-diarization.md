@@ -74,6 +74,49 @@ execution provider.
 The `DYLD_LIBRARY_PATH` is needed because the sherpa-onnx dylib is emitted next
 to the binary without an rpath entry pointing at itself.
 
+## The whole pipeline, on your own audio
+
+The harnesses above each measure one model against known answers. `e2e-check.sh`
+runs what a user actually gets — transcode, diarize, transcribe, merge, embed,
+summarize, through the CLI against a real Postgres — and prints the transcript
+that came out with the speaker each line was given.
+
+```bash
+cargo build --release -p scribe-cli
+SCRIBE_E2E_DB=postgres://scribe:scribe@127.0.0.1:5434/scribe_e2e \
+  ./scripts/e2e-check.sh recording.wav
+```
+
+Several files are ingested into the same database in order, so a voice enrolled
+before them carries across:
+
+```bash
+scribe --config <cfg> enroll --name Alice --audio alice-sample.wav
+./scripts/e2e-check.sh monday.wav tuesday.wav
+```
+
+It creates its own database and blob directory and points the LLM at an
+unreachable address on purpose, so the summarize and transcript-correction
+stages are exercised in their degraded form rather than skipped.
+
+`scribe transcript [id]` prints any recording's transcript with speaker names on
+its own, which is the answer to "did this work?" on a server with no database
+client and no phone.
+
+**Run this on a recording of real people.** Everything else on this page is
+synthesised voices, which are cleaner and more separable than a room full of
+humans, and several conclusions here have already had to be revised once a
+fixture stopped flattering the code.
+
+### What it confirms about the harnesses
+
+Run over the fixtures, the real pipeline reproduces the component harnesses
+exactly — the same speaker count, the same utterance boundaries, the same
+attribution — and enrollment recognises the same voices across a different room
+at the same similarities (0.58, 0.60, 0.64 through the database against 0.56 to
+0.69 in-process), so the pgvector round-trip is faithful. The numbers on this
+page are about the shipped pipeline, not only about the models.
+
 ## Where it stands
 
 Scoring the share of speech given to the right person, on fixtures built by
