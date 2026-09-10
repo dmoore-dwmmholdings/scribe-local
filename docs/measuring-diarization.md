@@ -452,6 +452,48 @@ threshold that wants adjusting. Somebody who only ever interjects will be folded
 into a neighbour, and the transcript will under-count the room. Naming them by
 hand still works, and a name given that way is not affected by any of this.
 
+## People move
+
+`degrade-audio.py --moving <name>` takes one speaker nearer and further across
+the recording, the way somebody does who leans back, turns to a whiteboard or
+walks about. Level and reverberation change together, because both follow
+distance.
+
+| fixture | discovering | telling it there are 4 |
+|---|---|---|
+| 4 voices, 2.5 min, Daniel moves | 6 speakers, 89.9% | 4 speakers, 99.7% |
+| 4 voices, 11 min, Samantha moves | 5 speakers, 95.8% | 4 speakers, 95.8% |
+
+Left to discover, a speaker who moves splits into two or three. That is not the
+clustering being wrong: the same voice at two distances genuinely is two
+different sounds, and the embedding is right to notice.
+
+**It is loudness or the room?** The room. Levelling every piece to a common
+loudness before embedding changes the numbers on every fixture by nothing at
+all — the speaker-embedding model is already invariant to gain, so that axis was
+never carrying the difference. What is left is reverberation, which is a real
+spectral change and the same thing that broke both cheap substitutes for
+segmentation. The normalisation was measured and removed, since a no-op with a
+good explanation is still a no-op.
+
+**The speaker count fixes this one.** Which is worth putting beside the
+television below, because the two failures look alike and want opposite things:
+
+|  | what went wrong | does stating the count help? |
+|---|---|---|
+| a speaker moves | one person became several | **yes** — 89.9% to 99.7% |
+| a television is on | something that is not a person became one | **no**, and it makes it worse |
+
+The count merges; it cannot exclude. It settles a recording to *N* voices by
+joining the closest ones, which is exactly the repair for one person split in
+two, and exactly the wrong tool for a voice that should not be counted at all —
+there it merges two real people and keeps the television, because the television
+is the most distinct voice in the room.
+
+So: too many speakers, and they are all people → state the count. A speaker who
+is not a person → remove them (below). Those are different buttons and the
+transcript tells you which you need.
+
 ## Rooms have things in them that are not people
 
 `scripts/add-room-noise.py` mixes non-speech events into a fixture — keystrokes,

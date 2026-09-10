@@ -15,6 +15,10 @@ conversation can be scored clean and dirty.
              0.3 is a small meeting room, 0.8 a hard-surfaced one.
   --far      scale one speaker's turns, for somebody sitting away from the mic.
              Needs --truth to know which stretches are theirs.
+  --moving   one speaker drifts nearer and further as the recording goes on, the
+             way somebody does who leans back, turns to a whiteboard, or walks.
+             Their level and their reverberation change together, because both
+             follow the distance. Needs --truth.
 
 Reverb and level differences matter more than noise here: they change a voice's
 spectrum, which is what a speaker embedding is measuring, where broadband noise
@@ -82,6 +86,7 @@ def main():
     ap.add_argument("--snr", type=float)
     ap.add_argument("--reverb", type=float)
     ap.add_argument("--far", action="append", default=[])
+    ap.add_argument("--moving", action="append", default=[])
     ap.add_argument("--truth")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -106,6 +111,27 @@ def main():
             b = min(int(turn["end_ms"] * SR / 1000), len(x))
             x[a:b] *= float(gain)
         applied.append("far=" + ",".join(f"{k}x{v}" for k, v in gains.items()))
+
+    # Somebody who moves about. Distance changes two things together — how loud
+    # they are and how much of the room you hear with them — so a drifting gain
+    # alone would not be the test. The question is whether their voice still
+    # clusters as one person once both have changed across the recording.
+    if args.moving:
+        if not args.truth:
+            raise SystemExit("--moving needs --truth to know whose turns to move")
+        truth = json.load(open(args.truth))
+        wet = reverberate(x, 0.6, np.random.default_rng(args.seed + 1))
+        for name in args.moving:
+            theirs = [t for t in truth["turns"] if t["speaker"] == name]
+            for i, turn in enumerate(theirs):
+                # Nearest at the start, furthest in the middle, back by the end.
+                phase = i / max(1, len(theirs) - 1)
+                distance = np.sin(np.pi * phase)
+                gain = 1.0 - 0.65 * distance
+                a = int(turn["start_ms"] * SR / 1000)
+                b = min(int(turn["end_ms"] * SR / 1000), len(x))
+                x[a:b] = x[a:b] * gain * (1 - distance) + wet[a:b] * gain * distance
+        applied.append("moving=" + ",".join(args.moving))
 
     if args.reverb:
         x = reverberate(x, args.reverb, rng)
