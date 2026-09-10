@@ -260,9 +260,10 @@ fine. It is a property of the particular segmentation output.
 Not the speaker count — stating it changes nothing. Not the level — amplifying
 by four and attenuating by four both still crash.
 
-**Both reverb-diarization models handle the same file.** That is the workaround,
-and it is a stronger argument for the swap described below than any of the
-accuracy numbers were:
+**Both reverb-diarization models handle the same file.** That is a workaround
+and not a recommendation: measured against honest fixtures, reverb v1 loses a
+speaker on eight-voice recordings and is worse nearly everywhere else, so
+swapping trades this crash for that. See the section below.
 
 | | pyannote 3.0 | reverb v1 | reverb v2 |
 |---|---|---|---|
@@ -358,6 +359,78 @@ The one thing that got worse is fast conversation in a reverberant room, which
 now splits a voice and returns seven speakers for six. It is a real condition
 and a real failure, so it is measured on every run without gating, like the
 other two. Reverb v1 returns six here.
+
+## The mover who becomes three people
+
+A six-voice recording where one person walks about a reverberant room comes back
+with **eight speakers at 91.3%**. Moira is split three ways — 14.5 s, 9.2 s and
+5.2 s — and both extra pieces clear the participant floor comfortably, so
+nothing folds them.
+
+Told there are six, the same recording scores 99.6%. The embeddings separate
+everyone perfectly; her own variation across the recording is simply wider than
+the gap between her and the others, and no cut of the merge sequence puts those
+three pieces together without joining somebody else too.
+
+**What would fix it is a merge, and there is no merge rule here.** The cohesion
+step-back added earlier only ever *increases* the speaker count — it exists for
+two people sharing a cluster. This is the mirror image, and the signal for it is
+too weak to act on: in this recording the two over-split clusters sit at 0.5966
+against their own internal spreads of 0.5911 and 0.6107, and in a
+correctly-counted six-voice recording the closest pair of substantial clusters
+sits at 0.5068. One case against one case, a margin of nine hundredths, and the
+failure mode of getting it wrong is two real people merged into one — which is
+worse than an extra row in the speaker list. Not built.
+
+Measured on every run without gating:
+
+```
+  note  6 voices, one moving, reverb    8 spk, 91.3%   (wants 6; was 8 spk, 91.3%)
+```
+
+## A different segmentation model, measured twice, with opposite answers
+
+The segmentation model had never been swapped, only the embedding — and it is
+92% of diarization time and decides where turns begin. Rev.ai's
+reverb-diarization models are drop-in replacements for pyannote 3.0.
+
+**This section said reverb v1 was better and told you how to install it. That
+was wrong.** It was measured against fixtures in which every sentence was spoken
+four times in a row, and when those were fixed the comparison reversed. The
+numbers below are from the rebuilt ones, with v1's per-window clustering swept
+again rather than carried over:
+
+| fixture | pyannote 3.0 | reverb v1 |
+|---|---|---|
+| 8 voices, reverb+noise | **8 spk, 98.6%** | 7 spk, 87.4% |
+| 6 voices, reverb+noise | **6 spk, 98.1%** | 7 spk, 95.2% |
+| 4 voices, one moving | **99.8%** | 98.2% |
+| 4 voices, reverb+noise | **99.6%** | 99.1% |
+| 4 voices, 11 min, degraded | **99.5%** | 99.0% |
+| 6 voices, clean | **100.0%** | 99.8% |
+| 6 voices, fast + reverb | 7 spk, 90.8% | **6 spk, 97.6%** |
+| solo, duo, fast clean | — | tie |
+
+Worse nearly everywhere and much worse on eight voices, where it loses a speaker
+at every clustering threshold swept from 0.5 to 0.9. It is better on exactly one
+condition, fast conversation in a reverberant room, which is the condition
+pyannote is worst at.
+
+**v2** is 374 MB against 6 MB, 3.7x slower, and was worse than either on the old
+fixtures; it has not been re-measured because size and speed rule it out anyway.
+
+So the default stays, and there is no recommendation to swap — the earlier one
+is withdrawn. The one thing that keeps reverb v1 worth knowing about is that it
+does not crash on the recording that kills pyannote, which is the section above.
+That is a genuine trade and not a free win: a crash on one kind of recording
+against losing a speaker on another.
+
+Both are a one-file change, for anyone who wants to measure their own material:
+
+```bash
+curl -L -o models/diarization/segmentation.onnx \
+  https://huggingface.co/csukuangfj/sherpa-onnx-reverb-diarization-v1/resolve/main/model.onnx
+```
 
 ## The mover who becomes three people
 
