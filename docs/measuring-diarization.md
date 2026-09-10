@@ -626,6 +626,16 @@ floor is a plateau, not a tuned edge — and it does not recover him anyway,
 because his three turns never cluster into one 2.5 s cluster. They arrive as
 separate slivers of about a second each, and no floor above 1 s keeps those.
 
+A duration on its own turned out not to be enough in the other direction
+either. An eleven-minute degraded recording came back with a fifth speaker
+holding four and a half seconds — over the three-second floor, and 0.7% of the
+speech. The same four and a half seconds would be a fifth of a forty-second
+exchange. A cluster now has to clear both the floor and one percent of the
+recording's speech, which fixes the long case and leaves every short one alone;
+raising the absolute floor to five seconds fixes it too, and costs anybody who
+says three to five seconds in a recording short enough for that to be a real
+share of it.
+
 **Letting a cluster stand if it resembles nobody**, on the reasoning that a
 fragment of somebody present looks like them and a quiet stranger does not. This
 is wrong for a reason worth writing down: a one-second embedding is *unreliable*,

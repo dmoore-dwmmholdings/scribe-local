@@ -376,6 +376,20 @@ struct Fragment {
 /// same recording came back with twelve speakers.
 const MIN_SPEAKER_SPEECH_MS_DEFAULT: i64 = 3_000;
 
+/// A cluster must also hold this share of the recording's speech to be a person.
+///
+/// The absolute floor above is length-blind, and the residue left by splitting
+/// turns is not: a long recording accumulates bigger slivers simply by having
+/// more turns to leave them in. Four and a half seconds is a fifth of what a
+/// participant says in a forty-second exchange and seven tenths of one percent
+/// of an eleven-minute meeting, and only one of those is a person.
+///
+/// Measured, an eleven-minute degraded recording came back with a fifth speaker
+/// holding 0.7% of the speech; raising the absolute floor to five seconds also
+/// fixes it, and costs anybody who says three to five seconds in a *short*
+/// recording, where that is a real share of it. This keeps both ends.
+const MIN_SPEAKER_SHARE: f64 = 0.01;
+
 /// Experiment hook: `SCRIBE_MIN_SPEAKER_MS` overrides the floor, which is how
 /// its value was chosen. See docs/measuring-diarization.md.
 fn min_speaker_speech_ms() -> i64 {
@@ -469,10 +483,12 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     // is how a stated number of *people* is located in a sequence of merges
     // between *clusters*.
     let floor = min_speaker_speech_ms();
+    let total_speech: i64 = speech.iter().sum();
+    let substantial = |ms: i64| -> bool {
+        ms >= floor && (total_speech <= 0 || (ms as f64) / (total_speech as f64) >= MIN_SPEAKER_SHARE)
+    };
     let count_substantial = |alive: &[bool], speech: &[i64]| -> usize {
-        (0..alive.len())
-            .filter(|&k| alive[k] && speech[k] >= floor)
-            .count()
+        (0..alive.len()).filter(|&k| alive[k] && substantial(speech[k])).count()
     };
     let mut substantial: Vec<usize> = vec![count_substantial(&alive, &speech)];
 
@@ -589,9 +605,13 @@ fn fold_slight_speakers(fragments: &[Fragment], assignment: &mut [i32]) {
         *speech.entry(cluster).or_insert(0) += frag.speech_ms.max(0);
     }
 
+    let total: i64 = speech.values().sum();
     let surviving: Vec<i32> = speech
         .iter()
-        .filter(|(_, ms)| **ms >= floor)
+        .filter(|(_, ms)| {
+            **ms >= floor
+                && (total <= 0 || (**ms as f64) / (total as f64) >= MIN_SPEAKER_SHARE)
+        })
         .map(|(c, _)| *c)
         .collect();
     // Everything is slight - a very short recording. Nothing to fold into.
@@ -1220,6 +1240,32 @@ mod tests {
             assignment[2], assignment[0],
             "the scrap joins Alice, not Bob"
         );
+    }
+
+    /// The same amount of speech is a participant in a short recording and a
+    /// sliver in a long one, so the floor cannot be a duration alone.
+    #[test]
+    fn a_sliver_is_judged_against_the_length_of_the_recording() {
+        let alice = [1.0, 0.02, 0.0];
+        let bob = [0.0, 1.0, 0.02];
+
+        // A four-second scrap beside two people who talk for ten minutes each:
+        // under one percent of the speech, and not a participant.
+        let long = vec![
+            frag(Some(&alice), 0, 600_000),
+            frag(Some(&bob), 600_000, 1_200_000),
+            frag(Some(&[0.5, 0.5, 0.71]), 1_200_000, 1_204_000),
+        ];
+        assert_eq!(partition(&cluster_fragments(&long, None)).len(), 2);
+
+        // The same four seconds beside two people who talk for twenty: a fifth
+        // of the recording, and somebody.
+        let short = vec![
+            frag(Some(&alice), 0, 20_000),
+            frag(Some(&bob), 20_000, 40_000),
+            frag(Some(&[0.5, 0.5, 0.71]), 40_000, 44_000),
+        ];
+        assert_eq!(partition(&cluster_fragments(&short, None)).len(), 3);
     }
 
     /// Speaker indices must stay a contiguous 0..k-1 after folding, or a count
