@@ -58,7 +58,11 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| scribe_core::config::AsrConfig::default().resolved_num_threads());
     println!("threads          {threads}");
-    let engine = SpeechEngine::load_diarizer_only(&paths, "cpu", threads).expect("load diarizer");
+    // SCRIBE_ASR_DEVICE selects the ONNX execution provider (cpu / coreml / cuda).
+    let device = std::env::var("SCRIBE_ASR_DEVICE").unwrap_or_else(|_| "cpu".into());
+    println!("device           {device}");
+    let engine =
+        SpeechEngine::load_diarizer_only(&paths, &device, threads).expect("load diarizer");
 
     let started = std::time::Instant::now();
     let result = engine.diarizer().diarize(&wav, expected).expect("diarize");

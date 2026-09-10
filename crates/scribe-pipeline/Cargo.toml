@@ -10,6 +10,12 @@ default = ["onnx"]
 # Forwards the ML feature to the ASR/LLM crates.
 onnx = ["scribe-asr/onnx", "scribe-llm/local-embed"]
 
+# End-to-end transcript scoring; needs the ONNX models, so it does not exist in
+# a stub build. See docs/measuring-diarization.md.
+[[example]]
+name = "transcript_check"
+required-features = ["onnx"]
+
 [dependencies]
 scribe-core = { workspace = true }
 scribe-db = { workspace = true }

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use scribe_core::config::Config;
+use scribe_asr::SpeakerTurn;
 use scribe_core::types::Word;
 use scribe_core::Result;
 use scribe_db::transcript::NewUtterance;
@@ -207,6 +208,35 @@ fn first_json_array(s: &str) -> Option<String> {
 /// Length of the overlap between `[a0,a1]` and `[b0,b1]` (0 if disjoint).
 fn overlap(a0: i64, a1: i64, b0: i64, b1: i64) -> i64 {
     (a1.min(b1) - a0.max(b0)).max(0)
+}
+
+/// Label each word with the speaker who spoke it, exactly as the merge stage
+/// does — max-overlap assignment followed by smoothing of the strays.
+///
+/// Public so the labelling can be measured end to end against real ASR word
+/// timings and real diarization, which is the only place its accuracy actually
+/// shows: everything upstream can be right and a transcript still name the wrong
+/// person on every third line. Returns how many words the smoothing moved.
+pub fn label_words(words: &mut [Word], turns: &[SpeakerTurn]) -> usize {
+    let turns: Vec<TurnArtifact> = turns
+        .iter()
+        .map(|t| TurnArtifact {
+            local_idx: t.local_idx,
+            start_ms: t.start_ms,
+            end_ms: t.end_ms,
+        })
+        .collect();
+    let coverage = assign_speakers(words, &turns);
+    smooth_islands(words, &coverage)
+}
+
+/// Group labelled words into utterances, breaking on a speaker change or a long
+/// silence. Companion to [`label_words`]; see [`group_into_utterances`].
+pub fn utterance_spans(words: &[Word]) -> Vec<(Option<i32>, i64, i64, String)> {
+    group_into_utterances(words)
+        .into_iter()
+        .map(|u| (u.local_idx, u.start_ms, u.end_ms, u.text))
+        .collect()
 }
 
 /// Assign each word the diarized speaker who covers most of it.

@@ -49,6 +49,21 @@ SENTENCES = [
     "We keep discussing this in passing and never quite deciding, which is the real cost.",
     "My preference would be to split it, ship the read path now and the write path later.",
     "Honestly the documentation is worse than having none, because people trust it.",
+    "The migration script has been sitting in review for eleven days without a comment.",
+    "I would like us to agree what success looks like before we pick any of the options.",
+    "Two of the three integrations broke silently and we only found out from a customer.",
+    "There is no owner for that service, which is why nothing has been done about it.",
+    "Can we get the retention numbers split by plan rather than reported in aggregate?",
+    "My reading of the logs is that the retry storm made the outage considerably worse.",
+    "It would be worth asking the field team before we commit to that particular date.",
+    "We have three different definitions of an active user and all of them are in use.",
+    "The onboarding flow drops about forty percent of people at the verification step.",
+    "I would like to revisit the decision about the queue once the load testing is done.",
+    "Nobody wants to be the person who says this, but the estimate was never realistic.",
+    "Let us book thirty minutes on Thursday and work through the edge cases properly.",
+    "The last time we shipped on a Friday it cost us the whole of the weekend after it.",
+    "I have written it up in the document but I do not think anybody has opened it yet.",
+    "That assumes the vendor honours the timeline in their proposal, which is optimistic.",
 ]
 
 VOICES = ["Daniel", "Samantha", "Rishi", "Karen"]
@@ -99,7 +114,8 @@ for voice, wav in parts:
         assert w.getframerate() == 16000 and w.getnchannels() == 1
         data = w.readframes(w.getnframes())
         dur_ms = int(w.getnframes() * 1000 / 16000)
-    turns.append({"speaker": voice, "start_ms": cursor_ms, "end_ms": cursor_ms + dur_ms})
+    turns.append({"speaker": voice, "start_ms": cursor_ms, "end_ms": cursor_ms + dur_ms,
+                  "text": LINES[len(turns)][1]})
     frames.append(data)
     cursor_ms += dur_ms
     frames.append(gap_frames)

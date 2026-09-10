@@ -1,14 +1,19 @@
-# Measuring speaker detection
+# Measuring transcription and speaker detection
 
 `crates/scribe-asr/examples/diarize_check.rs` scores the real diarizer against a
 conversation whose speakers are known, and reports what fraction of speech was
 given to the right person. It is an example rather than a test because it needs
 the ONNX models and a WAV file.
 
+There are two harnesses. `diarize_check` (in `scribe-asr`) scores the diarizer
+on its own and needs only the two diarization models. `transcript_check` (in
+`scribe-pipeline`) scores what a reader actually sees — real ASR word timings,
+real diarization, and the merge stage's own labelling — and needs an ASR
+checkpoint as well.
+
 ## Get the models
 
-Only the diarization pair is needed — about 107 MB, against ~640 MB for an ASR
-checkpoint the harness never calls:
+The diarization pair is about 107 MB and is all `diarize_check` needs:
 
 ```bash
 mkdir -p models/diarization && cd models/diarization
@@ -33,6 +38,16 @@ Synthesised voices are not people — they are cleaner and more separable than a
 real room, so a score here is an upper bound, not a prediction. What it is good
 for is comparing one change against another on identical audio.
 
+Add Parakeet for `transcript_check` (about 670 MB):
+
+```bash
+mkdir -p models/asr/parakeet-tdt-0.6b-v3 && cd models/asr/parakeet-tdt-0.6b-v3
+R=https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main
+for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do
+  curl -L -o "$f" "$R/$f"
+done
+```
+
 ## Run it
 
 ```bash
@@ -41,9 +56,20 @@ DYLD_LIBRARY_PATH="$PWD/target/release" \
   ./target/release/examples/diarize_check models /tmp/diar/conversation.wav /tmp/diar/truth.json
 ```
 
-Pass a fourth argument to state the speaker count instead of discovering it.
+```bash
+cargo build --release -p scribe-pipeline --example transcript_check
+DYLD_LIBRARY_PATH="$PWD/target/release" \
+  ./target/release/examples/transcript_check models /tmp/diar/conversation.wav /tmp/diar/truth.json
+```
+
+Pass a fourth argument to `diarize_check` to state the speaker count instead of
+discovering it.
 Set `DIARIZE_CHECK_TURNS=1` to print every turn found against every turn spoken,
 which is how you see *where* it went wrong rather than only how far.
+`TRANSCRIPT_CHECK_LINES=1` prints the finished transcript with speaker names.
+`SCRIBE_DIARIZE_TIMING=1` splits diarization into segmentation and embedding;
+`SCRIBE_ASR_THREADS` and `SCRIBE_ASR_DEVICE` override the thread count and the
+execution provider.
 
 The `DYLD_LIBRARY_PATH` is needed because the sherpa-onnx dylib is emitted next
 to the binary without an rpath entry pointing at itself.
@@ -74,6 +100,43 @@ together into a single turn and gave it to Samantha.
 A wrong count is honoured rather than overridden — say 4 on the five-voice
 fixture and four speakers come back, at 88.9%. The stated number is the
 caller's to get right.
+
+## End to end
+
+`transcript_check`, discovering the speaker count, on a 15-core M-series machine:
+
+| fixture | transcribe | diarize | total | WER | right speaker | utterances |
+|---|---|---|---|---|---|---|
+| 4 voices, 2.5 min | 18.2x | 9.2x | 6.1x | 4.2% | 100.0% | 29 of 30 turns |
+| 4 voices, 11.1 min | 20.4x | 7.3x | 5.4x | 0.7% | 100.0% | 136 of 136 turns |
+
+Multiples are of real time, so 5.4x means an hour of audio in about eleven
+minutes. Two things worth reading off that table:
+
+**Diarization is the bottleneck, not transcription.** It runs at roughly a third
+the speed of ASR, and the two are separate pipeline stages, so effort spent
+making transcription faster is effort spent on the cheaper half.
+
+**Within diarization, segmentation is nearly all of it** — `SCRIBE_DIARIZE_TIMING`
+puts it at 13.5 s against 1.2 s of embedding on the 2.5-minute fixture, or 91%
+against 8%. Embedding every piece separately, which is what makes the speaker
+labelling work, costs almost nothing. sherpa-onnx exposes speaker diarization
+only as one object, so the segmentation model cannot currently be run without
+the embedding and clustering it does internally and this code then discards.
+
+The merge stage — assigning each word a speaker and smoothing the strays — does
+not register at millisecond resolution.
+
+Note that `smoothed` reads 0 on both fixtures: the stray-word smoothing never
+fires on audio this clean, so it remains unmeasured. It is written to be inert
+when diarization and ASR agree, and that is all these numbers show.
+
+## Execution provider
+
+`SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —
+23.0 s against 15.2 s on the 2.5-minute fixture, with identical accuracy. These
+models do not map onto the neural engine well enough to pay for the conversion.
+`cpu` is the right default here; the setting is there for CUDA.
 
 ## Threads
 

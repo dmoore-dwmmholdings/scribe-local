@@ -205,6 +205,7 @@ impl SherpaDiarizer {
             let slice = &audio.samples[start..end];
 
             // A window with no speech yields no result; that is not an error.
+            let t_seg = std::time::Instant::now();
             let Some(result) = diarizer.process(slice) else {
                 tracing::debug!(offset_ms, "diarize: window produced no segments");
                 start = end;
@@ -230,8 +231,20 @@ impl SherpaDiarizer {
             // speaker label instead makes its mistakes permanent: two similar
             // voices merged into one turn embed to a blend of the two, and no
             // amount of clustering afterwards can take them apart again.
+            let seg_secs = t_seg.elapsed().as_secs_f64();
+
+            let t_emb = std::time::Instant::now();
             let pieces = split_turns_at_silence(&local_turns, slice, sr);
             let piece_embs = compute_speaker_embeddings(&extractor, slice, sr, &pieces)?;
+            if std::env::var("SCRIBE_DIARIZE_TIMING").is_ok() {
+                eprintln!(
+                    "   window {:>6}ms  segment {:.1}s  embed {:.1}s over {} pieces",
+                    offset_ms,
+                    seg_secs,
+                    t_emb.elapsed().as_secs_f64(),
+                    pieces.len()
+                );
+            }
 
             for piece in &pieces {
                 fragments.push(Fragment {
