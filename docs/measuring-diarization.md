@@ -148,6 +148,36 @@ Checked against a known-bad setting — the cut threshold pushed to 0.95, which
 earlier sweeps showed breaks two fixtures — it reports three failures with the
 speaker counts and the shortfalls, and exits 1.
 
+## Languages other than English
+
+The default checkpoint, Parakeet TDT 0.6b v3, claims twenty-five European
+languages, and nothing here had ever spoken one. It works, with no configuration
+of any kind — there is no language setting and none is needed.
+
+| | word error rate | speakers | attribution |
+|---|---|---|---|
+| French, 2 voices, 36 s | 2.8% | 2 of 2 | 100% |
+| German, 1 voice, 29 s | **0.0%** | 1 of 1 | — |
+
+Diarization does not care about language at all, which is expected — it measures
+voices rather than words — and is worth having measured rather than assumed.
+
+The English fixtures were already testing more than English, incidentally. The
+default voices are British, American, Indian and Australian, and the larger sets
+add Irish and South African.
+
+### A warning that cost an hour
+
+The first German fixture scored 43.2%, which reads as the language being badly
+supported. It is not: it was built from macOS *character* voices — Eddy, Rocko,
+Grandma and the rest, the stylised ones — and those are not speech. The same
+script through Anna, the natural German voice, transcribes at 0.0%.
+
+`make-diar-fixture.py` now refuses a voice macOS lists with a parenthesised
+name, and says why. That is the third time on this branch a fixture has produced
+a confident wrong conclusion — after one that repeated its lines and one whose
+turns were all the same length.
+
 ## Small and degenerate recordings
 
 Not every recording is a meeting.

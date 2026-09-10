@@ -21,7 +21,7 @@ Synthesised voices are not people: cleaner and more separable than a real room,
 so treat a score from this as an upper bound and a way to compare two changes on
 identical audio, not as a prediction of field accuracy.
 """
-import json, os, subprocess, sys, wave
+import json, os, re, subprocess, sys, wave
 
 import numpy as np
 
@@ -79,10 +79,42 @@ SENTENCES = [
 # Four by default. `SCRIBE_FIXTURE_VOICES` takes a comma-separated list, for a
 # larger meeting — a room of eight is ordinary and is a different problem from a
 # room of four, since every extra voice is another chance to confuse two.
+# Use the *natural* voices only. macOS also ships character voices — Eddy,
+# Rocko, Grandma, Bells and the rest — and they are not speech: the same German
+# script transcribes at 0.0% word error rate through Anna and 82.5% through two
+# of those, which reads as the language being unsupported when it is not.
+#
+# The defaults span accents deliberately: British, American, Indian, Australian,
+# and with more voices Irish and South African.
 VOICES = os.environ.get(
     "SCRIBE_FIXTURE_VOICES", "Daniel,Samantha,Rishi,Karen"
 ).split(",")
+
+_CHARACTER_VOICE = (
+    "a character voice rather than a natural one — those do not transcribe and "
+    "will look like a broken model"
+)
 # Round robin through the voices, and never repeat a line.
+def check_voices():
+    """Refuse a voice macOS lists with a parenthesised name.
+
+    Those are the character voices, and a fixture built from them measures the
+    fixture rather than the code.
+    """
+    listed = subprocess.run(["say", "-v", "?"], capture_output=True, text=True).stdout
+    known = {}
+    for line in listed.splitlines():
+        # "Name  lang_TAG  # sample" — the tag is what separates name from rest.
+        m = re.match(r"^(.*?)\s+([a-z]{2}(?:_[A-Z]{2})?)\s*#", line)
+        if m:
+            known[m.group(1).strip()] = "(" in m.group(1)
+    for v in VOICES:
+        if v not in known:
+            raise SystemExit(f"no such voice: {v!r} (try: say -v '?')")
+        if known[v]:
+            raise SystemExit(f"{v!r} is {_CHARACTER_VOICE}")
+
+
 def build_lines(turns, offset=0):
     """Round-robin the voices, and never speak the same line twice.
 
@@ -106,6 +138,7 @@ def build_lines(turns, offset=0):
     ]
 
 
+check_voices()
 LINES = build_lines(
     int(sys.argv[2]) if len(sys.argv) > 2 else 30,
     int(sys.argv[4]) if len(sys.argv) > 4 else 0,
