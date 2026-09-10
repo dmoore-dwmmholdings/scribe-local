@@ -881,17 +881,28 @@ Every fixture that was already counted correctly is byte-identical — one to
 eight voices, clean, reverberant, noisy, moving, phone, and the eleven-minute
 windowed pair.
 
-**The threshold is on a narrow band, and that is worth saying plainly.** Twelve
-measured recordings separate cleanly — the five miscounted ones sit at 0.447 to
-0.715 of their median, the seven correct ones at 0.752 to 0.954 — so the
-threshold has to fall between 0.715 and 0.752, and 0.73 is what it is. Sweeping
-confirms the shape: 0.70 stops fixing the 12 dB case, 0.78 starts splitting a
-six-voice recording that was already right. That is a band about 0.04 wide,
-fitted to twelve measurements, and a wider or more realistic set could move it.
+**The band was measured twice and it is wider than it first looked.** On the
+original fixtures twelve recordings separated at 0.715 to 0.752, which put the
+threshold in a gap about 0.04 wide and this section said so, with the warning
+that a more realistic set could move it. It did. Swept again on the rebuilt
+fixtures — the ones that no longer repeat each sentence four times — the working
+band is 0.73 to 0.88:
 
-0.73 sits at the low edge on purpose. Too low and the step-back does nothing,
-which is where this started; too high and it invents speakers. The quiet failure
-is the better one to have.
+| ratio | 8 voices, reverb | 6 voices, reverb | brief 5th speaker |
+|---|---|---|---|
+| 0.65 | 7 spk, 86.4% | 6 spk, 98.1% | 5 spk, 99.6% |
+| **0.73–0.88** | **8 spk, 98.6%** | **6 spk, 98.1%** | **5 spk, 99.6%** |
+| 0.92 | 8 spk, 98.6% | 6 spk, 98.1% | 6 spk, 94.4% |
+| 0.96 | 8 spk, 98.6% | 8 spk, 91.5% | 7 spk, 92.1% |
+
+Below the band the step-back stops firing and the eight-voice recording loses a
+speaker; above it, it fires where it should not and the brief real participant
+is split in two. 0.73 still works and still sits at the low edge, where the
+failure is doing nothing rather than inventing somebody — but it is not perched
+on a cliff, which is what the earlier measurement suggested.
+
+The step-back itself is worth 12.2 points on eight voices in a reverberant room
+(86.4% to 98.6%) and changes nothing on any other fixture.
 
 ## Cleaning the audio first makes everything worse
 
