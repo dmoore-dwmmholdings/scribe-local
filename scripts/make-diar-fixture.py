@@ -3,7 +3,7 @@
 Writes `conversation.wav` (16 kHz mono) and `truth.json` recording exactly who
 spoke when, for `cargo run --example diarize_check`. See docs/measuring-diarization.md.
 
-    python3 scripts/make-diar-fixture.py <output-dir> [turns] [overlap-ms]
+    python3 scripts/make-diar-fixture.py <output-dir> [turns] [overlap-ms] [line-offset]
 
 With no turn count it builds a short conversation. Pass a larger number for a
 recording over ten minutes, which is where diarization switches to windowing the
@@ -12,6 +12,10 @@ audio and stitching the speaker sets back together.
 An overlap in milliseconds makes every third turn start that far inside the one
 before it, so two people are talking at once. Real conversation does this
 constantly and a fixture built by concatenation can never show it.
+
+A line offset starts the same voices on different sentences, for a second
+recording of the same people saying something else — which is what testing
+whether a name sticks across recordings needs.
 
 Synthesised voices are not people: cleaner and more separable than a real room,
 so treat a score from this as an upper bound and a way to compare two changes on
@@ -74,7 +78,7 @@ SENTENCES = [
 
 VOICES = ["Daniel", "Samantha", "Rishi", "Karen"]
 # Round robin through the voices, and never repeat a line.
-def build_lines(turns):
+def build_lines(turns, offset=0):
     """Round-robin the voices, and never speak the same line twice.
 
     Identical text through one voice synthesises to identical audio, which
@@ -89,12 +93,18 @@ def build_lines(turns):
             "add more sentences to the bank"
         )
     return [
-        (VOICES[i % len(VOICES)], SENTENCES[(i // len(VOICES)) % len(SENTENCES)])
+        (
+            VOICES[i % len(VOICES)],
+            SENTENCES[(offset + i // len(VOICES)) % len(SENTENCES)],
+        )
         for i in range(turns)
     ]
 
 
-LINES = build_lines(int(sys.argv[2]) if len(sys.argv) > 2 else 30)
+LINES = build_lines(
+    int(sys.argv[2]) if len(sys.argv) > 2 else 30,
+    int(sys.argv[4]) if len(sys.argv) > 4 else 0,
+)
 
 out_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 os.makedirs(out_dir, exist_ok=True)

@@ -16,6 +16,11 @@ onnx = ["scribe-asr/onnx", "scribe-llm/local-embed"]
 name = "transcript_check"
 required-features = ["onnx"]
 
+# Cross-recording voiceprint matching; needs the diarization models.
+[[example]]
+name = "enroll_check"
+required-features = ["onnx"]
+
 [dependencies]
 scribe-core = { workspace = true }
 scribe-db = { workspace = true }

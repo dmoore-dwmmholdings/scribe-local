@@ -27,7 +27,7 @@ const STAGE: &str = "diarize";
 /// sit near 0.95 on a close mic and near 0.5 across a room, so the number that
 /// means "same person" in one recording means nothing in another. The clustering
 /// in `scribe-asr` gave up fixed thresholds for exactly this reason.
-const ENROLL_MATCH_THRESHOLD: f32 = 0.5;
+pub const ENROLL_MATCH_THRESHOLD: f32 = 0.5;
 
 /// How far a voice must stand out from the rest of the library to be called a
 /// match.
@@ -61,6 +61,26 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
+/// How far below the matches already accepted in this recording a further match
+/// may fall before it is refused.
+///
+/// The last thing a fixed threshold cannot do. Measured across two meetings of
+/// the same people: a voice recognised through the same microphone scores about
+/// 0.99 against its own voiceprint, and through a different room about 0.56 —
+/// while a *different person* in a good room scored 0.599 against somebody
+/// else's voiceprint. The false match is numerically stronger than the true one.
+/// No cutoff on similarity, and no requirement to stand clear of the rest of the
+/// library, can separate those two: the first accepts both, the second accepts
+/// both.
+///
+/// What separates them is the company they keep. Recognition is not one
+/// question asked repeatedly, it is one recording — the same microphone, the
+/// same room, the same distance — so the voices that *are* recognised in it
+/// establish what recognition looks like here. Against Daniel and Rishi at 0.99,
+/// a third voice at 0.599 is not a quieter version of the same event. Against
+/// Daniel and Rishi at 0.59 and 0.69, a third at 0.561 plainly is.
+const MATCH_CONSISTENCY: f32 = 0.75;
+
 /// Resolve a recording's diarized voices against the enrolled ones, one to one.
 ///
 /// Matching each voice independently against its own nearest enrolled speaker
@@ -81,7 +101,11 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// out against, never a weak consolation.
 ///
 /// `voices` is `(local_idx, embedding)`; `enrolled` is `(speaker_id, voiceprint)`.
-fn resolve_identities(
+///
+/// Public so it can be measured against voiceprints taken from one recording and
+/// voices diarized from another, which is the only setting where it means
+/// anything — the whole point is a name surviving from one meeting to the next.
+pub fn resolve_identities(
     voices: &[(i32, Vec<f32>)],
     enrolled: &[(Uuid, Vec<f32>)],
     threshold: f32,
@@ -124,12 +148,23 @@ fn resolve_identities(
 
     let mut resolved: HashMap<i32, (Uuid, f32)> = HashMap::new();
     let mut claimed: HashSet<Uuid> = HashSet::new();
+    let mut accepted: Vec<f32> = Vec::new();
     for (sim, local_idx, speaker_id) in candidates {
         if resolved.contains_key(&local_idx) || claimed.contains(&speaker_id) {
             continue;
         }
+        // Judged against the recognitions this recording has already produced.
+        // Candidates arrive best first, so the strongest match sets the standard
+        // and the rest are held to it; with nothing accepted yet there is no
+        // standard, and the floor and separation are all there is.
+        if let Some(standard) = median(&accepted) {
+            if sim < MATCH_CONSISTENCY * standard {
+                continue;
+            }
+        }
         resolved.insert(local_idx, (speaker_id, sim));
         claimed.insert(speaker_id);
+        accepted.push(sim);
     }
     resolved
 }
@@ -362,23 +397,72 @@ mod tests {
     }
 
     /// Separation is judged per pair, so losing a contested person does not cost
-    /// a voice a second choice it also stands clear of.
+    /// a voice a second choice — provided that second choice is also the kind of
+    /// match this recording is producing.
     #[test]
     fn a_second_choice_must_stand_out_on_its_own_terms() {
         let alice = unit(&[1.0, 0.0, 0.0]);
         let bob = unit(&[0.0, 1.0, 0.0]);
         let carol = unit(&[0.0, 0.0, 1.0]);
         let voices = vec![
-            // Wants Alice, but is also clearly Bob-ish and not at all Carol-ish.
+            // Wants Alice, is clearly Bob-ish, and not Carol at all.
             (0, unit(&[0.75, 0.66, 0.0])),
-            // Unambiguously Alice.
-            (1, unit(&[1.0, 0.02, 0.0])),
+            // Wants Alice more.
+            (1, unit(&[0.8, 0.6, 0.0])),
         ];
         let enrolled = vec![(id(1), alice), (id(2), bob), (id(3), carol)];
 
         let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
         assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(1)), "Alice to voice 1");
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(2)), "voice 0 falls to Bob");
+    }
+
+    /// The case no cutoff on similarity can decide, measured across two meetings
+    /// of the same people: a stranger in a good room scored 0.599 against
+    /// somebody's voiceprint while that person, recognised through a different
+    /// room, scored 0.561 against their own. The false match is the stronger
+    /// number. What tells them apart is the rest of the recording.
+    #[test]
+    fn a_match_far_weaker_than_the_recordings_others_is_refused() {
+        let enrolled = vec![
+            (id(1), unit(&[1.0, 0.0, 0.0, 0.0])),
+            (id(2), unit(&[0.0, 1.0, 0.0, 0.0])),
+            (id(3), unit(&[0.0, 0.0, 1.0, 0.0])),
+        ];
+        // Two voices recognised through the same microphone, and a third that
+        // is merely somewhat like the person it is nearest to.
+        let voices = vec![
+            (0, unit(&[0.99, 0.05, 0.05, 0.0])),
+            (1, unit(&[0.05, 0.99, 0.05, 0.0])),
+            (2, unit(&[0.05, 0.05, 0.60, 0.80])),
+        ];
+
+        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
+        assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(2)));
+        assert!(
+            resolved.get(&2).is_none(),
+            "0.60 is not the same event as 0.99, in one recording"
+        );
+    }
+
+    /// The same weak match stands when it is what the recording is producing —
+    /// everybody heard through a bad room, rather than one odd voice.
+    #[test]
+    fn a_uniformly_weak_recording_still_recognises_everyone() {
+        let enrolled = vec![
+            (id(1), unit(&[1.0, 0.0, 0.0, 0.0])),
+            (id(2), unit(&[0.0, 1.0, 0.0, 0.0])),
+            (id(3), unit(&[0.0, 0.0, 1.0, 0.0])),
+        ];
+        let voices = vec![
+            (0, unit(&[0.60, 0.05, 0.05, 0.79])),
+            (1, unit(&[0.05, 0.62, 0.05, 0.78])),
+            (2, unit(&[0.05, 0.05, 0.58, 0.81])),
+        ];
+
+        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        assert_eq!(resolved.len(), 3, "resolved = {resolved:?}");
     }
 
     #[test]

@@ -202,6 +202,58 @@ It is now a count rather than a repair, logged at debug level. If a real
 recording produces these, the log says so, which is the evidence a repair would
 need and more than the original ever had.
 
+## Names across recordings
+
+`enroll_check` is the only harness that spans two recordings, which is the only
+setting where enrollment means anything: within one recording a voice has to be
+told apart from the others present and is compared against itself through the
+same microphone, and across recordings it has to be recognised through a
+different one.
+
+```bash
+cargo run --release -p scribe-pipeline --example enroll_check -- \
+    models A.wav A-truth.json B.wav B-truth.json Karen -Samantha
+```
+
+Voiceprints are taken from the diarized voices of A, which is what enrolling
+from a recording does. A bare name is withheld from enrollment — that person is
+in both meetings and must come back unrecognised, which is the false-positive
+test. A name prefixed with `-` is present in B's audio but hidden from the
+matcher, so anyone who resembles them competes for their identity unopposed.
+
+Two meetings of the same four people, saying nothing in common:
+
+| B's condition | recognised | misidentified | false positives |
+|---|---|---|---|
+| same room as A | 3 of 3 | 0 | 0 |
+| different room, noise, one speaker quiet | 3 of 3 | 0 | 0 |
+| Samantha enrolled but absent from B | 2 of 2 | 0 | 0 |
+
+The similarities behind that are the interesting part:
+
+| | own voiceprint | nearest other |
+|---|---|---|
+| same room | 0.987 – 0.990 | 0.599 |
+| different room | 0.561 – 0.689 | 0.303 |
+
+A voice recognised through the same microphone sits near 0.99. The same voice
+through a different room sits near 0.56. And a *different person* in a good room
+scored **0.599** against somebody else's voiceprint — a higher number than the
+true match in the bad room. That is the measurement that decides the design: no
+cutoff on similarity separates those two cases, and neither does requiring the
+match to stand clear of the rest of the enrolled library, because both pass
+both.
+
+What separates them is the rest of the recording. Recognition is not one
+question asked repeatedly; it is one microphone in one room. Against two voices
+recognised at 0.99, a third at 0.599 is not the same kind of event. Against two
+at 0.59 and 0.69, a third at 0.561 plainly is. So a match must also be within
+three quarters of the median match this recording has already produced. With
+nothing accepted yet there is no standard to hold it to, and the floor and the
+separation are all there is.
+
+Before that rule, case three above returned Karen named as Samantha.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —
