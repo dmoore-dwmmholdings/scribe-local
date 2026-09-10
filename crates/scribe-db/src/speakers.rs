@@ -52,11 +52,17 @@ impl Db {
     /// Same order as [`Db::list_speakers`]; the count comes from
     /// `recording_speakers`, so it reflects both manual tags and voiceprint
     /// auto-matches.
+    ///
+    /// Counted over **distinct recordings**, not rows. One person can hold two
+    /// of a recording's diarized speakers — that is how a user merges a voice
+    /// diarization split in two — and counting rows reported them as two
+    /// recordings, so tidying up a transcript inflated the number next to that
+    /// person's name on the Speakers screen.
     pub async fn list_speakers_with_usage(&self) -> Result<Vec<(Speaker, i64)>> {
         let sql = format!(
             "SELECT {COLS}, \
-             (SELECT count(*) FROM recording_speakers rs WHERE rs.speaker_id = s.id) \
-                 AS recording_count \
+             (SELECT count(DISTINCT rs.recording_id) FROM recording_speakers rs \
+                WHERE rs.speaker_id = s.id) AS recording_count \
              FROM speakers s ORDER BY s.display_name"
         );
         let rows = sqlx::query(&sql)

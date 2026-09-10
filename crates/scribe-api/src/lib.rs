@@ -22,6 +22,7 @@
 //! DELETE /recordings/{id}                               (recording + derived rows + blobs)
 //! POST   /recordings/{id}/complete
 //! POST   /recordings/{id}/reprocess                     (re-run the whole pipeline)
+//! POST   /recordings/{id}/rediarize                     (re-run speaker detection only)
 //! POST   /recordings/{id}/summarize                     (re-summarize w/ template, adds a view)
 //! POST   /recordings/{id}/translate                      (translate the summary via the LLM)
 //! PUT    /recordings/{id}/tags                           (replace org tags)
@@ -97,6 +98,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/recordings/{id}/reprocess",
             post(handlers::recordings::reprocess_recording),
+        )
+        .route(
+            "/recordings/{id}/rediarize",
+            post(handlers::recordings::rediarize_recording),
         )
         .route(
             "/recordings/{id}/summarize",

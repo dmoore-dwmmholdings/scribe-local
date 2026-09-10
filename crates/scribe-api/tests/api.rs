@@ -639,6 +639,117 @@ async fn full_api_flow() {
         "deleting a speaker un-tags the recordings it was in"
     );
 
+    // --- rediarize --------------------------------------------------------
+    // With no stored transcript there is nothing to re-diarize against, and the
+    // caller is told to reprocess rather than left with a recording that fails
+    // in the merge stage.
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/rediarize"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "rediarize without a transcript: {body}");
+
+    // Give it the transcript a completed transcribe stage would have left, plus
+    // the `done` transcode/transcribe jobs that stage would have produced.
+    sqlx::query(
+        "INSERT INTO recording_artifacts (recording_id, kind, data, created_at) \
+         VALUES ($1, 'transcript', $2, now()), ($1, 'diarization', $3, now())",
+    )
+    .bind(rec_id)
+    .bind(json!({ "text": "hello there", "words": [] }))
+    .bind(json!({ "turns": [], "num_speakers": 2 }))
+    .execute(db.pool())
+    .await
+    .unwrap();
+    for kind in ["transcode", "transcribe"] {
+        sqlx::query("INSERT INTO jobs (recording_id, kind, payload, state) VALUES ($1, $2, '{}', 'done')")
+            .bind(rec_id)
+            .bind(kind)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/rediarize"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "rediarize status: {body}");
+    assert_eq!(body["status"], "processing");
+
+    // The expensive thing survives; the diarization hand-off does not.
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM recording_artifacts WHERE recording_id = $1 ORDER BY kind",
+    )
+    .bind(rec_id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(kinds, vec!["transcript"], "transcript kept, diarization cleared");
+
+    // Transcription is not queued to run again, and merge's gate still sees it.
+    let queued: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM jobs WHERE recording_id = $1 AND state = 'queued' ORDER BY kind",
+    )
+    .bind(rec_id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        queued.contains(&"diarize".to_string()),
+        "diarize is queued: {queued:?}"
+    );
+    assert!(
+        !queued.contains(&"transcribe".to_string()),
+        "transcription is not re-run: {queued:?}"
+    );
+    let transcribe_done: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs \
+         WHERE recording_id = $1 AND kind = 'transcribe' AND state = 'done'",
+    )
+    .bind(rec_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(transcribe_done, 1, "the completed transcribe job stands");
+    assert!(
+        !db.predecessors_done(rec_id, scribe_core::types::JobKind::Merge)
+            .await
+            .unwrap(),
+        "merge waits for the new diarize job"
+    );
+
+    // Speaker labels and everything built on them are cleared for the re-run.
+    assert!(
+        db.list_recording_speakers(rec_id).await.unwrap().is_empty(),
+        "diarized speakers cleared on rediarize"
+    );
+    assert!(
+        db.list_utterances_by_recording(rec_id).await.unwrap().is_empty(),
+        "utterances cleared on rediarize"
+    );
+
+    let (status, _) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{}/rediarize", Uuid::new_v4()))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "rediarize unknown recording is 404");
+
     // --- reprocess (Feature D) -------------------------------------------
     // Re-runs the whole pipeline: derived data (utterances/chunks/summaries) is
     // wiped, status flips to processing, and a fresh transcode job is enqueued.

@@ -293,6 +293,88 @@ impl Db {
         Ok(())
     }
 
+    /// Reset a recording so diarization runs again over the existing transcript.
+    ///
+    /// Stating the speaker count after the fact is the one correction a user can
+    /// make that reliably improves diarization — and until now taking it cost a
+    /// full reprocess, which re-transcribes. Transcription is the most expensive
+    /// stage in the pipeline and the speaker count has no bearing on it
+    /// whatsoever, so correcting a count meant paying for the one thing that
+    /// could not change. The loop was slow enough that the correction was not
+    /// worth making.
+    ///
+    /// So: keep the transcript, clear everything downstream of diarization, and
+    /// leave the `transcode` and `transcribe` jobs `done` — the merge stage is
+    /// gated on seeing a completed job of each of its predecessor kinds, and
+    /// transcribe genuinely is complete.
+    ///
+    /// Returns `false` and changes nothing when there is no stored transcript to
+    /// reuse (a recording processed before scratch artifacts existed, or one
+    /// whose artifacts were cleared); the caller should fall back to a full
+    /// reprocess. `"transcript"` is `scribe_pipeline::artifacts::KIND_TRANSCRIPT`.
+    pub async fn reset_for_rediarize(&self, id: Uuid) -> Result<bool> {
+        let mut tx = self.pool().begin().await.map_err(db_err)?;
+
+        let has_transcript: i64 = sqlx::query(
+            "SELECT count(*) AS n FROM recording_artifacts              WHERE recording_id = $1 AND kind = 'transcript'",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .try_get("n")
+        .map_err(db_err)?;
+        if has_transcript == 0 {
+            return Ok(false);
+        }
+
+        // Everything diarization feeds. Utterances carry the speaker labels,
+        // chunks and summaries are built from utterances, and recording_speakers
+        // is re-derived — enrolled identities live in `speakers` and are
+        // untouched, so a tagged voice comes back named by voiceprint.
+        for table in ["utterances", "chunks", "summaries", "recording_speakers"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE recording_id = $1"))
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        }
+
+        // The diarization hand-off only. The transcript stays put — it is the
+        // whole point of this path.
+        sqlx::query(
+            "DELETE FROM recording_artifacts WHERE recording_id = $1 AND kind = 'diarization'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+        // Drop the stages about to run again, so their fresh jobs are not
+        // refused by the partial unique index and their old `done` rows do not
+        // gate a successor early. Transcode and transcribe are deliberately left
+        // standing.
+        sqlx::query(
+            "DELETE FROM jobs WHERE recording_id = $1              AND kind IN ('diarize', 'merge', 'embed', 'summarize')",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+        let affected = sqlx::query("UPDATE recordings SET status = $2 WHERE id = $1")
+            .bind(id)
+            .bind(RecordingStatus::Processing.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        not_found_if_zero(affected, id)?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(true)
+    }
+
     /// Every distinct tag in use across all recordings, sorted alphabetically.
     pub async fn distinct_tags(&self) -> Result<Vec<String>> {
         let rows = sqlx::query(

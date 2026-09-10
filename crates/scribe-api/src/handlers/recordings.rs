@@ -350,6 +350,45 @@ pub async fn reprocess_recording(
     ))
 }
 
+/// `POST /recordings/{id}/rediarize` → run speaker detection again over the
+/// transcript already on file.
+///
+/// The correction a user can actually make to diarization is stating how many
+/// people are in the room, and `PUT .../participants` records it — but taking it
+/// up meant `reprocess`, which re-transcribes. Transcription is the most
+/// expensive stage in the pipeline and the speaker count has no bearing on it,
+/// so the one useful correction was also the slowest thing to act on.
+///
+/// This re-runs `diarize → merge → {embed, summarize}` against the stored
+/// transcript and leaves transcription alone. 404 if the recording doesn't
+/// exist; 409 when there is no stored transcript to reuse, pointing at
+/// `reprocess`, which can always rebuild one. Responds 202.
+pub async fn rediarize_recording(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    state.db.get_recording(id).await?;
+
+    if !state.db.reset_for_rediarize(id).await? {
+        return Err(ApiError(Error::Conflict(
+            "no stored transcript to re-diarize against; use POST /recordings/{id}/reprocess"
+                .into(),
+        )));
+    }
+
+    // Diarize is the entry point; its successors cascade from there, and merge's
+    // gate is satisfied by the transcribe job left standing as `done`.
+    state.db.enqueue(id, JobKind::Diarize, json!({})).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "id": id,
+            "status": RecordingStatus::Processing.as_str(),
+        })),
+    ))
+}
+
 /// Body for `POST /recordings/{id}/summarize`. `template` is optional; absent →
 /// `general`.
 #[derive(Debug, Default, Deserialize)]
