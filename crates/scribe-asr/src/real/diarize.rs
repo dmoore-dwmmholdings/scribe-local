@@ -684,6 +684,18 @@ const RELATIVE_DROP: f32 = 0.8;
 
 /// Decide where to stop merging, using only this recording's own numbers.
 ///
+/// The obvious alternative — cut where the sequence falls away most steeply,
+/// the standard elbow — was measured against this across fourteen fixtures and
+/// is far worse on every one of them. Similarities approach zero as the last
+/// unrelated clusters are forced together, so the sharpest *ratio* is almost
+/// always among the final merges, and the rule collapses recordings to one or
+/// two speakers: five voices came back as one, four as one, and the
+/// over-segmented recording it was written to rescue came back as three rather
+/// than the four it should be. Comparing against the family of merges already
+/// accepted, rather than against the single merge before, is what keeps the
+/// comparison anchored to what "same voice" looked like earlier in this
+/// recording instead of to how far the sequence has fallen by now.
+///
 /// Walks the merge sequence in order. Each merge is compared against the median
 /// of the merges already accepted: while clustering is joining takes of the same
 /// voice the similarities stay in family, and the first one that falls well

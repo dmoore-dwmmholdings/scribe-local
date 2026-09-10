@@ -476,6 +476,21 @@ spectral change and the same thing that broke both cheap substitutes for
 segmentation. The normalisation was measured and removed, since a no-op with a
 good explanation is still a no-op.
 
+**Can the clustering work it out by itself?** The merge sequence looks like it
+should be able to. On the moving fixture the cut lands on a fall of 1.03x and
+leaves six speakers, while three merges later there is a fall of 2.27x that is
+plainly where four people become three.
+
+Cutting at the steepest fall instead — the standard elbow — is much worse, on
+all fourteen fixtures. Similarity approaches zero as the last unrelated clusters
+are forced together, so the sharpest ratio is almost always among the final
+merges: five voices come back as one, four as one, and the moving recording this
+was meant to rescue comes back as three. The rule in place compares each merge
+against the family of merges already accepted rather than against the one
+before it, which keeps it anchored to what "same voice" looked like earlier in
+*this* recording rather than to how far the sequence has fallen by now. It
+stays.
+
 **The speaker count fixes this one.** Which is worth putting beside the
 television below, because the two failures look alike and want opposite things:
 
