@@ -24,9 +24,25 @@ use crate::models::DiarizationModelPaths;
 use crate::types::{Diarization, Diarizer, SpeakerTurn};
 use crate::wav::{self, WavData};
 
-/// Cosine-similarity threshold used when the speaker count is unknown. Also
-/// reused to re-identify a speaker across windows in the chunked path.
-const CLUSTER_THRESHOLD: f32 = 0.5;
+/// How readily the segmentation model's own clustering joins two stretches
+/// within a window.
+///
+/// This looks inert, because the speaker labels it produces are thrown away —
+/// every piece is renumbered and clustered again across the whole recording.
+/// It is not: how sherpa clusters changes the segments it emits, and those are
+/// kept. Measured, moving it from 0.5 to 0.8 takes a six-voice degraded
+/// recording from 94.4% to 95.7% and a recording with somebody moving about
+/// from 99.4% to 99.7%, with nothing worse anywhere.
+///
+/// Higher means it merges less, which is what this code wants for the same
+/// reason it discovers each window's voices without a target count: finer
+/// segments are repairable downstream and merged ones are not.
+///
+/// 0.8 rather than 0.9 because 0.9 costs a recording with a television playing
+/// in it, and rather than 0.7 because most of the gain is above it. The
+/// response is not smooth — 0.6 returns eight speakers where 0.5 and 0.7 both
+/// return six — so 0.8 sits in the middle of the stable region, not on an edge.
+const CLUSTER_THRESHOLD: f32 = 0.8;
 
 /// Diarize at most this much audio in one `process` call.
 ///
@@ -77,14 +93,30 @@ const EMBED_BUDGET_MS: i64 = 60_000;
 ///
 /// People do not swap places mid-breath; a handover has a pause in it. Below a
 /// quarter of a second a gap is punctuation inside one person's sentence.
-const MIN_SPLIT_SILENCE_MS: i64 = 250;
+const MIN_SPLIT_SILENCE_MS_DEFAULT: i64 = 250;
+
+/// Experiment hooks for the split, which was chosen by judgement and never
+/// measured. See docs/measuring-diarization.md.
+fn min_split_silence_ms() -> i64 {
+    std::env::var("SCRIBE_SPLIT_SILENCE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MIN_SPLIT_SILENCE_MS_DEFAULT)
+}
+
+fn silence_ratio() -> f32 {
+    std::env::var("SCRIBE_SILENCE_RATIO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SILENCE_RATIO_DEFAULT)
+}
 
 /// How quiet, relative to the speech around it, a stretch has to be to count as
 /// silence.
 ///
 /// Measured against the turn's own loudness rather than an absolute level, so
 /// the same rule works on a close mic and across a room.
-const SILENCE_RATIO: f32 = 0.15;
+const SILENCE_RATIO_DEFAULT: f32 = 0.15;
 
 /// Frame size for the silence scan. Fine enough to place a boundary accurately,
 /// coarse enough that one quiet glottal stop is not a pause.
@@ -121,7 +153,10 @@ impl SherpaDiarizer {
         let provider = provider_for(&self.device);
         let clustering = FastClusteringConfig {
             num_clusters: -1,
-            threshold: CLUSTER_THRESHOLD,
+            threshold: std::env::var("SCRIBE_CLUSTER_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(CLUSTER_THRESHOLD),
         };
 
         let config = OfflineSpeakerDiarizationConfig {
@@ -972,7 +1007,7 @@ fn compute_speaker_embeddings(
 fn split_turns_at_silence(turns: &[SpeakerTurn], samples: &[f32], sample_rate: u32) -> Vec<SpeakerTurn> {
     let sr = sample_rate as i64;
     let frame = ((SILENCE_FRAME_MS * sr) / 1000).max(1) as usize;
-    let min_run = (MIN_SPLIT_SILENCE_MS / SILENCE_FRAME_MS).max(1) as usize;
+    let min_run = (min_split_silence_ms() / SILENCE_FRAME_MS).max(1) as usize;
 
     let mut out = Vec::with_capacity(turns.len());
     let mut next_idx = 0i32;
@@ -998,7 +1033,7 @@ fn split_turns_at_silence(turns: &[SpeakerTurn], samples: &[f32], sample_rate: u
             .map(|c| (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt())
             .collect();
         let mean = energies.iter().sum::<f32>() / energies.len() as f32;
-        let threshold = mean * SILENCE_RATIO;
+        let threshold = mean * silence_ratio();
 
         // Runs of quiet frames long enough to be a handover; the boundary goes
         // in the middle of each, so neither side carries the other's silence.

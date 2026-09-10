@@ -117,6 +117,37 @@ at the same similarities (0.58, 0.60, 0.64 through the database against 0.56 to
 0.69 in-process), so the pgvector round-trip is faithful. The numbers on this
 page are about the shipped pipeline, not only about the models.
 
+## The constants, and which of them were guessed
+
+Most of the numbers in this code were chosen by argument and then left. Going
+back over them:
+
+| | swept | outcome |
+|---|---|---|
+| cut threshold (0.8) | yes, twice | plateau 0.70–0.85; 0.90 breaks two fixtures |
+| participant floor (3 s + 1%) | yes, twice | a duration alone is length-blind; see below |
+| enrolment floor (0.5) | yes | 0.5–0.6 identical; 0.65 loses a bad room |
+| match consistency (0.75) | yes | cannot be loosened — the numbers collide |
+| silence for a split (250 ms) | yes | 180–250 identical; 350+ costs short turns |
+| silence ratio (0.15) | yes | 0.05–0.25 identical; 0.40 is a cliff |
+| **per-window clustering (0.8)** | **yes** | **was 0.5, and 0.5 was worse** |
+
+The last one is worth its own note. It sets how readily the segmentation model's
+own clustering joins two stretches, and it looks inert, because those speaker
+labels are thrown away — every piece is renumbered and clustered again across
+the whole recording. It is not inert: how sherpa clusters changes the *segments*
+it emits, and those are kept.
+
+Moving it from 0.5 to 0.8 takes a six-voice degraded recording from 94.4% to
+95.7% and one with somebody moving about from 99.4% to 99.7%, with nothing worse
+anywhere. Higher means it merges less, which is what this code wants for the
+same reason it discovers each window's voices without a target count: finer
+segments are repairable downstream and merged ones are not. 0.9 is a shade
+better again but costs a recording with a television playing in it, and the
+response is not smooth — 0.6 returns eight speakers where 0.5 and 0.7 both
+return six — so 0.8 sits in the middle of the stable region rather than on an
+edge.
+
 ## Guarding the numbers
 
 Every figure below was established by running a harness and reading the number.
