@@ -491,12 +491,25 @@ before it, which keeps it anchored to what "same voice" looked like earlier in
 *this* recording rather than to how far the sequence has fallen by now. It
 stays.
 
-**The speaker count fixes this one.** Which is worth putting beside the
-television below, because the two failures look alike and want opposite things:
+**The speaker count often fixes this one, but not always.** On the fixture above
+it does completely — Daniel's three clusters become one and all four speakers are
+right. On a second recording of the same four people it does not: told there are
+four, the clustering merged Samantha and Karen, who are two different women who
+sound alike, and left Daniel split across two clusters anyway.
+
+That is the same mechanism working in both cases. The count settles a recording
+to *N* voices by joining the closest pair repeatedly, and whether that reunites
+a moved speaker depends on whether their own two distances are closer together
+than the two most similar different people in the room. Sometimes they are.
+Reverberation changes a voice more than the difference between two similar
+voices does, so sometimes they are not.
+
+Still worth putting beside the television below, because the two failures look
+alike in a transcript and want opposite things:
 
 |  | what went wrong | does stating the count help? |
 |---|---|---|
-| a speaker moves | one person became several | **yes** — 89.9% to 99.7% |
+| a speaker moves | one person became several | **sometimes** — 89.9% to 99.7% on one recording, nothing on another |
 | a television is on | something that is not a person became one | **no**, and it makes it worse |
 
 The count merges; it cannot exclude. It settles a recording to *N* voices by
@@ -505,9 +518,28 @@ two, and exactly the wrong tool for a voice that should not be counted at all �
 there it merges two real people and keeps the television, because the television
 is the most distinct voice in the room.
 
-So: too many speakers, and they are all people → state the count. A speaker who
-is not a person → remove them (below). Those are different buttons and the
-transcript tells you which you need.
+So: too many speakers, and they are all people → state the count, and check the
+result. A speaker who is not a person → remove them (below). Those are different
+buttons and the transcript tells you which you need.
+
+### It also costs the mover their name
+
+An enrolled speaker who moves may not be recognised at all. Measured: Daniel,
+enrolled from a close recording, scores **0.499** against his own voiceprint
+after moving — below the 0.5 floor by a hair, and well below what the
+recording's other two speakers are scoring at 0.99, so the consistency rule
+refuses him too.
+
+That rule is doing exactly what it was built for and cannot tell this case from
+the one it was built against. "A voice much weaker than this recording's other
+matches" describes both a television resembling somebody and a real person heard
+from further away. The difference is not in the numbers.
+
+The failure is the recoverable one — an unrecognised speaker can be tagged by
+hand, where a wrongly-named one has to be noticed first — so it is left as it
+is. Two thresholds could be moved to admit him, and both were left alone: five
+observations is not enough to move a rule that is currently refusing the right
+things.
 
 ## Rooms have things in them that are not people
 
