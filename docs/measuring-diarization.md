@@ -290,9 +290,28 @@ speakers, embeds to a blend of them, and clustering collapses. A trained
 segmentation model does not have that failure because it is not deciding on
 energy.
 
-So the cost is real work, and this is where a speed win would have to come from
-if one is wanted: a segmentation model that is cheaper rather than a cheaper
-substitute for segmentation.
+**Quantizing the segmentation model.** The obvious version of "cheaper
+segmentation": pyannote is published int8 as well, at a quarter of the size, and
+the loader already accepts it.
+
+| fixture | fp32 | int8 |
+|---|---|---|
+| clean | 14.3 s, 99.9% | 14.7 s, 99.5% |
+| reverb only | 15.0 s, 99.6% | 9.9 s, **62.1%** |
+| 14 dB SNR | 14.8 s, 99.6% | 15.1 s, 99.2% |
+| reverb + noise + one quiet | 18.4 s, 99.6% | 10.5 s, **63.6%** (5 speakers, not 4) |
+
+Not faster where it is accurate, and where it is faster it is faster because it
+has stopped finding the segments. Both failed experiments on this page break in
+the same place — reverberation — which is worth knowing on its own: a room is
+harder for segmentation than noise is, and any cheaper substitute should be
+tested against one before anything else.
+
+fp32 is preferred at load, and an install carrying only the int8 model gets a
+warning saying what it costs.
+
+So the cost is real work, and a speed win would have to come from a
+*genuinely* better segmentation model rather than a smaller copy of this one.
 
 ## Execution provider
 

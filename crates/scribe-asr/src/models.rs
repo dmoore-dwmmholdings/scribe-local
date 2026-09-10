@@ -178,12 +178,29 @@ fn whisper_paths(dir: &Path, tokens: &Path) -> Option<AsrModelPaths> {
 
 impl DiarizationModelPaths {
     /// Locate the diarization model files under `{models_dir}/diarization`.
+    ///
+    /// The full-precision segmentation model is preferred, deliberately. A
+    /// quantized pyannote is a quarter of the size and looks like a free win —
+    /// it is not. Measured on the same audio, it holds up on clean speech
+    /// (99.5% against 99.9%) and falls apart the moment there is a room: 62% of
+    /// speech reaching the right speaker against 99.6%, and a phantom
+    /// participant on top. It is also not meaningfully faster except where it
+    /// has already gone wrong and is doing less work. Accepted as a fallback so
+    /// an install that only has it still runs, with a warning, but never chosen
+    /// over the real thing.
     pub fn discover(models_dir: &Path) -> Option<DiarizationModelPaths> {
         let dir = models_dir.join("diarization");
         let segmentation = first_existing([
             dir.join("segmentation.onnx"),
             dir.join("segmentation.int8.onnx"),
         ])?;
+        if segmentation.file_name().is_some_and(|n| n == "segmentation.int8.onnx") {
+            tracing::warn!(
+                path = %segmentation.display(),
+                "using the quantized segmentation model; speaker detection degrades badly on \
+                 reverberant audio (measured 62% against 99.6%). Install segmentation.onnx."
+            );
+        }
         let embedding =
             first_existing([dir.join("embedding.onnx"), dir.join("embedding.int8.onnx")])?;
         Some(DiarizationModelPaths {
