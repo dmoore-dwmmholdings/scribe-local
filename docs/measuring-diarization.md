@@ -216,6 +216,44 @@ as one speaker at 18.1%, the turns cut into pieces too short to embed.
 answer by measuring recordings where the choice did not matter, and the range it
 reported as safe contains values that lose a speaker.
 
+## Cleaning the audio first makes everything worse
+
+The obvious next move after the noise-floor fix is to remove the noise instead
+of coping with it. sherpa-onnx ships an offline speech enhancer (GTCRN, 523 KB)
+and it runs at 55x real time, cheap next to diarization at 10x. It was measured
+and it is firmly rejected.
+
+| | as recorded | denoised |
+|---|---|---|
+| 6 voices, 15 dB | **6 spk, 97.4%** | 5 spk, 80.7% |
+| 6 voices, 10 dB | **6 spk, 87.2%** | 5 spk, 78.6% |
+| 6 voices, 5 dB | **6 spk, 82.2%** | 4 spk, 67.5% |
+| 4 voices, 15 dB — word error rate | **2.7%** | 13.5% |
+| 6 voices, 10 dB — word error rate | **2.4%** | 12.2% |
+| 6 voices, 5 dB — word error rate | **8.9%** | 28.4% |
+
+Worse on both counts at every noise level, and by a lot: five times the word
+error rate on the mildest case, and a whole speaker lost on all three.
+
+It is not an interaction with the adaptive threshold above — denoised audio has
+no floor left, so that path correctly stops binding, and the score is identical
+with it disabled. It is the enhancement itself. Told there are six speakers, so
+that counting cannot be the problem, denoised audio still scores 88.4% against
+97.4% for the same recording untouched. GTCRN is trained to make speech sound
+clean to a person, and what it removes takes some of what makes a voice that
+person's with it.
+
+The transcription result says something useful on its own: Parakeet at 10 dB SNR
+transcribes at 2.4% word error rate. Additive noise is not what limits this
+pipeline, and there is nothing there for an enhancer to win back.
+
+Reproduce with `examples/denoise.rs`, which is kept for exactly that purpose:
+
+```bash
+cargo build --release -p scribe-asr --example denoise
+target/release/examples/denoise gtcrn_simple.onnx in.wav out.wav
+```
+
 ## The fixtures are synthetic, and that has bitten four times
 
 `say` voices are not people, and the ways they differ from people have produced
