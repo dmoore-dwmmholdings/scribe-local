@@ -237,6 +237,74 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## Skipping the silence is not worth it
+
+Segmentation is 92% of diarization time and it runs over the whole recording,
+silence included. A meeting with real dead air in it should therefore be most of
+a free win: find the speech, diarize only that.
+
+Measured against the best case a perfect detector could give — a fixture that is
+half silence, with the silence cut out using the ground truth, so no detector
+error is included at all:
+
+| | duration | segmentation |
+|---|---|---|
+| with 50% silence | 373 s | 17.8 s |
+| silence removed | 200 s | 14.9 s |
+
+Removing 46% of the audio buys 16% of the time. Segmentation over silence is far
+cheaper than over speech — the model runs but produces almost nothing for the
+rest of the pipeline to do — so the saving is nothing like proportional. A real
+detector would be imperfect and cost something itself, and would risk clipping
+the starts of turns, which is where handovers live. Rejected.
+
+## The phantom that is not worth the cure
+
+A four-voice meeting with realistic dead air — gaps from 0.3 s to 9 s — comes
+back with five speakers when it is degraded. The fifth is 3.7 s in total, in two
+scraps minutes apart, and both scraps lie inside Karen's turns: 98% and 96% of
+them are her. It is not a person, it is two pieces of one.
+
+The same thing happens if thirty seconds of room tone is appended to the
+six-voice fixture, where the phantom is two scraps of Moira.
+
+**It looks easy to fix, and the shape is quite distinct.** A real participant who
+speaks briefly speaks *once, continuously*:
+
+| | fragments | span | speech ÷ span |
+|---|---|---|---|
+| phantom (dead air) | 2.1 s at 90 s, 1.6 s at 362 s | 274 s | 0.013 |
+| phantom (room tone) | 2.6 s at 83 s, 1.6 s at 171 s | 89 s | 0.047 |
+| real brief speaker | 1.4 s + 3.5 s, abutting | 4.9 s | **1.0** |
+
+And the phantoms sit right on top of their host: the dead-air one matches Karen
+at 0.6568 where Karen's own worst internal pair is 0.6794, and the room-tone one
+matches Moira at 0.6311 where Moira's own worst pair is 0.6123 — closer to her
+than she is to herself.
+
+**It is still not being fixed, and the reason is arithmetic.** Across sixteen
+fixtures — four to eight voices, clean, reverberant, noisy, moving, phone, fast,
+eleven-minute, half-silent, and one with a brief real participant — exactly one
+returns a speaker too many. Against that, every rule above would fold a real
+person who interjects twice rather than once, and there is no fixture on this
+page that could tell me how often that happens. A phantom cluster is cosmetic;
+a person missing from a transcript is not, and that asymmetry decided the
+participant floor two sections ago for the same reason.
+
+Building a discriminator on one positive example is what the cohesion threshold
+had twelve measurements to avoid. So the pattern is recorded here, the
+diagnostic that measures it is kept (`SCRIBE_DIARIZE_COHESION=1` now also prints
+each cluster's nearest neighbour and that neighbour's own spread), and the
+condition is measured on every run without gating on it:
+
+```
+  note  the same, reverb+noise    5 spk, 97.8%   (wants 4; was 5 spk, 97.8%)
+```
+
+A `note` rather than a `check`, because a permanently red check is useless as a
+gate and leaving the condition out altogether is how a number goes unwatched.
+What it did last time is written beside it, so a change shows up.
+
 ## What the participant floor is actually protecting
 
 Appending thirty seconds of room tone to the end of a recording — the sound of

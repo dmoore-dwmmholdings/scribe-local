@@ -49,6 +49,22 @@ degrade() { # src dst args...
 }
 
 PASS=0; FAIL=0
+# Measure a condition without gating on it. For a known fault: a check would be
+# permanently red and useless as a gate, and leaving it out entirely is how a
+# number goes unwatched for months. This keeps it in front of whoever runs the
+# suite, with what it did last time written down beside it.
+note() { # label dir variant expected-speakers was
+  local out
+  out=$("$BIN" models "$FIX/$2/$3.wav" "$FIX/$2/truth.json" 2>&1)
+  if ! echo "$out" | grep -q "found speakers"; then
+    printf "  ????  %-34s did not run\n" "$1"
+    return
+  fi
+  local got
+  got=$(echo "$out" | awk '/found speakers/{s=$3} /correct speaker/{a=$3} END{printf "%s spk, %s", s, a}')
+  printf "  note  %-34s %s   (wants %s; was %s)\n" "$1" "$got" "$4" "$5"
+}
+
 check() { # label dir variant expected-speakers min-correct [stated]
   local label=$1 dir=$2 var=$3 spk=$4 minc=$5 stated=${6:-}
   local out
@@ -130,6 +146,16 @@ if [ "${1:-}" = "--full" ]; then
   degrade brief dirty --reverb 0.4 --snr 15
   check "5th speaker, 4.7 s of 153 s"  brief conversation 5 99.0
   check "the same, reverb+noise"       brief dirty        5 99.0
+
+  # A meeting with real dead air in it — gaps from 0.3 s to 9 s, half the
+  # recording silent. Clean it is right; degraded it returns a fifth speaker
+  # made of two scraps of Karen, 3.7 s in total, which clears the participant
+  # floor. Not gated: see "the phantom that is not worth the cure" in
+  # docs/measuring-diarization.md for why the floor is not raised to catch it.
+  SCRIBE_FIXTURE_GAP=300-9000 build lull 40
+  degrade lull dirty --reverb 0.4 --snr 15
+  check "4 voices, half of it silence"  lull conversation 4 99.0
+  note  "the same, reverb+noise"        lull dirty        4 "5 spk, 97.8%"
 fi
 
 # The words themselves, and whether a name carries from one recording to the

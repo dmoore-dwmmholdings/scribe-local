@@ -887,9 +887,44 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
             }
             let speech: i64 = members.iter().map(|&f| fragments[f].speech_ms.max(0)).sum();
             let mean = if pairs > 0 { total / pairs as f64 } else { f64::NAN };
+            // Closest other cluster, by average linkage over raw embeddings,
+            // and how that compares with that cluster's own internal spread.
+            let mut best = (f32::MIN, usize::MAX);
+            for (other, others) in final_clusters.iter().enumerate() {
+                if other == idx {
+                    continue;
+                }
+                let oembs: Vec<&Vec<f32>> = others
+                    .iter()
+                    .filter_map(|&f| fragments[f].embedding.as_ref())
+                    .filter(|e| !e.is_empty())
+                    .collect();
+                if oembs.is_empty() || embs.is_empty() {
+                    continue;
+                }
+                let mut acc = 0.0f64;
+                let mut n = 0u64;
+                for a in &embs {
+                    for b in &oembs {
+                        acc += cosine(a, b) as f64;
+                        n += 1;
+                    }
+                }
+                let link = (acc / n as f64) as f32;
+                if link > best.0 {
+                    best = (link, other);
+                }
+            }
+            let host_spread = if best.1 == usize::MAX {
+                f32::NAN
+            } else {
+                cluster_worst_pair(fragments, &final_clusters[best.1]).unwrap_or(f32::NAN)
+            };
             eprintln!(
-                "   cluster {idx:>2}  {:>2} frags  {speech:>7} ms  mean {mean:.4}  worst {worst:.4}",
-                members.len()
+                "   cluster {idx:>2}  {:>2} frags  {speech:>7} ms  mean {mean:.4}  worst {worst:.4}                   nearest {:>2} at {:.4} (its own spread {host_spread:.4})",
+                members.len(),
+                best.1 as i64,
+                best.0
             );
         }
     }
