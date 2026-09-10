@@ -237,6 +237,44 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## How long the pauses are, which nobody had varied
+
+Every fixture on this page put exactly 350 ms between one turn and the next.
+That is an assumption about conversation, it was never varied, and everything in
+"look for shorter pauses" was tuned against it — a split threshold measured on
+one gap length and nothing else.
+
+`SCRIBE_FIXTURE_GAP=150-1400` draws each gap from a range instead (seeded, so a
+fixture built twice is the same fixture). The result is reassuring in the
+direction that matters and useful in the other:
+
+| | uniform 350 ms | gaps 150–1400 ms | gaps 80–250 ms |
+|---|---|---|---|
+| 6 voices, clean | 99.8% | 99.9% | 97.0% |
+| 6 voices, reverb+noise | 97.4% | **99.2%** | 92.8% |
+| 4 voices, clean | 99.9% | 99.9% | — |
+| 4 voices, reverb+noise | 99.5% | **99.8%** | — |
+
+Realistic varied pauses are *easier* than the fixture, not harder — longer gaps
+make a handover simple to find, and 350 ms sits near the difficult end of the
+range. So the existing numbers were not flattered by this, which is the thing
+worth knowing.
+
+Fast conversation is where it gets harder. With gaps of 80–250 ms most handovers
+fall below the 160 ms split threshold and have to be caught by the segmentation
+model or not at all: 92.8% in a reverberant room, the lowest score on this page
+that still returns the right number of speakers.
+
+**Chasing it does not pay.** Lowering the split threshold to 120 ms buys 1.3
+points there and 2.9 at 5 dB SNR, and costs a whole speaker on eight voices at
+12 dB (94.4% to 82.0%). 160 stays.
+
+Worth noting for its own sake: 120 ms is *usable* now, where earlier in this
+work it returned 3 speakers instead of 4 on the eleven-minute recording. The
+cohesion step-back is what changed — it undoes the over-merging that
+over-splitting causes, so the two compose. The band the split threshold can
+safely sit in is wider than it was; 160 is still the best point in it.
+
 ## The thread cap that was never measured
 
 Both speech models got at most 8 ONNX threads, however large the machine, on the

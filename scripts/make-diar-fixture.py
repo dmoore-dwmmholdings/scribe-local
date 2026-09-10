@@ -21,7 +21,7 @@ Synthesised voices are not people: cleaner and more separable than a real room,
 so treat a score from this as an upper bound and a way to compare two changes on
 identical audio, not as a prediction of field accuracy.
 """
-import json, os, re, subprocess, sys, wave
+import json, os, random, re, subprocess, sys, wave
 
 import numpy as np
 
@@ -196,7 +196,29 @@ for i, (voice, text) in enumerate(LINES):
 # before the previous one finishes. Real conversation does this constantly —
 # interruptions, and backchannels spoken straight over whoever has the floor —
 # and it is the one condition a fixture built by concatenation can never show.
-GAP_MS = 350
+# The pause between one turn and the next. A single number by default, which
+# keeps every existing fixture byte-identical.
+#
+# `SCRIBE_FIXTURE_GAP=150-1400` instead draws each gap from that range, because a
+# uniform gap is not what a conversation sounds like and uniformity in a fixture
+# has hidden real faults here before — identical turn lengths once concealed a
+# participant floor that could not see length at all. A varying gap also puts
+# some handovers below the split threshold, where they genuinely cannot be
+# found, and that is worth being able to measure rather than assume away.
+#
+# Seeded, so a fixture built twice is the same fixture.
+_gap_spec = os.environ.get("SCRIBE_FIXTURE_GAP", "350")
+if "-" in _gap_spec:
+    _lo, _hi = (int(x) for x in _gap_spec.split("-", 1))
+    _rng = random.Random(20260910)
+    def next_gap():
+        return _rng.randint(_lo, _hi)
+else:
+    _fixed = int(_gap_spec)
+    def next_gap():
+        return _fixed
+
+GAP_MS = int(_gap_spec.split("-")[0]) if "-" in _gap_spec else int(_gap_spec)
 OVERLAP_MS = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 # How often an overlap happens, when one is asked for. Every turn overlapping
 # the last is not a conversation, it is a crowd.
@@ -219,7 +241,7 @@ for i, (voice, wav) in enumerate(parts):
     turns.append({"speaker": voice, "start_ms": start_ms, "end_ms": start_ms + dur_ms,
                   "text": LINES[i][1]})
     clips.append((start_ms, data))
-    cursor_ms = max(cursor_ms, start_ms + dur_ms) + GAP_MS
+    cursor_ms = max(cursor_ms, start_ms + dur_ms) + next_gap()
 
 total = np.zeros(int((cursor_ms + 1000) * 16000 / 1000), dtype=np.float64)
 for start_ms, data in clips:

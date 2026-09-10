@@ -108,6 +108,16 @@ if [ "${1:-}" = "--full" ]; then
   degrade eight dirty --reverb 0.4 --snr 15
   check "8 voices, clean"              eight conversation 8 99.0
   check "8 voices, reverb+noise"       eight dirty        8 95.0
+
+  # Fast conversation: gaps of 80-250 ms, most of them under the split
+  # threshold, so the handover has to be found by the segmentation model or not
+  # at all. The lowest-scoring condition that still counts correctly, and the
+  # one that moves if the split threshold is lowered to chase it.
+  SCRIBE_FIXTURE_GAP=80-250 \
+    SCRIBE_FIXTURE_VOICES="Daniel,Samantha,Rishi,Karen,Moira,Tessa" build tight 36
+  degrade tight dirty --reverb 0.4 --snr 15
+  check "6 voices, gaps under 250 ms"  tight conversation 6 95.0
+  check "6 voices, tight and degraded" tight dirty        6 90.0
 fi
 
 # The words themselves, and whether a name carries from one recording to the
