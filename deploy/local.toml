@@ -39,9 +39,14 @@ require_device_token = false
 # Installed:
 #   parakeet-tdt-0.6b-v3   transducer, ~640 MB. One decode pass at any length,
 #                          real word timestamps, supports hotword biasing.
-#   whisper-large-v3-turbo ~3.1 GB. Decodes in 30s windows; sherpa returns no
+#   whisper-large-v3-turbo ~3.1 GB. Decodes in 28s windows; sherpa returns no
 #                          token timestamps for it, so word timings are
-#                          approximated by spreading them across the clip.
+#                          approximated by spreading each window's words evenly
+#                          across it. Measured, that puts ~7% of words where
+#                          nobody was speaking (Parakeet: 0.4-1.4%). Speaker
+#                          labelling is unaffected — a turn is long next to that
+#                          error — but word-level playback highlighting and
+#                          seek-to-word are visibly off.
 # The layout (transducer vs whisper) is detected from the files present, not
 # from this name — a transducer is the one with a joiner.
 model       = "parakeet-tdt-0.6b-v3"

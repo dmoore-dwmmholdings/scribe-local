@@ -340,6 +340,40 @@ So the cost is real work, and a speed win would have to come from a
 *genuinely* better segmentation model rather than a smaller copy of this one,
 a cheaper substitute for it, or more of the same machine.
 
+## Whisper's word timings
+
+sherpa returns no token timestamps for its Whisper models. The transcriber
+notices and spreads each decode window's words evenly across it, because the
+alternative — leaving every word at `[0, 0]` — would give the merge stage no
+overlap to work with and collapse the recording into one unseekable block.
+
+`SCRIBE_ASR_MODEL` selects the checkpoint, so both can be run over the same
+audio. `SCRIBE_ASR_TIMING_PATH=1` prints which timing path each decode took.
+
+| fixture | model | words timed into silence | right speaker |
+|---|---|---|---|
+| 4 voices, regular turns | Parakeet | 0.4% | 100.0% |
+| | Whisper | 7.0% | 100.0% |
+| 4 voices, 11 min | Parakeet | 1.4% | 100.0% |
+| | Whisper | 7.0% | 100.0% |
+| 4 voices, turns 0.4 s to 12 s | Parakeet | 3.4% | 96.4% |
+| | Whisper | 8.3% | 96.3% |
+
+"Timed into silence" is the share of words whose midpoint lands where nobody
+was speaking — a direct check on whether the timings are real rather than
+plausible.
+
+**Speaker labelling does not care.** A speaker turn is seconds long and the
+timing error is a fraction of one, so a misplaced word still overlaps the right
+turn. The two models score the same on attribution on every fixture, including
+one built with turns ranging from 0.4 s to 12 s specifically because regular
+turns flatter a model that is guessing at timing.
+
+**Anything word-level does care.** Roughly one word in fourteen is placed where
+no one is talking, so the playback highlighter lights the wrong word and tapping
+a word seeks to the wrong moment. `deploy/server.toml` ships Whisper and now
+says this next to the setting.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —

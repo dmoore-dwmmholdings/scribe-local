@@ -47,7 +47,12 @@ fn main() {
         serde_json::from_str(&std::fs::read_to_string(&args[2]).expect("read truth"))
             .expect("parse truth");
 
-    let cfg = AsrConfig::default();
+    let mut cfg = AsrConfig::default();
+    // SCRIBE_ASR_MODEL selects the checkpoint under <models_dir>/asr.
+    if let Ok(model) = std::env::var("SCRIBE_ASR_MODEL") {
+        cfg.model = model;
+    }
+    println!("model            {}", cfg.model);
     let engine = SpeechEngine::load(&models_dir, &cfg).expect("load engine");
     println!("backend          {}", engine.backend().as_str());
     println!("threads          {}", cfg.resolved_num_threads());
@@ -176,8 +181,18 @@ fn main() {
             }
         }
     }
+    // Words whose midpoint lands where nobody was speaking. A direct measure of
+    // whether the timings are real: a word placed in silence is a word the
+    // playback highlighter will light up at the wrong moment, whatever name the
+    // transcript put on it.
+    let adrift = words.len().saturating_sub(scored);
     let pct = |n: usize| 100.0 * n as f64 / scored.max(1) as f64;
     println!("─────────────────────────────────────────────────────────");
+    println!(
+        "timed into silence {adrift} of {} words ({:.1}%)",
+        words.len(),
+        100.0 * adrift as f64 / words.len().max(1) as f64
+    );
     println!("words scored     {scored}");
     println!("right speaker    {:.1}%", pct(correct));
     println!("wrong speaker    {:.1}%", pct(scored - correct - unlabelled));

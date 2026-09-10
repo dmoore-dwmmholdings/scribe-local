@@ -402,13 +402,26 @@ fn build_words(
     durations: &Option<Vec<f32>>,
     clip_ms: i64,
 ) -> Vec<AsrWord> {
+    let trace = std::env::var("SCRIBE_ASR_TIMING_PATH").is_ok();
     // Fast path: no token timing → split text and spread evenly.
     let Some(ts) = timestamps.as_ref() else {
+        if trace {
+            eprintln!("   build_words: NO timestamps -> spread evenly ({} tokens)", tokens.len());
+        }
         return spread_evenly(text, clip_ms);
     };
     if tokens.is_empty() || tokens.len() != ts.len() {
-        // Misaligned token/timestamp arrays — don't trust them.
+        if trace {
+            eprintln!(
+                "   build_words: {} tokens vs {} timestamps -> spread evenly",
+                tokens.len(),
+                ts.len()
+            );
+        }
         return spread_evenly(text, clip_ms);
+    }
+    if trace {
+        eprintln!("   build_words: real token timings ({} tokens)", tokens.len());
     }
 
     let sec_to_ms = |s: f32| (s as f64 * 1000.0).round() as i64;

@@ -63,6 +63,20 @@ trust_tailscale_identity = false
 
 [asr]
 # GPU server: run ASR + diarization on CUDA. NOTE the VRAM tradeoff below.
+#
+# Whisper here is a deliberate choice with a measured cost. sherpa returns no
+# token timestamps for its Whisper models, so word timings are approximated by
+# spreading each decode window's words evenly across it. Measured against
+# conversations with known timings, that puts about 7% of words somewhere nobody
+# was speaking, against 0.4-1.4% for the Parakeet transducer.
+#
+# Speaker labelling does not care — it was 100% either way on three fixtures,
+# because a speaker turn is long next to the error. What cares is anything
+# word-level: the playback highlighter lights up the wrong word, and tapping a
+# word seeks to the wrong moment, roughly one word in fourteen.
+#
+# Switch to "parakeet-tdt-0.6b-v3" unless you need Whisper's language coverage
+# specifically; it also decodes faster and supports hotword biasing.
 model          = "whisper-large-v3-turbo"
 diarization    = true
 device         = "cuda"
