@@ -1,9 +1,14 @@
 //! Real diarization via `sherpa_onnx::OfflineSpeakerDiarization`.
 //!
 //! Silero VAD + pyannote segmentation + speaker-embedding extraction +
-//! FastClustering, all inside one sherpa-onnx object (design §8). When the
-//! caller knows the participant count we pin `num_clusters`; otherwise we let
-//! clustering discover the count via a cosine threshold.
+//! FastClustering, all inside one sherpa-onnx object (design §8).
+//!
+//! sherpa sees the recording a window at a time and answers only for the window
+//! in front of it. Who is in the room is a fact about the whole recording, so
+//! this module asks sherpa for voices, not for people: each window is clustered
+//! by threshold with no target count, and the recording's speaker set is then
+//! settled once, over every window's voices at once, in `cluster_fragments` —
+//! which is also where a stated participant count is applied.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -32,15 +37,6 @@ const CLUSTER_THRESHOLD: f32 = 0.5;
 /// run reliably, and is still long enough for clustering to separate voices
 /// within a window; identity is then carried across windows by embedding.
 const DIARIZE_WINDOW_MS: i64 = 10 * 60 * 1000;
-
-/// Speech a window speaker must have before it may found a *new* global speaker.
-///
-/// Matching an existing speaker has no such floor — a recognised voice counts
-/// however briefly it speaks. This only stops sub-second noise bursts from
-/// inventing participants. The cost is that someone whose entire contribution to
-/// a window is under this gets folded into the nearest speaker; that is the
-/// better error, since the alternative produced 150 phantom participants.
-const MIN_NEW_SPEAKER_MS: i64 = 3_000;
 
 /// Shortest turn used to build a speaker's identity embedding.
 ///
@@ -86,33 +82,17 @@ impl SherpaDiarizer {
         })
     }
 
-    fn build_diarizer(&self, expected: Option<i32>) -> Result<OfflineSpeakerDiarization> {
+    /// Build the per-window diarizer.
+    ///
+    /// It never takes a speaker count: a window is a slice of the recording,
+    /// and how many people are in the room is not a fact about a slice. sherpa
+    /// discovers whatever voices the window holds, by threshold, and
+    /// `cluster_fragments` settles the recording's speaker set afterwards.
+    fn build_diarizer(&self) -> Result<OfflineSpeakerDiarization> {
         let provider = provider_for(&self.device);
-
-        // When the user tells us how many people are in the room, believe them.
-        //
-        // This used to always discover the count by threshold, on the reasoning
-        // that the hint might be wrong. On long recordings that reasoning cost
-        // far more than it saved: threshold discovery inside each window split
-        // four voices into dozens (a 50-minute meeting came back with 34
-        // speakers, a 2h49m one with 156). A stated count is the single most
-        // reliable signal available, and a wrong hint is recoverable — the user
-        // can rename or reprocess — where dozens of phantom speakers are not.
-        //
-        // Without a hint we still discover the count, and the global merge in
-        // `consolidate` cleans up what over-segmentation gets through.
-        let clustering = match expected {
-            Some(n) if n >= 1 => {
-                tracing::debug!(n, "diarize: clustering to the stated speaker count");
-                FastClusteringConfig {
-                    num_clusters: n,
-                    threshold: CLUSTER_THRESHOLD,
-                }
-            }
-            _ => FastClusteringConfig {
-                num_clusters: -1,
-                threshold: CLUSTER_THRESHOLD,
-            },
+        let clustering = FastClusteringConfig {
+            num_clusters: -1,
+            threshold: CLUSTER_THRESHOLD,
         };
 
         let config = OfflineSpeakerDiarizationConfig {
@@ -142,78 +122,49 @@ impl SherpaDiarizer {
 impl Diarizer for SherpaDiarizer {
     fn diarize(&self, wav_path: &Path, expected_speakers: Option<i32>) -> Result<Diarization> {
         let audio = wav::read_wav(wav_path)?;
-        let sr = audio.sample_rate;
-        let window = ((DIARIZE_WINDOW_MS * sr as i64) / 1000) as usize;
-
-        if window == 0 || audio.samples.len() <= window {
-            return self.diarize_whole(&audio, expected_speakers);
-        }
-        self.diarize_chunked(&audio, expected_speakers, window)
+        self.diarize_windowed(&audio, expected_speakers)
     }
 }
 
 impl SherpaDiarizer {
-    /// Single-pass diarization — the whole clip goes to sherpa at once.
-    fn diarize_whole(&self, audio: &WavData, expected: Option<i32>) -> Result<Diarization> {
-        let diarizer = self.build_diarizer(expected)?;
-
-        let result = diarizer
-            .process(&audio.samples)
-            .ok_or_else(|| Error::Model("diarization produced no result".into()))?;
-
-        let segments = result.sort_by_start_time();
-
-        let mut turns = Vec::with_capacity(segments.len());
-        let mut speaker_set = std::collections::BTreeSet::new();
-        for seg in &segments {
-            speaker_set.insert(seg.speaker);
-            turns.push(SpeakerTurn {
-                local_idx: seg.speaker,
-                start_ms: (seg.start as f64 * 1000.0).round() as i64,
-                end_ms: (seg.end as f64 * 1000.0).round() as i64,
-            });
-        }
-
-        // Per-speaker mean embedding for enrollment matching. sherpa's
-        // diarization result doesn't hand back the cluster centroids, so we
-        // re-extract an embedding over each speaker's concatenated segment audio
-        // and average. This reuses the same embedding model the clusterer used.
-        let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
-        let embeddings =
-            compute_speaker_embeddings(&extractor, &audio.samples, audio.sample_rate, &turns)?;
-
-        let num_speakers = if result.num_speakers() > 0 {
-            result.num_speakers() as usize
-        } else {
-            speaker_set.len()
-        };
-
-        Ok(Diarization {
-            turns,
-            embeddings,
-            num_speakers,
-        })
-    }
-
-    /// Diarize a long recording one window at a time, stitching the per-window
-    /// speaker sets back together by voice similarity.
+    /// Diarize in windows, then decide the recording's speaker set once, over
+    /// every window at once.
     ///
     /// Handing sherpa a multi-hour clip in one `process` call overruns its stack
     /// and aborts the process (Windows `0xc0000409`), so long audio has to be
     /// windowed. Each window is clustered independently, which means window 2's
-    /// "speaker 0" is unrelated to window 1's, so we re-identify speakers across
-    /// windows with the same cosine test the clusterer itself uses: a window
-    /// speaker joins the global speaker whose running mean embedding it matches,
-    /// or becomes a new one.
-    fn diarize_chunked(
-        &self,
-        audio: &WavData,
-        expected: Option<i32>,
-        window: usize,
-    ) -> Result<Diarization> {
-        let diarizer = self.build_diarizer(expected)?;
-        let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
+    /// "speaker 0" is unrelated to window 1's — identity is resolved afterwards,
+    /// by voice, across the whole recording.
+    ///
+    /// Short recordings take the same path as one window rather than a
+    /// shortcut through sherpa's own answer. They used to be trusted directly,
+    /// which left the commonest recording of all — a meeting under ten minutes —
+    /// as the only one with no repair for sherpa's over-segmentation, and made
+    /// a recording's speaker count depend on which side of ten minutes it fell.
+    fn diarize_windowed(&self, audio: &WavData, expected: Option<i32>) -> Result<Diarization> {
         let sr = audio.sample_rate;
+        let window = match ((DIARIZE_WINDOW_MS * sr as i64) / 1000) as usize {
+            // A sample rate so low the window rounds to nothing: one window.
+            0 => audio.samples.len().max(1),
+            w => w,
+        };
+
+        // Each window is diarized without a target count, however many people
+        // the recording as a whole has.
+        //
+        // Pinning `num_clusters` to the stated count per window forced every
+        // window to produce exactly that many voices — so a stretch where only
+        // one person talks came back split into four arbitrary pieces of that
+        // one voice, and a stretch where a fifth person joined had someone
+        // folded in with someone else. Those splits are what the clustering
+        // below then worked from, which is why a stated count of four could
+        // still land on four clusters that were not four people. The count
+        // belongs to the recording, not to the window, so it is applied once,
+        // globally, in `cluster_fragments`. Over-segmentation here is the cheap
+        // error: clustering merges takes of one voice back together, but it can
+        // never split two people a window has already merged.
+        let diarizer = self.build_diarizer()?;
+        let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
 
         // Pass 1: diarize each window on its own. Nothing is decided about
         // identity here - a window speaker is just "some voice, over this
@@ -332,7 +283,7 @@ impl SherpaDiarizer {
             speakers = num_speakers,
             turns = turns.len(),
             stated = expected.unwrap_or(-1),
-            "diarize: chunked long recording"
+            "diarize complete"
         );
 
         Ok(Diarization {
@@ -390,43 +341,93 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
         return vec![0; fragments.len()];
     }
 
-    // Every embedded fragment starts as its own cluster.
-    let mut clusters: Vec<Vec<usize>> = embedded.iter().map(|&i| vec![i]).collect();
-    let target = expected
-        .filter(|n| *n >= 1)
-        .map(|n| (n as usize).min(clusters.len()));
+    // Pairwise similarity over the embeddable fragments, computed once.
+    //
+    // The merge loop used to recompute average linkage from the raw embeddings
+    // on every iteration, which is O(n^3) 192-dimensional dot products - fine
+    // for the handful of fragments a window-pinned diarizer produced, hopeless
+    // now that each window reports however many voices it actually heard. With
+    // the matrix in hand a merge only ever touches scalars.
+    let n = embedded.len();
+    let mut sim = vec![0.0f32; n * n];
+    for a in 0..n {
+        let Some(ea) = fragments[embedded[a]].embedding.as_ref() else {
+            continue;
+        };
+        for b in (a + 1)..n {
+            let Some(eb) = fragments[embedded[b]].embedding.as_ref() else {
+                continue;
+            };
+            let s = cosine(ea, eb);
+            sim[a * n + b] = s;
+            sim[b * n + a] = s;
+        }
+    }
 
-    // Merge down to a single cluster, recording what each merge cost.
-    let mut history: Vec<(usize, f32, Vec<Vec<usize>>)> = Vec::new();
-    while clusters.len() > 1 {
+    let target = expected.filter(|v| *v >= 1).map(|v| (v as usize).min(n));
+
+    // Every embedded fragment starts as its own cluster. `alive[i]` marks a
+    // cluster that has not been absorbed; `size[i]` counts its members.
+    let mut alive = vec![true; n];
+    let mut size = vec![1.0f32; n];
+    let mut live = n;
+
+    // The merge sequence: clusters before the merge, what it cost, and which
+    // pair joined. Recording the pair rather than a snapshot of the whole
+    // partition keeps this linear in the number of merges.
+    let mut history: Vec<(usize, f32, (usize, usize))> = Vec::new();
+    while live > 1 {
         let mut best: Option<(usize, usize, f32)> = None;
-        for i in 0..clusters.len() {
-            for j in (i + 1)..clusters.len() {
-                let sim = average_linkage(fragments, &clusters[i], &clusters[j]);
-                if best.map(|(_, _, b)| sim > b).unwrap_or(true) {
-                    best = Some((i, j, sim));
+        for i in 0..n {
+            if !alive[i] {
+                continue;
+            }
+            for j in (i + 1)..n {
+                if !alive[j] {
+                    continue;
+                }
+                let s = sim[i * n + j];
+                if best.map(|(_, _, b)| s > b).unwrap_or(true) {
+                    best = Some((i, j, s));
                 }
             }
         }
-        let Some((i, j, sim)) = best else { break };
-        history.push((clusters.len(), sim, clusters.clone()));
+        let Some((i, j, s)) = best else { break };
+        history.push((live, s, (i, j)));
 
-        let merged = clusters.remove(j);
-        clusters[i].extend(merged);
+        // Lance-Williams update for average linkage: the merged cluster's
+        // similarity to every other is the size-weighted mean of the two
+        // originals', which is exactly the mean over member pairs the old code
+        // recomputed by hand. Still average linkage, still no running centroid -
+        // averaging centroids as you merge lets the largest cluster drift toward
+        // the mean of everything and then swallow the rest, which is how a
+        // four-person meeting collapsed into one speaker holding 99.8% of the
+        // speech.
+        let (wi, wj) = (size[i], size[j]);
+        for k in 0..n {
+            if !alive[k] || k == i || k == j {
+                continue;
+            }
+            let merged = (sim[i * n + k] * wi + sim[j * n + k] * wj) / (wi + wj);
+            sim[i * n + k] = merged;
+            sim[k * n + i] = merged;
+        }
+        size[i] = wi + wj;
+        alive[j] = false;
+        live -= 1;
 
-        if target.is_some_and(|t| clusters.len() == t) {
+        if target.is_some_and(|t| live == t) {
             break;
         }
     }
 
-    let final_clusters = match target {
-        // Stated count: what we hold now is the answer.
-        Some(_) => clusters,
-        // Otherwise the recording decides. `clusters` is now the single
-        // all-in-one cluster the merge loop ended at, which is the answer when
-        // nothing separates cleanly.
-        None => choose_clustering(&history, &clusters),
+    // Stated count: the loop already stopped there, so every merge stands.
+    // Otherwise the recording decides where to cut its own merge sequence.
+    let cut = match target {
+        Some(_) => history.len(),
+        None => choose_cut(&history),
     };
+    let final_clusters = replay(n, &history, cut, &embedded);
 
     for (idx, members) in final_clusters.iter().enumerate() {
         for &fragment in members {
@@ -444,6 +445,7 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     }
     assignment
 }
+
 
 /// How much worse than the merges already accepted a merge has to be before we
 /// refuse it and call the two clusters different people.
@@ -467,12 +469,11 @@ const RELATIVE_DROP: f32 = 0.8;
 /// every fragment belongs to one voice - which is a possible answer here, and
 /// the one a "largest drop" rule can never give, because it always cuts
 /// somewhere.
-fn choose_clustering(
-    history: &[(usize, f32, Vec<Vec<usize>>)],
-    single: &[Vec<usize>],
-) -> Vec<Vec<usize>> {
+///
+/// Returns how many merges to keep.
+fn choose_cut(history: &[(usize, f32, (usize, usize))]) -> usize {
     let mut accepted: Vec<f32> = Vec::new();
-    for (count, sim, snapshot) in history {
+    for (m, (count, sim, _)) in history.iter().enumerate() {
         // Above the sanity bound, keep merging whatever it looks like: that
         // many clusters is over-segmentation, not a room full of people.
         if *count <= MAX_INFERRED_SPEAKERS {
@@ -480,12 +481,33 @@ fn choose_clustering(
             // a fragment is perfectly similar to itself, so use 1.0.
             let within = median(&accepted).unwrap_or(1.0);
             if *sim < RELATIVE_DROP * within {
-                return snapshot.clone();
+                return m;
             }
         }
         accepted.push(*sim);
     }
-    single.to_vec()
+    history.len()
+}
+
+/// Rebuild the partition that holding `cut` merges of `history` produces,
+/// mapping cluster members back to fragment indices through `embedded`.
+fn replay(
+    n: usize,
+    history: &[(usize, f32, (usize, usize))],
+    cut: usize,
+    embedded: &[usize],
+) -> Vec<Vec<usize>> {
+    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![embedded[i]]).collect();
+    let mut alive = vec![true; n];
+    for &(_, _, (i, j)) in history.iter().take(cut) {
+        let absorbed = std::mem::take(&mut members[j]);
+        members[i].extend(absorbed);
+        alive[j] = false;
+    }
+    (0..n)
+        .filter(|&i| alive[i])
+        .map(|i| std::mem::take(&mut members[i]))
+        .collect()
 }
 
 /// Median of `values`, or `None` when empty. Used instead of the mean so one
@@ -504,29 +526,6 @@ fn median(values: &[f32]) -> Option<f32> {
     })
 }
 
-/// Mean similarity over every member pair across two clusters.
-fn average_linkage(fragments: &[Fragment], a: &[usize], b: &[usize]) -> f32 {
-    let mut total = 0.0;
-    let mut pairs = 0.0;
-    for &i in a {
-        let Some(ei) = fragments[i].embedding.as_ref() else {
-            continue;
-        };
-        for &j in b {
-            let Some(ej) = fragments[j].embedding.as_ref() else {
-                continue;
-            };
-            total += cosine(ei, ej);
-            pairs += 1.0;
-        }
-    }
-    if pairs == 0.0 {
-        0.0
-    } else {
-        total / pairs
-    }
-}
-
 /// Speaker of the assigned fragment whose turns sit closest in time to `target`.
 fn nearest_assigned(fragments: &[Fragment], assignment: &[i32], target: usize) -> Option<i32> {
     let mid = |f: &Fragment| -> i64 {
@@ -543,72 +542,6 @@ fn nearest_assigned(fragments: &[Fragment], assignment: &[i32], target: usize) -
         .filter(|(i, _)| assignment[*i] >= 0)
         .min_by_key(|(_, f)| (mid(f) - want).abs())
         .map(|(i, _)| assignment[i])
-}
-
-/// Global speaker of the identified turn closest in time to `turn`.
-///
-/// Distance is measured between turn midpoints, so a fragment sitting inside a
-/// long turn attaches to that turn's speaker. Callers must only invoke this when
-/// `mapping` is non-empty.
-fn nearest_mapped_speaker(
-    turns: &[SpeakerTurn],
-    mapping: &HashMap<i32, i32>,
-    turn: &SpeakerTurn,
-) -> i32 {
-    let mid = |t: &SpeakerTurn| (t.start_ms + t.end_ms) / 2;
-    let target = mid(turn);
-    turns
-        .iter()
-        .filter_map(|t| mapping.get(&t.local_idx).map(|g| ((mid(t) - target).abs(), *g)))
-        .min_by_key(|(d, _)| *d)
-        .map(|(_, g)| g)
-        // Unreachable while `mapping` is non-empty; fall back to the first
-        // known speaker rather than fabricating an index.
-        .unwrap_or_else(|| mapping.values().copied().min().unwrap_or(0))
-}
-
-/// Match `emb` to an existing global speaker or append a new one, returning its
-/// index.
-///
-/// The chunked path deliberately no longer calls this: it needs to test for a
-/// match *without* committing to a new speaker, so that an unrecognised voice
-/// can be held to [`MIN_NEW_SPEAKER_MS`] first. Kept for tests, which cover the
-/// match-or-create behaviour that `match_global_speaker` still implements.
-#[cfg(test)]
-fn assign_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) -> i32 {
-    match match_global_speaker(centroids, emb) {
-        Some(i) => i,
-        None => push_global_speaker(centroids, emb),
-    }
-}
-
-/// Find the global speaker `emb` belongs to, if any. On a match the centroid
-/// absorbs `emb` as a weighted mean, so an identity sharpens as more windows
-/// contribute to it.
-fn match_global_speaker(centroids: &mut [(Vec<f32>, usize)], emb: &[f32]) -> Option<i32> {
-    let mut best: Option<(usize, f32)> = None;
-    for (i, (centroid, _)) in centroids.iter().enumerate() {
-        let sim = cosine(centroid, emb);
-        if sim >= CLUSTER_THRESHOLD && best.map(|(_, b)| sim > b).unwrap_or(true) {
-            best = Some((i, sim));
-        }
-    }
-
-    let (i, _) = best?;
-    let (centroid, count) = &mut centroids[i];
-    let n = *count as f32;
-    for (c, e) in centroid.iter_mut().zip(emb.iter()) {
-        *c = (*c * n + *e) / (n + 1.0);
-    }
-    l2_normalize(centroid);
-    *count += 1;
-    Some(i as i32)
-}
-
-/// Append `emb` as a brand-new global speaker.
-fn push_global_speaker(centroids: &mut Vec<(Vec<f32>, usize)>, emb: &[f32]) -> i32 {
-    centroids.push((emb.to_vec(), 1));
-    (centroids.len() - 1) as i32
 }
 
 /// Cosine similarity. Returns 0 for empty/zero vectors, so a speaker with no
@@ -783,65 +716,6 @@ mod tests {
         v
     }
 
-    /// The same voice appearing in a later window must resolve to the speaker
-    /// it already established, not to a new one — otherwise a two-person call
-    /// split over six windows would report a dozen speakers.
-    #[test]
-    fn a_returning_voice_rejoins_its_global_speaker() {
-        let mut centroids = Vec::new();
-        let alice = unit(&[1.0, 0.0, 0.0]);
-        let bob = unit(&[0.0, 1.0, 0.0]);
-
-        assert_eq!(assign_global_speaker(&mut centroids, &alice), 0);
-        assert_eq!(assign_global_speaker(&mut centroids, &bob), 1);
-
-        // Window 2: Alice again, slightly different but well within threshold.
-        let alice_again = unit(&[0.96, 0.28, 0.0]);
-        assert_eq!(assign_global_speaker(&mut centroids, &alice_again), 0);
-        assert_eq!(centroids.len(), 2, "must not invent a third speaker");
-    }
-
-    /// A genuinely different voice must not be folded into an existing speaker.
-    #[test]
-    fn a_new_voice_becomes_a_new_speaker() {
-        let mut centroids = Vec::new();
-        assign_global_speaker(&mut centroids, &unit(&[1.0, 0.0, 0.0]));
-
-        let orthogonal = unit(&[0.0, 0.0, 1.0]);
-        assert_eq!(assign_global_speaker(&mut centroids, &orthogonal), 1);
-        assert_eq!(centroids.len(), 2);
-    }
-
-    /// When several existing speakers are above threshold, the closest wins.
-    ///
-    /// The two seed voices must be mutually *below* threshold or they would
-    /// (correctly) merge into one speaker before the probe is ever tested.
-    #[test]
-    fn matching_picks_the_closest_speaker() {
-        let mut centroids = Vec::new();
-        assert_eq!(assign_global_speaker(&mut centroids, &unit(&[1.0, 0.0, 0.0])), 0);
-        assert_eq!(assign_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), 1);
-
-        // cos 0.8 with speaker 0 and 0.6 with speaker 1 — both clear 0.5, so
-        // the tie must be broken by similarity rather than by iteration order.
-        let probe = unit(&[0.8, 0.6, 0.0]);
-        assert_eq!(assign_global_speaker(&mut centroids, &probe), 0);
-        assert_eq!(centroids.len(), 2);
-    }
-
-    /// An empty embedding must never be *matched* to an existing speaker.
-    /// (The chunked path no longer feeds these in — it routes them through
-    /// `nearest_mapped_speaker` — but the guard must hold regardless.)
-    #[test]
-    fn an_unembeddable_speaker_never_matches() {
-        let mut centroids = Vec::new();
-        assign_global_speaker(&mut centroids, &unit(&[1.0, 0.0, 0.0]));
-
-        assert_eq!(assign_global_speaker(&mut centroids, &[]), 1);
-        // And the zero-length centroid must not swallow a later real voice.
-        assert_eq!(assign_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), 2);
-    }
-
     fn turn(local_idx: i32, start_ms: i64, end_ms: i64) -> SpeakerTurn {
         SpeakerTurn {
             local_idx,
@@ -868,6 +742,67 @@ mod tests {
         let mut out: Vec<Vec<usize>> = groups.into_values().collect();
         out.sort();
         out
+    }
+
+    /// A window that heard only one voice, over-segmented into pieces, must not
+    /// leave those pieces standing as separate speakers.
+    ///
+    /// This is the shape of the bug that made a stated speaker count worse than
+    /// no count at all. Every window was clustered to the stated count, so a
+    /// stretch where only Alice talks was forced to yield two "speakers" —
+    /// two arbitrary halves of Alice. Windows now discover their own voices and
+    /// the count is applied once, here, so the halves rejoin and the two real
+    /// people come out as two people.
+    #[test]
+    fn over_segmented_pieces_of_one_voice_rejoin() {
+        let alice = [1.0, 0.05, 0.0];
+        let bob = [0.0, 1.0, 0.05];
+        let fragments = vec![
+            // Window 1: Alice only, split into two by an over-eager clusterer.
+            frag(Some(&alice), 0, 30_000),
+            frag(Some(&[1.0, 0.10, 0.0]), 30_000, 60_000),
+            // Window 2: Alice and Bob, likewise split.
+            frag(Some(&[0.98, 0.0, 0.0]), 60_000, 90_000),
+            frag(Some(&bob), 90_000, 120_000),
+            frag(Some(&[0.0, 0.97, 0.10]), 120_000, 150_000),
+        ];
+
+        let groups = partition(&cluster_fragments(&fragments, Some(2)));
+        assert_eq!(groups, vec![vec![0, 1, 2], vec![3, 4]], "groups = {groups:?}");
+    }
+
+    /// Clustering has to stay cheap enough that letting each window report
+    /// every voice it heard is affordable.
+    ///
+    /// Windows used to be pinned to the speaker count, which capped the
+    /// fragment count at a handful. They are not any more, so a long recording
+    /// arrives here with hundreds of fragments — and the old merge loop
+    /// recomputed average linkage from the raw embeddings on every iteration,
+    /// which at this size is billions of floating-point operations. A debug
+    /// build finishing this comfortably is the guard.
+    #[test]
+    fn clustering_scales_to_a_long_recordings_fragments() {
+        let mut fragments = Vec::new();
+        for i in 0..300 {
+            // Six voices, each nudged slightly per fragment so nothing is exactly
+            // equal and the merge order has real work to do.
+            let voice = i % 6;
+            let mut emb = vec![0.0f32; 6];
+            emb[voice] = 1.0;
+            emb[(voice + 1) % 6] = 0.02 * (i / 6) as f32;
+            let t = i as i64 * 10_000;
+            fragments.push(frag(Some(&emb), t, t + 9_000));
+        }
+
+        let started = std::time::Instant::now();
+        let groups = partition(&cluster_fragments(&fragments, Some(6)));
+        let elapsed = started.elapsed();
+
+        assert_eq!(groups.len(), 6);
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "clustering 300 fragments took {elapsed:?}"
+        );
     }
 
     /// Three voices, several stretches each, must come back as three speakers
@@ -985,70 +920,6 @@ mod tests {
             .collect();
 
         assert_eq!(partition(&cluster_fragments(&fragments, None)).len(), 1);
-    }
-
-
-    /// A fragment too short to embed is attributed to the nearest identified
-    /// speaker instead of becoming a phantom participant. Before this, a long
-    /// meeting reported ~150 speakers that each spoke once.
-    #[test]
-    fn unidentifiable_fragment_takes_the_nearest_speaker() {
-        let turns = vec![
-            turn(0, 0, 10_000),      // identified -> global 7
-            turn(9, 10_100, 10_300), // fragment, no embedding
-            turn(1, 20_000, 30_000), // identified -> global 4
-        ];
-        let mapping = HashMap::from([(0, 7), (1, 4)]);
-
-        // Sits just after speaker 0's turn, so it belongs to global 7.
-        assert_eq!(nearest_mapped_speaker(&turns, &mapping, &turns[1]), 7);
-
-        // A fragment adjacent to the later turn resolves to global 4 instead.
-        let late = turn(9, 29_000, 29_200);
-        assert_eq!(nearest_mapped_speaker(&turns, &mapping, &late), 4);
-    }
-
-    /// `match_global_speaker` must not create anything — the duration gate in
-    /// the chunked path depends on being able to test for a match separately
-    /// from committing to a new speaker.
-    #[test]
-    fn matching_alone_never_creates_a_speaker() {
-        let mut centroids = vec![(unit(&[1.0, 0.0, 0.0]), 1)];
-
-        // An unrecognised voice reports no match and leaves the set untouched.
-        assert_eq!(match_global_speaker(&mut centroids, &unit(&[0.0, 1.0, 0.0])), None);
-        assert_eq!(centroids.len(), 1);
-
-        // A recognised one matches, still without growing the set.
-        assert_eq!(match_global_speaker(&mut centroids, &unit(&[0.99, 0.14, 0.0])), Some(0));
-        assert_eq!(centroids.len(), 1);
-    }
-
-    /// The duration gate: a brief unrecognised burst is below the floor and must
-    /// not found a participant, while a substantial one must.
-    #[test]
-    fn only_substantial_speech_founds_a_new_speaker() {
-        let brief = MIN_NEW_SPEAKER_MS - 1;
-        let substantial = MIN_NEW_SPEAKER_MS;
-
-        assert!(brief < MIN_NEW_SPEAKER_MS, "guard: brief is under the floor");
-        assert!(substantial >= MIN_NEW_SPEAKER_MS, "guard: substantial clears it");
-
-        // Mirrors the chunked path's decision for an unrecognised speaker.
-        let mut centroids = vec![(unit(&[1.0, 0.0, 0.0]), 1)];
-        let stranger = unit(&[0.0, 1.0, 0.0]);
-
-        if match_global_speaker(&mut centroids, &stranger).is_none() && brief >= MIN_NEW_SPEAKER_MS {
-            push_global_speaker(&mut centroids, &stranger);
-        }
-        assert_eq!(centroids.len(), 1, "a brief burst must not add a speaker");
-
-        if match_global_speaker(&mut centroids, &stranger).is_none()
-            && substantial >= MIN_NEW_SPEAKER_MS
-        {
-            push_global_speaker(&mut centroids, &stranger);
-        }
-        assert_eq!(centroids.len(), 2, "substantial speech must add one");
     }
 
     /// A turn inside the limit must go to the model whole — splitting audio

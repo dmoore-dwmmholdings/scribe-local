@@ -119,6 +119,37 @@ pub struct AsrConfig {
     /// Boost applied to hotwords (typical range 1.5–3.0; higher = stronger bias
     /// but more risk of false positives). Only used when `hotwords_file` is set.
     pub hotwords_score: f32,
+    /// ONNX Runtime intra-op threads per speech model. `0` picks a thread count
+    /// from the machine (see [`AsrConfig::resolved_num_threads`]).
+    pub num_threads: usize,
+}
+
+/// Cap on the auto-detected ONNX thread count.
+///
+/// ONNX Runtime stops scaling well before a big machine's core count on these
+/// models — the graphs are not wide enough to keep dozens of threads busy, and
+/// past this point the scheduling overhead costs more than the parallelism
+/// buys. It also leaves cores for the rest of the worker, which is running a
+/// database, an HTTP server and possibly a second stage alongside this one.
+const MAX_AUTO_ASR_THREADS: usize = 8;
+
+impl AsrConfig {
+    /// Threads to give each speech model, resolving the `0` default.
+    ///
+    /// The default used to be a hardcoded 2, which on any modern machine left
+    /// most of the CPU idle through the longest stage in the pipeline. ONNX
+    /// Runtime parallelises a single `decode` call across these threads, so this
+    /// is close to a straight multiplier on transcription and diarization speed
+    /// until it saturates.
+    pub fn resolved_num_threads(&self) -> i32 {
+        if self.num_threads > 0 {
+            return self.num_threads as i32;
+        }
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2)
+            .clamp(1, MAX_AUTO_ASR_THREADS) as i32
+    }
 }
 
 /// Default non-lexical fillers stripped from transcripts. Deliberately
@@ -329,6 +360,7 @@ impl Default for AsrConfig {
             filler_words: default_filler_words(),
             hotwords_file: None,
             hotwords_score: 2.0,
+            num_threads: 0,
         }
     }
 }

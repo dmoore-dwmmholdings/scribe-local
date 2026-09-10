@@ -16,10 +16,6 @@ use scribe_core::Result;
 use crate::stub::StubEngine;
 use crate::types::{Diarizer, SpeakerEmbedder, Transcriber};
 
-/// Default thread count for the ONNX runtime when running on CPU.
-#[cfg(feature = "onnx")]
-const DEFAULT_NUM_THREADS: i32 = 2;
-
 /// Holds the three loaded speech models behind trait objects.
 ///
 /// The concrete types differ between the real and stub builds, but the public
@@ -65,6 +61,7 @@ impl SpeechEngine {
                             backend = "onnx",
                             models_dir = %models_dir.display(),
                             model = %cfg.model,
+                            num_threads = cfg.resolved_num_threads(),
                             "loaded real speech engine"
                         );
                         return Ok(engine);
@@ -110,6 +107,9 @@ impl SpeechEngine {
         use crate::real::{SherpaDiarizer, SherpaEmbedder, SherpaTranscriber};
         use scribe_core::Error;
 
+        // One thread budget for all three models: they run one at a time.
+        let num_threads = cfg.resolved_num_threads();
+
         // `[asr].model` names a subdirectory of `{models_dir}/asr` when one
         // exists, so Whisper and Parakeet can be installed side by side; the
         // layout itself is detected from the files, not from the name.
@@ -129,7 +129,7 @@ impl SpeechEngine {
         let transcriber: Arc<dyn Transcriber> = Arc::new(SherpaTranscriber::load(
             asr_paths,
             &cfg.device,
-            DEFAULT_NUM_THREADS,
+            num_threads,
             cfg.hotwords_file.as_deref(),
             cfg.hotwords_score,
         )?);
@@ -140,13 +140,13 @@ impl SpeechEngine {
         let diarizer: Arc<dyn Diarizer> = Arc::new(SherpaDiarizer::load(
             diar_paths.clone(),
             &cfg.device,
-            DEFAULT_NUM_THREADS,
+            num_threads,
         )?);
 
         let embedder: Arc<dyn SpeakerEmbedder> = Arc::new(SherpaEmbedder::load(
             &diar_paths.embedding,
             &cfg.device,
-            DEFAULT_NUM_THREADS,
+            num_threads,
         )?);
 
         Ok(SpeechEngine {

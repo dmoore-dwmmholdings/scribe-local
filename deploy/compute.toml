@@ -69,6 +69,12 @@ diarization = true
 # "cuda" requires a CUDA-capable GPU and the CUDA ONNX runtime provider.
 device = "cuda"
 
+# ONNX intra-op threads per speech model. 0 (the default) picks a thread count
+# from the machine, capped at 8 — these graphs stop scaling past that, and the
+# worker needs cores for everything else. Raise it on a dedicated CPU-only
+# transcription box; lower it if the worker shares a machine with other work.
+num_threads = 0
+
 # ─────────────────────────────────────────────────────────────
 # Worker loop
 # ─────────────────────────────────────────────────────────────
