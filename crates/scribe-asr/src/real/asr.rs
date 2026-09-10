@@ -21,6 +21,22 @@ const WHISPER_WINDOW_MS: i64 = 28_000;
 
 /// Longest clip handed to a transducer in one `accept_waveform` call.
 ///
+/// This was 150 s, chosen as the largest value that stays clear of the hard
+/// limit below. That is a bound on what the model *tolerates*, and it turns out
+/// to be nowhere near what it is *good at*. On eleven minutes of degraded
+/// four-voice conversation the word error rate is 19.1% at 150 s and 5.1% at
+/// 30 s; on the same audio clean, both are under 1%. Long-form transducer
+/// decoding does not fail loudly when it goes wrong — it silently omits a
+/// stretch and carries on, and on one recording it dropped fifty-four seconds
+/// and ten consecutive turns out of the middle of a transcript while still
+/// producing words either side of the gap.
+///
+/// 30 s sits in the middle of the range that measured well (20–45 s). Shorter
+/// windows also decode slightly *faster*, since the encoder's self-attention
+/// grows with the square of the sequence length.
+///
+/// ## The hard limit this still has to respect
+///
 /// Transducers decode arbitrary length *algorithmically*, but the exported ONNX
 /// graph does not: Parakeet TDT 0.6b v3 carries a fixed-size self-attention mask
 /// of 2500 encoder frames. At 8× subsampling of 10 ms frames (80 ms per encoder
@@ -33,9 +49,7 @@ const WHISPER_WINDOW_MS: i64 = 28_000;
 /// LeftShape: {1,8,7500,7500}, RightShape: {1,8,7500,2500}
 /// fatal runtime error: Rust cannot catch foreign exceptions, aborting
 /// ```
-///
-/// 150 s (1875 frames) leaves clear headroom under the 2500-frame ceiling.
-const TRANSDUCER_WINDOW_MS: i64 = 150_000;
+const TRANSDUCER_WINDOW_MS: i64 = 30_000;
 
 /// A decode is trusted when its word timings reach this fraction of the clip.
 /// Real speech ends before the audio does — a pause, a closing silence — so this
@@ -50,6 +64,53 @@ const MIN_RECOVER_MS: i64 = 4_000;
 /// Bound on extra passes, so a model that emits one word per attempt cannot
 /// turn one recording into an unbounded decode loop.
 const MAX_RECOVERY_PASSES: usize = 6;
+
+/// How far back from a window's nominal end to look for a quiet moment to cut at.
+///
+/// A quarter of the window: far enough to reach a pause in ordinary speech,
+/// near enough that windows stay close to the size asked for.
+const CUT_SEARCH_FRACTION: usize = 4;
+
+/// Frame size for the quiet-point search.
+const CUT_FRAME: usize = 320; // 20 ms at 16 kHz
+
+/// Choose where to end a decode window: the quietest moment near its nominal end.
+///
+/// Windows used to end at a fixed offset, which lands mid-word as often as not —
+/// and a word split across two decodes is mangled in both. That shows up as
+/// word error rate bouncing around with the window size for no principled
+/// reason: 15 s beat 30 s on one recording and lost to it on another, which is
+/// not a fact about window sizes but about where their boundaries happened to
+/// fall.
+///
+/// Cutting at the quietest point in the last stretch of the window puts the
+/// boundary in a pause instead. There is no threshold to tune and no failure
+/// case: some moment is always the quietest, and in speech the quietest moment
+/// of a several-second span is a gap between words.
+fn choose_window_end(samples: &[f32], start: usize, nominal_end: usize) -> usize {
+    if nominal_end >= samples.len() {
+        return samples.len();
+    }
+    let span = nominal_end - start;
+    let band = span / CUT_SEARCH_FRACTION;
+    if band < CUT_FRAME * 2 {
+        return nominal_end;
+    }
+
+    let from = nominal_end - band;
+    let mut best = nominal_end;
+    let mut best_energy = f32::MAX;
+    let mut at = from;
+    while at + CUT_FRAME <= nominal_end {
+        let energy: f32 = samples[at..at + CUT_FRAME].iter().map(|x| x * x).sum();
+        if energy < best_energy {
+            best_energy = energy;
+            best = at + CUT_FRAME / 2;
+        }
+        at += CUT_FRAME;
+    }
+    best
+}
 
 fn samples_to_ms(samples: usize, sample_rate: u32) -> i64 {
     if sample_rate == 0 {
@@ -272,7 +333,13 @@ impl Transcriber for SherpaTranscriber {
         let sr = audio.sample_rate;
 
         // Single pass whenever the clip already fits the model's window.
-        let window = ((self.max_clip_ms * sr as i64) / 1000) as usize;
+        // SCRIBE_ASR_WINDOW_MS overrides the window, which is how its value was
+        // chosen; see docs/measuring-diarization.md.
+        let max_clip_ms = std::env::var("SCRIBE_ASR_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(self.max_clip_ms);
+        let window = ((max_clip_ms * sr as i64) / 1000) as usize;
         if window == 0 || audio.samples.len() <= window {
             return self.decode_span(sr, &audio.samples, 0);
         }
@@ -286,7 +353,8 @@ impl Transcriber for SherpaTranscriber {
         let mut words: Vec<AsrWord> = Vec::new();
         let mut start = 0usize;
         while start < audio.samples.len() {
-            let end = (start + window).min(audio.samples.len());
+            let nominal = (start + window).min(audio.samples.len());
+            let end = choose_window_end(&audio.samples, start, nominal);
             let offset_ms = (start as i64 * 1000) / sr as i64;
             let part = self.decode_span(sr, &audio.samples[start..end], offset_ms)?;
             let piece = part.text.trim();
@@ -487,6 +555,39 @@ mod tests {
     }
 
     /// A zero-length clip must not panic or produce negative timings.
+    #[test]
+    fn a_window_ends_at_the_quiet_moment_near_its_target() {
+        // Two seconds of tone, 300 ms of silence, two more seconds of tone.
+        let sr = 16_000usize;
+        let mut samples: Vec<f32> = (0..sr * 2).map(|i| (i as f32 / 40.0).sin() * 0.3).collect();
+        let gap = samples.len();
+        samples.extend(std::iter::repeat(0.0).take(sr * 300 / 1000));
+        let gap_end = samples.len();
+        samples.extend((0..sr * 2).map(|i| (i as f32 / 40.0).sin() * 0.3));
+
+        // A nominal end just past the silence: the cut should fall inside it,
+        // not at the nominal point in the middle of the second tone.
+        let nominal = gap_end + sr / 2;
+        let end = choose_window_end(&samples, 0, nominal);
+        assert!(
+            (gap..=gap_end).contains(&end),
+            "cut at {end}, silence is {gap}..{gap_end}"
+        );
+    }
+
+    #[test]
+    fn the_last_window_ends_at_the_end_of_the_audio() {
+        let samples = vec![0.1f32; 16_000];
+        assert_eq!(choose_window_end(&samples, 0, 32_000), samples.len());
+    }
+
+    #[test]
+    fn a_window_too_short_to_search_keeps_its_nominal_end() {
+        let samples = vec![0.1f32; 16_000];
+        // A band of a quarter of 400 samples is under two frames.
+        assert_eq!(choose_window_end(&samples, 0, 400), 400);
+    }
+
     #[test]
     fn zero_length_clip_is_safe() {
         let words = build_words("hello world", &[], &None, &None, 0);

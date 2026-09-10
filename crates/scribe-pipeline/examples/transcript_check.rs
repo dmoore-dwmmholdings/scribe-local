@@ -56,8 +56,18 @@ fn main() {
     let transcript = engine.transcriber().transcribe(&wav).expect("transcribe");
     let asr_secs = t0.elapsed().as_secs_f64();
 
+    // TRANSCRIPT_CHECK_ASR_ONLY skips diarization, for sweeps that only care
+    // about the words.
     let t1 = std::time::Instant::now();
-    let diarization = engine.diarizer().diarize(&wav, None).expect("diarize");
+    let diarization = if std::env::var("TRANSCRIPT_CHECK_ASR_ONLY").is_ok() {
+        scribe_asr::Diarization {
+            turns: Vec::new(),
+            embeddings: Default::default(),
+            num_speakers: 0,
+        }
+    } else {
+        engine.diarizer().diarize(&wav, None).expect("diarize")
+    };
     let diar_secs = t1.elapsed().as_secs_f64();
 
     let audio_ms = truth.turns.last().map(|t| t.end_ms).unwrap_or(0);

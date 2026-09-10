@@ -131,6 +131,41 @@ Note that `smoothed` reads 0 on both fixtures: the stray-word smoothing never
 fires on audio this clean, so it remains unmeasured. It is written to be inert
 when diarization and ASR agree, and that is all these numbers show.
 
+## Dirty audio
+
+`scripts/degrade-audio.py` puts a fixture through a room: reverberation, pink
+noise at a chosen signal-to-noise ratio, and a per-speaker gain for somebody
+sitting away from the microphone.
+
+```bash
+python3 scripts/degrade-audio.py in.wav out.wav \
+    --reverb 0.4 --snr 15 --far Karen=0.3 --truth truth.json
+```
+
+Reverb and level differences matter more than noise: they change a voice's
+spectrum, which is what a speaker embedding measures, where broadband noise
+mostly buries it. Everything above this section was measured on audio with none
+of the three, and it flattered the transcriber badly — the diarizer much less.
+
+Word error rate on the "dirty" preset above (RT60 0.4 s, 15 dB SNR, one speaker
+at a third of the level):
+
+| fixture | before | after |
+|---|---|---|
+| 4 voices, 2.5 min, clean | 4.2% | 1.5% |
+| 4 voices, 2.5 min, dirty | 57.4% | 5.1% |
+| 4 voices, 11.1 min, clean | 0.6% | 1.0% |
+| 4 voices, 11.1 min, dirty | 19.1% | 5.1% |
+
+"Before" is a 150-second decode window cut at a fixed offset; "after" is 30
+seconds cut at the quietest nearby moment. The eleven-minute clean case is 8
+edits worse out of 2060 words, which is the price of moving boundaries around,
+and is paid back four times over everywhere else.
+
+Speaker attribution barely moves under degradation: 99.9% of words on the right
+person on the dirty eleven-minute fixture, against 100.0% clean. The splitting
+and clustering work described above is not what these conditions break.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —
