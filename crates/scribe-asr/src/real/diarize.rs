@@ -53,14 +53,19 @@ const COHESION_RATIO: f32 = 0.73;
 /// a segment at. These are sherpa's own defaults, carried explicitly so they are
 /// measured rather than inherited.
 ///
-/// Swept, they do not matter: `min_duration_off` from 0.05 to 0.5 leaves the
-/// fast-conversation, six-voice and eleven-minute fixtures identical to the
-/// decimal. It looked like the obvious lever for handovers shorter than the
-/// split threshold and it is not one, because these turns are re-split at
-/// silence afterwards and sherpa's own segment boundaries within a turn are
-/// discarded. The values are live — `min_duration_on` at 5.0 collapses a
-/// six-voice recording to four speakers at 53.3% — so the flat sweep is a
-/// result rather than a disconnected knob.
+/// Swept once against fixtures that repeated each sentence four times, these
+/// looked inert, and this comment said so. On fixtures that do not repeat
+/// themselves `min_duration_off` is a sharp optimum rather than a flat one, and
+/// 0.5 — which is also sherpa's default — is the peak:
+///
+///   min_duration_off   0.05          0.2           0.5           0.7
+///   8 voices, reverb   7 spk 86.6%   7 spk 86.4%   8 spk 98.6%   7 spk 86.7%
+///   6 voices, reverb   7 spk 94.2%   6 spk 98.1%   6 spk 98.1%   6 spk 98.1%
+///
+/// Being carried explicitly rather than inherited is what matters here: the
+/// right value happens to be the upstream default, so nothing needed changing,
+/// but a future sherpa release moving it would cost a speaker on an eight-voice
+/// recording and nothing would say why.
 const MIN_DURATION_ON: f32 = 0.3;
 const MIN_DURATION_OFF: f32 = 0.5;
 

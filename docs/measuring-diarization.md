@@ -513,17 +513,26 @@ one is available.
 Four candidates from the sherpa model zoo, dropped in against the current
 ERes2Net with nothing else changed:
 
+Re-measured against the rebuilt fixtures, since the first pass at this used the
+ones that repeated each sentence four times:
+
 | fixture | ERes2Net (current) | TitaNet-small | ERes2NetV2 |
 |---|---|---|---|
-| 4 voices, one moving | **4 spk, 99.8%** | 5 spk, 92.6% | 4 spk, 99.8% |
-| 6 voices, reverb+noise | **6 spk, 97.4%** | 6 spk, 97.4% | 5 spk, 81.0% |
-| 8 voices, reverb+noise | **8 spk, 97.7%** | 9 spk, 90.6% | 7 spk, 85.1% |
-| 6 voices, fast conversation | 6 spk, 92.8% | **6 spk, 93.3%** | 5 spk, 77.9% |
-| 4 voices, 11 min, degraded | **4 spk, 99.5%** | 5 spk, 97.8% | 4 spk, 99.2% |
-| brief 5th speaker | 5 spk, 99.6% | 5 spk, 99.6% | 5 spk, 99.6% |
+| 4 voices, one moving | **4 spk, 99.8%** | 6 spk, 85.9% | 4 spk, 99.8% |
+| 4 voices, reverb+noise | **4 spk, 99.6%** | 4 spk, 99.6% | 4 spk, 99.6% |
+| 6 voices, reverb+noise | **6 spk, 98.1%** | 6 spk, 96.3% | 5 spk, 80.0% |
+| 8 voices, reverb+noise | **8 spk, 98.6%** | 6 spk, 75.7% | 7 spk, 86.9% |
+| 6 voices, fast + reverb | 7 spk, 90.8% | **6 spk, 92.4%** | 5 spk, 77.6% |
+| 4 voices, 11 min, degraded | **4 spk, 99.5%** | 4 spk, 99.4% | 4 spk, 99.5% |
+| brief 5th speaker | 5 spk, 99.6% | 5 spk, 99.6% | 5 spk, 99.5% |
+| half of it silence | **4 spk, 99.8%** | 4 spk, 99.2% | 4 spk, 99.6% |
 
 The current model wins or ties everywhere except fast conversation, where
-TitaNet-small is 0.5 of a point ahead.
+TitaNet-small is 1.6 points ahead and gets the count right. It pays for that
+with eight voices, where it returns six speakers at 75.7% against 98.6%.
+
+This conclusion survived the fixture fix with wider margins than it had before,
+which is not something every conclusion on this page managed.
 
 **Both alternatives were given a re-tune before being dismissed**, since the cut
 threshold is calibrated to a model's similarity scale and a drop-in comparison
@@ -724,16 +733,23 @@ things looked like they should fix it.
 
 **sherpa's own minimum silence.** `min_duration_off` defaults to 0.5 s and this
 code had never set it — a 500 ms floor on splitting a segment, against gaps of
-80–250 ms. It looked decisive. Swept from 0.05 to 0.5 it changes nothing at all:
-the fast-conversation, six-voice and eleven-minute fixtures come back identical
-to the decimal at every value.
+80–250 ms. Swept against the original fixtures it changed nothing at any value,
+and this section said it was inert.
 
-The reason is that these segments are re-split at silence afterwards and
-sherpa's own boundaries within a turn are thrown away, so its post-processing
-has nothing left to decide. The values are live — `min_duration_on` at 5 s
-collapses a six-voice recording to four speakers at 53.3% — so this is a result
-and not another disconnected knob. Both are now set explicitly rather than
-inherited.
+That was another casualty of the repeated sentences. On the rebuilt fixtures it
+is a sharp optimum, and the peak is 0.5 — the value sherpa already used:
+
+| `min_duration_off` | 0.05 | 0.2 | **0.5** | 0.7 |
+|---|---|---|---|---|
+| 8 voices, reverb+noise | 7 spk, 86.6% | 7 spk, 86.4% | **8 spk, 98.6%** | 7 spk, 86.7% |
+| 6 voices, reverb+noise | 7 spk, 94.2% | 6 spk, 98.1% | **6 spk, 98.1%** | 6 spk, 98.1% |
+
+Nothing needed changing, since the right value was the one being inherited. What
+matters is that it is now set explicitly: a future sherpa release moving its
+default would cost a speaker on an eight-voice recording, and nothing in this
+code would have said why. It is still not a route to handovers shorter than the
+split threshold — 0.05 does not rescue fast conversation, it costs six voices a
+speaker.
 
 **Splitting a fragment and comparing its halves.** If a fragment secretly holds
 two people, its two halves should not match, and a second pass could find the
@@ -755,9 +771,9 @@ present at the granularity being asked. `SCRIBE_DIARIZE_HALVES=1` prints the
 table, so the question can be put again to a better embedding model, which is
 the thing that would have to change.
 
-So 92.8% stands as the floor for fast conversation, and the three levers that
-could move it — a shorter split threshold, sherpa's minimum silence, a
-second-pass split — are all measured and all rejected.
+So fast conversation stands where it is, and the three levers that could move it
+— a shorter split threshold, sherpa's minimum silence, a second-pass split — are
+all measured and all rejected.
 
 ## How long the pauses are, which nobody had varied
 
