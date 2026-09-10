@@ -237,6 +237,50 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## What the participant floor is actually protecting
+
+Appending thirty seconds of room tone to the end of a recording — the sound of
+a meeting that has finished but is still recording, which is most of them —
+turns a six-voice fixture into a seven-voice one.
+
+The room tone is not the speaker. It produces no segments at all: pyannote
+ignores it correctly. What happens is that the longer file shifts the
+segmentation windows slightly, the segment boundaries move a little, and a
+1.6-second sliver at a Karen-to-Moira handover that used to fold into a real
+speaker instead survives as a cluster of its own.
+
+So this is not a silence bug, and it is worth being precise about that. Four
+other fixtures — four voices, six clean, fast conversation, eight voices — are
+unaffected by the same thirty seconds, two of them improving slightly. It is one
+recording sitting near a fold-or-not boundary, tipped by a trivial change to its
+input. The useful conclusion is about how much weight these numbers carry: on a
+recording near that boundary the speaker *count* can flip on a change that has
+nothing to do with the speech.
+
+**The fix that works, and why it is not taken.** The sliver holds 4.2 s against a
+3 s participant floor. Raising the floor to 5 s folds it away and the recording
+returns to six speakers at 99.2%, better than the 97.4% it started at, with the
+six-voice, fast-conversation, eight-voice and single-voice fixtures all
+unchanged. It looks free.
+
+It is not free, and nothing on this page could see the cost, because every
+speaker in every fixture talks for a fifth of the recording. Spliced a fifth
+person into a four-voice meeting who says one sentence and nothing else — 4.7
+seconds out of 153:
+
+| | floor 3 s | floor 5 s |
+|---|---|---|
+| clean | **5 spk, 99.9%** | 4 spk, 96.6% |
+| reverb+noise | **5 spk, 99.6%** | 4 spk, 96.2% |
+
+At 5 s that person does not exist. Their sentence is handed to whoever spoke
+next, and nothing in the output suggests anyone is missing. A phantom cluster is
+cosmetic and a person missing from a transcript is not, so the floor stays at
+3 s and the phantom stays with it.
+
+`scripts/add-brief-speaker.py` builds that fixture and two checks in the
+regression suite hold the floor down. Raising it to 5 s fails both.
+
 ## Two ways to reach a handover shorter than the split threshold, both dead
 
 Fast conversation scores 92.8% because a gap under 160 ms produces no cut, so

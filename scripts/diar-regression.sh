@@ -118,6 +118,18 @@ if [ "${1:-}" = "--full" ]; then
   degrade tight dirty --reverb 0.4 --snr 15
   check "6 voices, gaps under 250 ms"  tight conversation 6 95.0
   check "6 voices, tight and degraded" tight dirty        6 90.0
+
+  # Someone who speaks once and briefly is still a participant. This is the
+  # check that stops the participant floor being raised to tidy away slivers:
+  # at 5 s this person disappears entirely and their sentence is handed to
+  # whoever spoke next.
+  if [ ! -f "$FIX/brief/conversation.wav" ]; then
+    echo "  building fixture brief…"
+    $PY scripts/add-brief-speaker.py "$FIX/four" "$FIX/brief" >/dev/null
+  fi
+  degrade brief dirty --reverb 0.4 --snr 15
+  check "5th speaker, 4.7 s of 153 s"  brief conversation 5 99.0
+  check "the same, reverb+noise"       brief dirty        5 99.0
 fi
 
 # The words themselves, and whether a name carries from one recording to the
