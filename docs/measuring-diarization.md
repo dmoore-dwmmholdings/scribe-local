@@ -945,6 +945,34 @@ can offer to use the existing name instead.
 The remedy works: merging the two identities takes recognition back from none
 to matched.
 
+### A poor first sample used to be permanent
+
+A voiceprint was written once and never changed. Enrolling the same person again
+under a second name makes them unrecognisable, as above, and enrolling under the
+same name did nothing at all — so a first sample that was short or noisy could
+not be improved by any route.
+
+It costs more than it looks. Enrolling Daniel from 1.2 seconds of quiet, noisy
+audio against enrolling him properly:
+
+| meeting B | good sample | poor sample |
+|---|---|---|
+| same room | 0.936 | 0.693 |
+| different room | 0.823 | 0.687 |
+| RT60 0.9 s, 8 dB | 0.697 | 0.670 |
+| RT60 1.4 s, 4 dB | 0.620 | 0.611 |
+
+He is still recognised in all eight cases, so nothing looks broken. But a
+stranger who resembles somebody scores about 0.61, and that is the number these
+have to stay clear of. The good voiceprint keeps a margin of 0.33 in a clean
+room; the poor one keeps 0.08, and in a bad room keeps none.
+
+`scribe enroll --replace` gives an existing speaker a new voice sample, and
+enrolling a name that is already taken now refuses and says so rather than
+quietly creating the duplicate that breaks recognition. The API takes
+`replace_voiceprint` for the same purpose. Replacing the poor voiceprint above
+takes recognition in a different room from 0.687 back to 0.824.
+
 ### If you already have enrolled speakers
 
 Voiceprints are not comparable between models: a vector from one means nothing

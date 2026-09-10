@@ -110,6 +110,16 @@ pub struct NameBody {
     /// identity so the voice is auto-matched in future recordings.
     #[serde(default)]
     pub enroll: bool,
+    /// Give this recording's voice to the speaker even if they already have one.
+    ///
+    /// A voiceprint is otherwise written once and never changed, so a first
+    /// sample that was short or noisy is permanent — and enrolling the same
+    /// person again under a second name stops them being recognised at all, so
+    /// there was no way out. Measured, replacing a poor voiceprint with a good
+    /// one took recognition in a different room from 0.69 to 0.82, against a
+    /// stranger at about 0.61.
+    #[serde(default)]
+    pub replace_voiceprint: bool,
 }
 
 /// `POST /recordings/{id}/speakers/{local_idx}/name`
@@ -170,7 +180,7 @@ pub async fn name_speaker(
     let mut already_enrolled_as: Option<String> = None;
     if body.enroll {
         if let Some(embedding) = rec_speaker.embedding.as_ref() {
-            if !enrolled {
+            if !enrolled || body.replace_voiceprint {
                 // Is this voice already in the library under a different name?
                 //
                 // Two entries for one voice do not merely give inconsistent

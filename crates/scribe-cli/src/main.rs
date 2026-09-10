@@ -215,6 +215,13 @@ struct EnrollArgs {
     /// Audio sample of the speaker's voice.
     #[arg(long, value_name = "FILE")]
     audio: PathBuf,
+
+    /// Give this voice to a speaker of that name who is already enrolled,
+    /// instead of refusing. Use when the first sample was a poor one: a
+    /// voiceprint is never updated otherwise, and enrolling a second entry for
+    /// the same voice stops it being recognised at all.
+    #[arg(long)]
+    replace: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -389,7 +396,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
 
         Command::Enroll(args) => {
             let db = connect(&cfg).await?;
-            let id = scribe_pipeline::enroll(&cfg, &db, &args.name, &args.audio).await?;
+            let id = scribe_pipeline::enroll(&cfg, &db, &args.name, &args.audio, args.replace).await?;
             println!("{id}");
             eprintln!("enrolled speaker `{}` as {id}", args.name);
             Ok(ExitCode::SUCCESS)

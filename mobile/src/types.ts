@@ -338,6 +338,15 @@ export interface NameSpeakerRequest {
   name?: string;
   speaker_id?: string;
   enroll?: boolean;
+  /**
+   * Give this recording's voice to the speaker even if they already have one.
+   *
+   * A voiceprint is otherwise written once and never changed, so a first sample
+   * that was short or noisy is permanent — and enrolling the same person again
+   * under a second name stops them being recognised at all, so there is no way
+   * out without this.
+   */
+  replace_voiceprint?: boolean;
 }
 
 /** Response from `POST /recordings/{id}/speakers/{local_idx}/name`. */
@@ -347,6 +356,8 @@ export interface NameSpeakerResponse {
   display_name: string;
   /** True once the identity carries a voiceprint (older backends omit this). */
   enrolled?: boolean;
+  /** Set when this voice is already in the library under a different name. */
+  already_enrolled_as?: string | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -155,7 +155,13 @@ pub async fn ingest_file(
 /// Enroll a known speaker from a voice sample. Transcodes the sample to the
 /// canonical 16 kHz mono WAV, computes its speaker embedding, and stores a named
 /// [`Speaker`](scribe_core::types::Speaker). Returns the new speaker id.
-pub async fn enroll(cfg: &Config, db: &Db, name: &str, audio: &Path) -> Result<Uuid> {
+pub async fn enroll(
+    cfg: &Config,
+    db: &Db,
+    name: &str,
+    audio: &Path,
+    replace: bool,
+) -> Result<Uuid> {
     if !audio.exists() {
         return Err(Error::BadRequest(format!(
             "enroll audio does not exist: {}",
@@ -180,6 +186,29 @@ pub async fn enroll(cfg: &Config, db: &Db, name: &str, audio: &Path) -> Result<U
     .map_err(|e| Error::pipeline("enroll", format!("embed task failed: {e}")))??;
 
     let _ = tokio::fs::remove_file(&wav).await;
+
+    // A second entry for a name that is already there is never what was meant.
+    // Two entries for one voice stop it being recognised at all, so this either
+    // updates the voice on the existing identity or refuses and says how.
+    let existing = db
+        .list_speakers()
+        .await?
+        .into_iter()
+        .find(|s| s.display_name.eq_ignore_ascii_case(name));
+
+    if let Some(s) = existing {
+        if !replace {
+            return Err(Error::BadRequest(format!(
+                "`{name}` is already enrolled ({}). Pass --replace to give them this \
+                 voice sample instead, which is what you want if the first one was \
+                 poor; a second entry for one voice stops them being recognised at all.",
+                s.id
+            )));
+        }
+        db.set_speaker_embedding(s.id, &embedding).await?;
+        tracing::info!(speaker_id = %s.id, name, "replaced enrolled speaker's voiceprint");
+        return Ok(s.id);
+    }
 
     warn_if_duplicate(db, name, &embedding).await;
     let speaker = db.create_speaker(name, Some(embedding)).await?;

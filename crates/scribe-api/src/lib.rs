@@ -31,7 +31,8 @@
 //! PUT    /recordings/{id}/segments/{seq}               (body limit disabled, streamed)
 //! GET    /recordings/{id}/segments/{seq}               (range support)
 //! GET    /recordings/{id}/audio                         (range support)
-//! POST   /recordings/{id}/speakers/{local_idx}/name      (tag by name or speaker_id)
+//! POST   /recordings/{id}/speakers/{local_idx}/name      (tag by name or speaker_id;
+//!                                                        `replace_voiceprint` re-learns the voice)
 //! DELETE /recordings/{id}/speakers/{local_idx}/name      (untag, back to "Speaker N")
 //! DELETE /recordings/{id}/speakers/{local_idx}           (not a participant: drop it)
 //! GET    /speakers                                       (enrolled speaker library)
