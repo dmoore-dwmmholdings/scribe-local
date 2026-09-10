@@ -494,8 +494,20 @@ participants who sound more like each other are merged instead.
 There is no signal in a single mixed channel that separates "person in this
 meeting" from "voice in this room". A quiet participant and a distant television
 both speak at a lower level, both mostly in the gaps, and both are somebody
-else's voice. The remedy is the one the app already has: rename or clear the
-speaker afterwards. Worth knowing before recording in a room with a radio in it.
+else's voice. Diarization is doing its job correctly here — it separated a
+voice, and a voice is what it was.
+
+So the remedy is a correction rather than a fix. `DELETE
+/recordings/{id}/speakers/{local_idx}` removes a diarized voice and every line
+attributed to it, then rebuilds the summary and the search index without them —
+in the app, long-press one of its lines and choose "Not a participant". Clearing
+the *name* was the only option before and is not enough: the lines stay in the
+transcript, and from there in the summary, so the meeting gets summarised partly
+from the weather forecast.
+
+On the fixture above that takes the recording from four speakers to three and
+removes exactly the three television lines. The audio is untouched, so a
+reprocess brings the voice back.
 
 ## Execution provider
 

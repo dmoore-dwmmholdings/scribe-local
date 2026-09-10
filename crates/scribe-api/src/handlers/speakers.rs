@@ -22,11 +22,51 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use scribe_core::types::Speaker;
+use scribe_core::types::{JobKind, Speaker};
 use scribe_core::Error;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+
+/// `DELETE /recordings/{id}/speakers/{local_idx}` → this voice was not a
+/// participant; remove it and everything it said.
+///
+/// Diarization separates voices, and a room can hold one that is not a person
+/// in the meeting: a television left on, a conversation through a wall, a phone
+/// on speaker. Measured, a television audible in the pauses comes back as the
+/// speaker with the *most* speech in the recording, because it talks steadily
+/// through every lull. Telling diarization how many people are present does not
+/// help — that constrains how many voices there are, not which are people, and
+/// the television is usually the most distinct voice in the room.
+///
+/// Clearing the name (`DELETE .../name`) leaves the lines in the transcript,
+/// and from there in the summary and the search index, so the meeting ends up
+/// summarised partly from the weather. This drops them and rebuilds both.
+///
+/// 404 if the recording or that speaker index is unknown. Responds 200 with the
+/// number of lines removed. The audio is untouched: `reprocess` brings the
+/// speaker back, since this corrects one run's output rather than excluding a
+/// voice permanently.
+pub async fn delete_recording_speaker(
+    State(state): State<AppState>,
+    Path((id, local_idx)): Path<(Uuid, i32)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    state.db.get_recording(id).await?;
+    let removed = state.db.delete_recording_speaker(id, local_idx).await?;
+
+    // The summary and the search index were built from a transcript that
+    // included this voice. Rebuild both; merge is already `done`, so each
+    // stage's predecessor gate is satisfied.
+    for kind in [JobKind::Embed, JobKind::Summarize] {
+        state.db.enqueue(id, kind, json!({})).await?;
+    }
+
+    Ok(Json(json!({
+        "id": id,
+        "local_idx": local_idx,
+        "utterances_removed": removed,
+    })))
+}
 
 /// An enrolled speaker as the clients see it.
 ///

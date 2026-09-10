@@ -66,6 +66,59 @@ impl Db {
         Ok(removed)
     }
 
+    /// Remove a diarized speaker from a recording, and everything they said.
+    ///
+    /// For a voice that is not a participant. Diarization separates voices, and
+    /// a room can contain one that is not a person in the meeting — a television
+    /// left on, a conversation through a wall, a phone on speaker. Measured, a
+    /// television audible in the pauses comes back as the speaker with the most
+    /// speech in the recording, because it talks steadily through every lull.
+    ///
+    /// Clearing the *name* was the only remedy and it is not enough: the lines
+    /// stay in the transcript, and from there they reach the summary and the
+    /// search index, so the meeting is summarised partly from the weather
+    /// forecast. This drops them.
+    ///
+    /// Returns the number of utterances removed. The audio is untouched, so
+    /// reprocessing brings the speaker back — this is a correction to one run's
+    /// output, not a permanent exclusion.
+    pub async fn delete_recording_speaker(
+        &self,
+        recording_id: Uuid,
+        local_idx: i32,
+    ) -> Result<u64> {
+        let mut tx = self.pool().begin().await.map_err(db_err)?;
+
+        let removed = sqlx::query(
+            "DELETE FROM utterances WHERE recording_id = $1 AND local_idx = $2",
+        )
+        .bind(recording_id)
+        .bind(local_idx)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+
+        let speakers = sqlx::query(
+            "DELETE FROM recording_speakers WHERE recording_id = $1 AND local_idx = $2",
+        )
+        .bind(recording_id)
+        .bind(local_idx)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+
+        if speakers == 0 {
+            return Err(Error::NotFound(format!(
+                "recording_speaker ({recording_id}, {local_idx})"
+            )));
+        }
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(removed)
+    }
+
     /// List the diarized speakers for a recording, ordered by `local_idx`, with
     /// each `display_name` filled from the joined [`Speaker`] when matched and
     /// defaulting to `"Speaker {local_idx}"` otherwise.

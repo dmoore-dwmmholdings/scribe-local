@@ -340,6 +340,28 @@ export const api = {
     });
   },
 
+  /**
+   * DELETE /recordings/{id}/speakers/{local_idx} — this voice was not a
+   * participant; remove it and every line attributed to it.
+   *
+   * For a voice diarization separated correctly but that is not a person in the
+   * meeting: a television left on, a conversation through a wall, a phone on
+   * speaker. Clearing the name is not enough — the lines stay in the transcript
+   * and from there reach the summary and search, so the meeting gets summarised
+   * partly from the weather. The server rebuilds both afterwards.
+   *
+   * The audio is untouched, so a reprocess brings the speaker back.
+   */
+  removeSpeakerFromRecording(
+    recordingId: string,
+    localIdx: number,
+  ): Promise<{ utterances_removed: number }> {
+    return apiFetch<{ utterances_removed: number }>(
+      `/recordings/${recordingId}/speakers/${localIdx}`,
+      { method: 'DELETE' },
+    );
+  },
+
   /** GET /speakers — the enrolled speaker library, shared across recordings. */
   listSpeakers(): Promise<ListSpeakersResponse> {
     return apiFetch<ListSpeakersResponse>('/speakers');

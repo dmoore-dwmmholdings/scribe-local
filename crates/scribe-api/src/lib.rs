@@ -33,6 +33,7 @@
 //! GET    /recordings/{id}/audio                         (range support)
 //! POST   /recordings/{id}/speakers/{local_idx}/name      (tag by name or speaker_id)
 //! DELETE /recordings/{id}/speakers/{local_idx}/name      (untag, back to "Speaker N")
+//! DELETE /recordings/{id}/speakers/{local_idx}           (not a participant: drop it)
 //! GET    /speakers                                       (enrolled speaker library)
 //! PATCH  /speakers/{id}                                  (rename everywhere)
 //! DELETE /speakers/{id}                                  (forget a speaker)
@@ -138,6 +139,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/recordings/{id}/speakers/{local_idx}/name",
             post(handlers::speakers::name_speaker).delete(handlers::speakers::unname_speaker),
+        )
+        .route(
+            "/recordings/{id}/speakers/{local_idx}",
+            axum::routing::delete(handlers::speakers::delete_recording_speaker),
         )
         .route("/speakers", get(handlers::speakers::list_speakers))
         .route(

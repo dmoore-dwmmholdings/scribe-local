@@ -357,14 +357,18 @@ function TemplateSheet({
 function UtteranceActionSheet({
   visible,
   canTag,
+  speakerLabel,
   onEdit,
   onRename,
+  onRemoveSpeaker,
   onDismiss,
 }: {
   visible: boolean;
   canTag: boolean;
+  speakerLabel: string;
   onEdit: () => void;
   onRename: () => void;
+  onRemoveSpeaker: () => void;
   onDismiss: () => void;
 }) {
   return (
@@ -386,6 +390,22 @@ function UtteranceActionSheet({
                 <Text style={styles.sheetRowSub}>Reuse a name across recordings</Text>
               </View>
               <Ionicons name="person-outline" size={18} color={colors.accent} />
+            </TouchableOpacity>
+          )}
+          {canTag && (
+            <TouchableOpacity
+              style={styles.sheetRow}
+              onPress={onRemoveSpeaker}
+              accessibilityRole="button"
+            >
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>Not a participant</Text>
+                <Text style={styles.sheetRowSub}>
+                  Remove {speakerLabel} and everything they said — for a TV, or someone
+                  through a wall
+                </Text>
+              </View>
+              <Ionicons name="close-circle-outline" size={18} color={colors.amber} />
             </TouchableOpacity>
           )}
           <TouchableOpacity style={styles.modalCancel} onPress={onDismiss}>
@@ -1038,6 +1058,54 @@ export default function RecordingDetailScreen() {
     [id, rediarize],
   );
 
+  /** How this recording labels a diarized speaker, for confirmation copy. */
+  const speakerLabelFor = useCallback(
+    (localIdx: number | null) => {
+      if (localIdx == null) return 'this speaker';
+      const s = detail?.speakers?.find((x) => x.local_idx === localIdx);
+      return s?.display_name ?? `Speaker ${localIdx}`;
+    },
+    [detail],
+  );
+
+  /**
+   * Drop a voice that is not a participant, and everything it said.
+   *
+   * Diarization separates voices; a room can hold one that is not a person in
+   * the meeting. Clearing the name leaves the lines in the transcript and so in
+   * the summary and search, which is how a meeting ends up summarised partly
+   * from the weather forecast.
+   */
+  const handleRemoveSpeaker = useCallback(
+    (localIdx: number) => {
+      if (!id) return;
+      const who = speakerLabelFor(localIdx);
+      Alert.alert(
+        'Not a participant',
+        `Remove ${who} and every line they said? The summary is rebuilt without them. Reprocessing the recording brings them back.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Remove',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await api.removeSpeakerFromRecording(id, localIdx);
+                await loadDetail();
+              } catch (err) {
+                Alert.alert(
+                  'Could not remove speaker',
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [id, loadDetail, speakerLabelFor],
+  );
+
   const handleRediarize = useCallback(() => {
     setShowActions(false);
     if (!id) return;
@@ -1648,6 +1716,12 @@ export default function RecordingDetailScreen() {
           const u = utteranceAction;
           setUtteranceAction(null);
           setNamingUtterance(u);
+        }}
+        speakerLabel={speakerLabelFor(utteranceAction?.local_idx ?? null)}
+        onRemoveSpeaker={() => {
+          const u = utteranceAction;
+          setUtteranceAction(null);
+          if (u?.local_idx != null) handleRemoveSpeaker(u.local_idx);
         }}
         onDismiss={() => setUtteranceAction(null)}
       />

@@ -639,6 +639,94 @@ async fn full_api_flow() {
         "deleting a speaker un-tags the recordings it was in"
     );
 
+    // --- a voice that was not a participant --------------------------------
+    // A television in the room becomes a speaker, and clearing its name leaves
+    // its lines in the transcript, the summary and the search index. Removing
+    // it takes the lines with it.
+    // Give speaker 1 some lines to stand in for the television.
+    db.insert_utterances(
+        rec_id,
+        &[
+            NewUtterance {
+                local_idx: Some(1),
+                start_ms: 20_000,
+                end_ms: 24_000,
+                text: "and the weather for the rest of the week stays much the same".into(),
+                words: vec![],
+            },
+            NewUtterance {
+                local_idx: Some(1),
+                start_ms: 30_000,
+                end_ms: 33_000,
+                text: "our next guest has been writing about this for a decade".into(),
+                words: vec![],
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    let before = db.list_utterances_by_recording(rec_id).await.unwrap().len();
+    let with_idx_1 = db
+        .list_utterances_by_recording(rec_id)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|u| u.local_idx == Some(1))
+        .count();
+    assert!(with_idx_1 > 0, "guard: speaker 1 has lines to remove");
+
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/recordings/{rec_id}/speakers/1"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete recording speaker: {body}");
+    assert_eq!(body["utterances_removed"], json!(with_idx_1));
+
+    let after = db.list_utterances_by_recording(rec_id).await.unwrap();
+    assert_eq!(after.len(), before - with_idx_1, "only that speaker's lines went");
+    assert!(
+        after.iter().all(|u| u.local_idx != Some(1)),
+        "no line is still attributed to the removed speaker"
+    );
+    assert!(
+        db.list_recording_speakers(rec_id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|s| s.local_idx != 1),
+        "the speaker is gone from the roster"
+    );
+
+    // The summary and search index were built from a transcript that included
+    // it, so both are queued to be rebuilt.
+    let queued: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM jobs WHERE recording_id = $1 AND state = 'queued' ORDER BY kind",
+    )
+    .bind(rec_id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert!(queued.contains(&"embed".to_string()), "re-embed queued: {queued:?}");
+    assert!(queued.contains(&"summarize".to_string()), "re-summarize queued: {queued:?}");
+
+    // Removing a speaker who is not there is a 404, not a silent success.
+    let (status, _) = call(
+        &app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/recordings/{rec_id}/speakers/99"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown speaker index is 404");
+
     // --- rediarize --------------------------------------------------------
     // With no stored transcript there is nothing to re-diarize against, and the
     // caller is told to reprocess rather than left with a recording that fails
