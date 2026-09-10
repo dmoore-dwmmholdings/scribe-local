@@ -51,7 +51,13 @@ fn main() {
     // Load the diarizer straight from the model files.
     let paths = DiarizationModelPaths::discover(&models_dir)
         .expect("no diarization models under <models_dir>/diarization");
-    let threads = scribe_core::config::AsrConfig::default().resolved_num_threads();
+    // SCRIBE_ASR_THREADS overrides, so the effect of the thread count can be
+    // measured rather than assumed.
+    let threads = std::env::var("SCRIBE_ASR_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| scribe_core::config::AsrConfig::default().resolved_num_threads());
+    println!("threads          {threads}");
     let engine = SpeechEngine::load_diarizer_only(&paths, "cpu", threads).expect("load diarizer");
 
     let started = std::time::Instant::now();

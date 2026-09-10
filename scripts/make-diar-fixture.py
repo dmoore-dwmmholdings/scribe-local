@@ -3,7 +3,11 @@
 Writes `conversation.wav` (16 kHz mono) and `truth.json` recording exactly who
 spoke when, for `cargo run --example diarize_check`. See docs/measuring-diarization.md.
 
-    python3 scripts/make-diar-fixture.py <output-dir>
+    python3 scripts/make-diar-fixture.py <output-dir> [turns]
+
+With no turn count it builds a short conversation. Pass a larger number for a
+recording over ten minutes, which is where diarization switches to windowing the
+audio and stitching the speaker sets back together.
 
 Synthesised voices are not people: cleaner and more separable than a real room,
 so treat a score from this as an upper bound and a way to compare two changes on
@@ -11,20 +15,65 @@ identical audio, not as a prediction of field accuracy.
 """
 import json, os, subprocess, sys, wave
 
-LINES = [
-    ("Samantha", "Good morning everyone, thanks for joining the quarterly planning call today."),
-    ("Daniel",   "Morning. I have the revenue numbers ready whenever you want to walk through them."),
-    ("Karen",    "Before we start, could someone remind me where we landed on the hiring freeze?"),
-    ("Samantha", "We agreed to pause new requisitions until the end of the second quarter."),
-    ("Daniel",   "That is right, and it already shows up in the forecast I circulated last week."),
-    ("Karen",    "Understood. Then my only concern is whether support can absorb the extra volume."),
-    ("Samantha", "Let us take that offline and come back with a staffing proposal next Tuesday."),
-    ("Daniel",   "Works for me. I will pull the ticket backlog and share it before the meeting."),
-    ("Karen",    "Sounds good, I will bring the customer satisfaction trend for the same period."),
-    ("Samantha", "Excellent. Anything else anyone wants to raise before we close out this call?"),
-    ("Daniel",   "Nothing further from finance, we are in reasonable shape heading into the quarter."),
-    ("Karen",    "Same here, nothing urgent from the support side beyond what we already covered."),
+# A bank of distinct lines. Nothing is spoken twice: identical text through the
+# same voice synthesises to identical audio, which embeds to a cosine of 1.0 and
+# makes clustering look far easier than it is.
+SENTENCES = [
+    "I think the important thing is that we agree on sequencing before anyone starts building.",
+    "Let me pull up the figures from last quarter so we are all looking at the same page.",
+    "That does not match what I remember, but I am very happy to be corrected on the detail.",
+    "We should write this down somewhere more permanent than the recording of a meeting.",
+    "My worry is that the timeline assumes nobody takes any holiday between now and launch.",
+    "Could we come back to that once we have heard from the platform side of the house?",
+    "I think we are overcomplicating a decision that could be settled in about five minutes.",
+    "Customer feedback has been remarkably consistent on this point for three months running.",
+    "I will take that away and report back at the start of next week with a firm proposal.",
+    "There is a dependency on the migration landing first, which is not in our control.",
+    "If we go that route we will need roughly double the testing before anything ships.",
+    "Sorry, could you repeat the last part of that? You cut out for a second on my end.",
+    "The staging environment has been unreliable all week and it is slowing everybody down.",
+    "Nobody has looked at that dashboard since the person who built it moved teams.",
+    "I would rather ship something small in February than something perfect in June.",
+    "We tried almost exactly this two years ago and it failed for reasons worth revisiting.",
+    "Are we confident the numbers behind that chart are being refreshed automatically?",
+    "It might help to write down what we are explicitly choosing not to do this quarter.",
+    "The support queue doubled after the pricing change and has not come back down since.",
+    "I am not blocking, I just want my concern recorded somewhere before we move on.",
+    "Whoever picks this up will need access to the billing system, which takes a week.",
+    "Let us assume the worst case on latency and see whether the design still holds up.",
+    "That was my fault, I sent the announcement before the feature flag was fully rolled.",
+    "There is an argument for doing nothing here and revisiting after the busy season.",
+    "The contract renews in March, so anything we promise has to land well before that.",
+    "I spoke to two customers this morning and neither had noticed the change at all.",
+    "Can somebody confirm whether the old endpoint is actually switched off or just hidden?",
+    "We keep discussing this in passing and never quite deciding, which is the real cost.",
+    "My preference would be to split it, ship the read path now and the write path later.",
+    "Honestly the documentation is worse than having none, because people trust it.",
 ]
+
+VOICES = ["Daniel", "Samantha", "Rishi", "Karen"]
+# Round robin through the voices, and never repeat a line.
+def build_lines(turns):
+    """Round-robin the voices, and never speak the same line twice.
+
+    Identical text through one voice synthesises to identical audio, which
+    embeds to a cosine of 1.0 and makes clustering look far easier than it is —
+    a fixture that repeated its lines scored 91% where the same code scores
+    99.7% on one that does not. Each voice works through the whole bank, so a
+    (voice, line) pair is used at most once.
+    """
+    if turns > len(VOICES) * len(SENTENCES):
+        raise SystemExit(
+            f"at most {len(VOICES) * len(SENTENCES)} turns without repeating a line; "
+            "add more sentences to the bank"
+        )
+    return [
+        (VOICES[i % len(VOICES)], SENTENCES[(i // len(VOICES)) % len(SENTENCES)])
+        for i in range(turns)
+    ]
+
+
+LINES = build_lines(int(sys.argv[2]) if len(sys.argv) > 2 else 30)
 
 out_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 os.makedirs(out_dir, exist_ok=True)

@@ -25,7 +25,8 @@ macOS `say` voices, concatenates the turns with a fixed pause, and writes both
 the WAV and a `truth.json` recording exactly who spoke when.
 
 ```bash
-python3 scripts/make-diar-fixture.py /tmp/diar
+python3 scripts/make-diar-fixture.py /tmp/diar        # short
+python3 scripts/make-diar-fixture.py /tmp/diar-long 136  # over ten minutes
 ```
 
 Synthesised voices are not people — they are cleaner and more separable than a
@@ -49,8 +50,8 @@ to the binary without an rpath entry pointing at itself.
 
 ## Where it stands
 
-Measured on the two fixtures `make-diar-fixture.py` builds, scoring the share of
-speech given to the right person:
+Scoring the share of speech given to the right person, on fixtures built by
+`make-diar-fixture.py`:
 
 | fixture | mode | speakers found | correct |
 |---|---|---|---|
@@ -58,14 +59,50 @@ speech given to the right person:
 | 3 voices, 55 s | stated 3 | 3 of 3 | 99.6% |
 | 5 voices, 69 s | discover | 5 of 5 | 99.7% |
 | 5 voices, 69 s | stated 5 | 5 of 5 | 99.7% |
+| 4 voices, 2.5 min | discover | 4 of 4 | 99.7% |
+| 4 voices, 11.2 min | discover | 4 of 4 | 99.7% |
 
-Before turns were split at pauses the three-voice fixture scored 69.7%: every
+The last row matters on its own: past ten minutes diarization windows the audio
+and each window is clustered without knowing anything about the others, so the
+speaker sets have to be stitched back together by voice. That path is only
+exercised by a recording long enough to need it.
+
+Before turns were split at pauses, the three-voice fixture scored 69.7%: every
 time Karen spoke and Samantha followed, the segmentation model ran the two
-together into a single turn and attributed it to Samantha.
+together into a single turn and gave it to Samantha.
 
 A wrong count is honoured rather than overridden — say 4 on the five-voice
 fixture and four speakers come back, at 88.9%. The stated number is the
 caller's to get right.
 
-Again: these are synthesised voices, cleaner and more separable than a real
-room. Use the numbers to compare changes, not to predict field accuracy.
+## Threads
+
+`SCRIBE_ASR_THREADS` overrides the ONNX thread count, which is how the default
+was chosen. On a 15-core machine, the 2.5-minute fixture:
+
+| threads | wall clock |
+|---|---|
+| 1 | 56.6 s |
+| 2 | 36.1 s |
+| 4 | 21.7 s |
+| 8 | 19.8 s |
+| 12 | 18.1 s |
+
+Accuracy is identical at every setting. Returns fall off sharply after 4 and
+have nearly stopped by 8, which is why `[asr].num_threads` auto-detects but caps
+there — past it the scheduling costs more than the parallelism buys, and the
+worker has a database and an HTTP server to run as well. The old hardcoded 2
+against the current default of 8 is the 36.1 s row against the 19.8 s one.
+
+## A warning about fixtures
+
+The generator never speaks the same line twice, and that is not cosmetic. An
+earlier version cycled a short list of sentences, so one voice said identical
+words repeatedly; identical text through one voice synthesises to identical
+audio, embeds to a cosine of 1.0, and drags the whole merge sequence upward. It
+scored 91.2% and reported seven speakers where there were four. The same code on
+a fixture with no repeats scores 99.7% and finds four. The bug was in the
+measurement, and it looked exactly like a bug in the diarizer.
+
+Again: synthesised voices are cleaner and more separable than a real room. Use
+these numbers to compare changes, not to predict field accuracy.
