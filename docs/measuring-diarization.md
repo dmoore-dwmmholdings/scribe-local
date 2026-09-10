@@ -129,7 +129,7 @@ back over them:
 | enrolment floor (0.5) | yes | 0.5–0.6 identical; 0.65 loses a bad room |
 | match consistency (0.75) | yes | cannot be loosened — the numbers collide |
 | silence for a split (250 ms) | yes | 180–250 identical; 350+ costs short turns |
-| silence ratio (0.15) | yes | 0.05–0.25 identical; 0.40 is a cliff |
+| silence ratio (0.15) | yes, and the sweep lied | see "the sweep that found nothing" |
 | **per-window clustering (0.8)** | **yes** | **was 0.5, and 0.5 was worse** |
 
 The last one is worth its own note. It sets how readily the segmentation model's
@@ -147,6 +147,73 @@ better again but costs a recording with a television playing in it, and the
 response is not smooth — 0.6 returns eight speakers where 0.5 and 0.7 both
 return six — so 0.8 sits in the middle of the stable region rather than on an
 edge.
+
+## The sweep that found nothing
+
+The table above used to say the silence ratio was inert: 0.05 to 0.25 made no
+difference to any fixture, so the constant was left alone. That was true, and
+the conclusion drawn from it was wrong.
+
+It was inert because every fixture it was swept on had near-silence between the
+turns. The threshold is a fraction of the turn's *mean* energy, which quietly
+assumes the gaps are near-silent — and when they are, any fraction in that range
+sits far above the floor and far below the speech, so nothing moves.
+
+In a real room the assumption fails outright. Pink noise at 15 dB SNR puts the
+floor at 0.178 of the speech level. The threshold is 0.15. No frame is ever
+below it, so no turn is ever split, so two people who spoke one after the other
+are embedded as a single stretch and cluster as a single person.
+
+That is what a six-voice reverberant fixture had been doing all along: Karen and
+Moira, adjacent in the rotation, merged on every one of the four occasions they
+spoke in sequence. Five speakers returned instead of six, 83.2% of words to the
+right person. The clean recording of the same conversation split them correctly
+every time, which is why nothing upstream looked broken.
+
+The fix is to stop assuming the floor and measure it — the quietest frame in the
+turn — then put the threshold a fixed fraction of the way from there to the
+speech, in dB. Clean audio is untouched by construction: its quietest frame is
+near zero, so the adaptive threshold lands below the mean-relative one and the
+old behaviour wins.
+
+| snr / reverb | measured floor | assumed floor |
+|---|---|---|
+| 25 dB / 0.2 | **6 spk, 99.8%** | 6 spk, 98.1% |
+| 20 dB / 0.3 | **6 spk, 99.6%** | 6 spk, 91.7% |
+| 15 dB / 0.4 | **6 spk, 97.4%** | 5 spk, 83.2% |
+| 10 dB / 0.5 | **6 spk, 87.2%** | 6 spk, 81.2% |
+| 5 dB / 0.6 | **6 spk, 82.2%** | 6 spk, 73.9% |
+
+Better at every noise level, by 1.7 to 14.2 points, and across every other
+fixture in the suite nothing moved by more than 0.1 of a point.
+
+The lesson is about the sweep, not the constant. A parameter that governs how
+the code copes with noise cannot be sized on recordings that have none; the
+sweep will report it inert and it will be inert, on that material. Two of the
+rows in the table above were swept the same way and deserve the same suspicion.
+
+## The fixtures are synthetic, and that has bitten four times
+
+`say` voices are not people, and the ways they differ from people have produced
+wrong conclusions repeatedly — twice by making the code look broken, twice by
+flattering it:
+
+- **Repeated sentences** let the clusterer key on content rather than voice.
+- **Uniform turn lengths** hid a duration-blind participant floor.
+- **Character voices** (Bells, Zarvox, Boing) barely transcribe at all: 28.8%
+  word error rate, which read as the ASR model being broken.
+- **Formant voices** (Fred, Kathy, Ralph) transcribe fine but are *too easy to
+  tell apart*. A six-voice fixture including Fred scored 95.7% in a reverberant
+  room; the same six with a modern voice in his place scored 83.2%, and that gap
+  is what led to the noise-floor bug above.
+
+`make-diar-fixture.py` now refuses both families by name, because macOS lists
+all three generations identically and there is no way to tell from `say -v ?`
+which is which. Use the recorded voices only: Daniel, Samantha, Rishi, Karen,
+Moira, Tessa, Aman, Tara.
+
+None of this substitutes for a recording of real people, which is still the
+largest untested gap in every number in this document.
 
 ## Guarding the numbers
 
@@ -876,6 +943,11 @@ and a better embedding solves it.
 and seven speakers come back instead of eight. That is a *counting* failure, not
 a discrimination one — told there are eight, the same model returns eight
 speakers at 99.9%, so the embeddings separate them perfectly well.
+
+This is a property of that particular set of eight voices, not a ceiling on
+eight. A fixture built from eight of the modern recorded voices — Daniel,
+Samantha, Rishi, Karen, Moira, Tessa, Aman, Tara — returns 8 speakers at 99.9%
+unprompted. Which eight matters more than how many.
 
 The merge sequence shows why no rule recovers it. Merging down to eight clusters
 goes 0.58, 0.56, 0.56, 0.53, 0.45, 0.38, 0.34 — every one of those rejoining one

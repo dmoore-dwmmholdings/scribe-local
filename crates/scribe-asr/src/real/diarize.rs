@@ -104,6 +104,13 @@ fn min_split_silence_ms() -> i64 {
         .unwrap_or(MIN_SPLIT_SILENCE_MS_DEFAULT)
 }
 
+fn floor_alpha() -> f32 {
+    std::env::var("SCRIBE_FLOOR_ALPHA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(FLOOR_ALPHA)
+}
+
 fn silence_ratio() -> f32 {
     std::env::var("SCRIBE_SILENCE_RATIO")
         .ok()
@@ -121,6 +128,43 @@ const SILENCE_RATIO_DEFAULT: f32 = 0.15;
 /// Frame size for the silence scan. Fine enough to place a boundary accurately,
 /// coarse enough that one quiet glottal stop is not a pause.
 const SILENCE_FRAME_MS: i64 = 20;
+
+/// Where to put the silence threshold between the quietest frame in a turn and
+/// the speech in it, as a fraction of the distance in dB. 0 sits on the noise
+/// floor, 1 sits on the speech.
+///
+/// `SILENCE_RATIO_DEFAULT` alone measures silence against the turn's mean,
+/// which assumes the gaps are near-silent. True of a clean recording, false of
+/// a real room: pink noise at 15 dB SNR puts the floor at 0.178 of the speech
+/// level, above a threshold of 0.15, so no frame is ever quiet and no turn is
+/// ever split. Two people who spoke one after the other are then embedded as
+/// one voice and cluster as one person.
+///
+/// That was not an edge case. On a six-voice fixture in a reverberant room it
+/// cost a whole speaker every time — 5 found instead of 6, 83.2% of words to
+/// the right person — and the same pair merged at every noise level. Reading
+/// the floor off the audio instead of assuming it:
+///
+///   snr/reverb   measured floor   assumed floor
+///   25dB / 0.2   6 spk  99.8%     6 spk  98.1%
+///   20dB / 0.3   6 spk  99.6%     6 spk  91.7%
+///   15dB / 0.4   6 spk  97.4%     5 spk  83.2%
+///   10dB / 0.5   6 spk  87.2%     6 spk  81.2%
+///    5dB / 0.6   6 spk  82.2%     6 spk  73.9%
+///
+/// Clean recordings are untouched, by construction: their quietest frame is
+/// near zero, so the adaptive threshold lands below the mean-relative one and
+/// `max` keeps the old behaviour. Measured across every other fixture, nothing
+/// moved by more than 0.1 of a point.
+///
+/// 0.35 is the middle of the working band. Below 0.3 the handover is missed
+/// again; at 0.45 turns are cut into pieces too short to embed and the score
+/// falls back to where it started.
+const FLOOR_ALPHA: f32 = 0.35;
+
+/// Where the speech level is read from — high enough to sit inside the speech
+/// rather than on a trailing syllable.
+const SPEECH_PERCENTILE: f32 = 0.85;
 
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
@@ -1032,8 +1076,21 @@ fn split_turns_at_silence(turns: &[SpeakerTurn], samples: &[f32], sample_rate: u
             .chunks(frame)
             .map(|c| (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt())
             .collect();
+        // Two readings of the same frames. The mean-relative threshold is what
+        // a clean recording wants; one placed above the turn's own noise floor
+        // is what a real room wants. Take whichever is higher — on clean audio
+        // the floor is near zero and the first still wins.
         let mean = energies.iter().sum::<f32>() / energies.len() as f32;
-        let threshold = mean * silence_ratio();
+        let mut sorted = energies.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let floor = sorted[0];
+        let speech = sorted[((sorted.len() - 1) as f32 * SPEECH_PERCENTILE) as usize];
+        let adaptive = if floor > 0.0 && speech > floor {
+            floor * (speech / floor).powf(floor_alpha())
+        } else {
+            0.0
+        };
+        let threshold = (mean * silence_ratio()).max(adaptive);
 
         // Runs of quiet frames long enough to be a handover; the boundary goes
         // in the middle of each, so neither side carries the other's silence.
@@ -1224,6 +1281,42 @@ mod tests {
         assert_eq!(pieces.len(), 2, "pieces = {pieces:?}");
         assert_ne!(pieces[0].local_idx, pieces[1].local_idx, "numbered separately");
         // The boundary lands inside the silence, not at either edge of it.
+        assert!(
+            (1_000..=1_400).contains(&pieces[0].end_ms),
+            "cut at {}",
+            pieces[0].end_ms
+        );
+    }
+
+    /// The same handover, in a room with a noise floor instead of silence.
+    ///
+    /// This is the case a mean-relative threshold cannot see: the gap sits at
+    /// 0.178 of the speech level (15 dB SNR) and the threshold at 0.15 of the
+    /// mean, so nothing is ever quiet enough and the turn survives whole — two
+    /// speakers embedded as one. Cost a whole speaker on every reverberant
+    /// six-voice fixture before the threshold was made to measure the floor.
+    #[test]
+    fn a_handover_is_found_over_a_noise_floor() {
+        let sr = 16_000u32;
+        let speech = |i: usize| ((i as f32 / 40.0).sin()) * 0.3;
+        // Deterministic hiss at 15 dB below the speech, everywhere — including
+        // under the speech, as real noise is.
+        let hiss = |i: usize| (((i * 2_654_435_761) % 2_003) as f32 / 1_001.5 - 1.0) * 0.3 * 0.178;
+
+        let mut samples = Vec::new();
+        for i in 0..sr as usize {
+            samples.push(speech(i) + hiss(i));
+        }
+        let gap = (sr as usize * 400) / 1000;
+        for i in 0..gap {
+            samples.push(hiss(i + sr as usize));
+        }
+        for i in 0..sr as usize {
+            samples.push(speech(i) + hiss(i + sr as usize + gap));
+        }
+
+        let pieces = split_turns_at_silence(&[turn(0, 0, 2_400)], &samples, sr);
+        assert_eq!(pieces.len(), 2, "the handover was missed: {pieces:?}");
         assert!(
             (1_000..=1_400).contains(&pieces[0].end_ms),
             "cut at {}",

@@ -72,7 +72,7 @@ build four 30
 degrade four dirty --reverb 0.4 --snr 15 --far Karen=0.3
 degrade four moving --moving Daniel
 degrade four phone --phone Karen --reverb 0.4 --snr 18
-SCRIBE_FIXTURE_VOICES="Daniel,Samantha,Rishi,Karen,Moira,Fred" build six 36
+SCRIBE_FIXTURE_VOICES="Daniel,Samantha,Rishi,Karen,Moira,Tessa" build six 36
 degrade six dirty --reverb 0.4 --snr 15
 
 echo "speaker detection, against the figures in docs/measuring-diarization.md"
@@ -83,7 +83,7 @@ check "4 voices, reverb+noise+quiet"   four dirty        4 99.0
 check "4 voices, one moving"           four moving       4 99.0
 check "4 voices, one on the phone"     four phone        4 99.0
 check "6 voices, clean"                six  conversation 6 99.0
-check "6 voices, reverb+noise"         six  dirty        6 90.0
+check "6 voices, reverb+noise"         six  dirty        6 95.0
 
 if [ "${1:-}" = "--full" ]; then
   build long 136

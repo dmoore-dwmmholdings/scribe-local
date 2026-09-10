@@ -90,9 +90,37 @@ VOICES = os.environ.get(
     "SCRIBE_FIXTURE_VOICES", "Daniel,Samantha,Rishi,Karen"
 ).split(",")
 
+# macOS ships three generations of voice under one list. The modern ones are
+# recorded speech; the rest are synthesised, and a fixture built from them
+# measures the fixture.
+#
+# Two ways they hurt, in opposite directions. The character voices — Bells,
+# Zarvox, Boing — barely transcribe at all: a German script through them scored
+# 43% word error rate and read as the language being unsupported. The older
+# formant voices — Fred, Kathy, Ralph, Junior, Albert — do transcribe, and are
+# *too easy to tell apart*: a six-speaker fixture including Fred scored 95.7% in
+# a reverberant room where the same six modern voices scored 83.2%. One
+# understates the code and the other flatters it.
+#
+# Neither is detectable from `say -v ?`, which lists them exactly like the rest.
+_SYNTHETIC_VOICES = {
+    # Character voices.
+    "bad news", "bahh", "bells", "boing", "bubbles", "cellos", "deranged",
+    "good news", "hysterical", "jester", "organ", "pipe organ", "princess",
+    "superstar", "trinoids", "whisper", "wobble", "zarvox",
+    # Formant-synthesis voices, from before the recorded ones.
+    "agnes", "albert", "bruce", "fred", "junior", "kathy", "ralph", "vicki",
+}
+
 _CHARACTER_VOICE = (
     "a character voice rather than a natural one — those do not transcribe and "
     "will look like a broken model"
+)
+
+_SYNTHETIC_VOICE = (
+    "a synthesised voice rather than a recorded one. Those either barely "
+    "transcribe or are unrealistically easy to tell apart, and either way the "
+    "numbers describe the fixture"
 )
 # Round robin through the voices, and never repeat a line.
 def check_voices():
@@ -113,6 +141,8 @@ def check_voices():
             raise SystemExit(f"no such voice: {v!r} (try: say -v '?')")
         if known[v]:
             raise SystemExit(f"{v!r} is {_CHARACTER_VOICE}")
+        if v.lower() in _SYNTHETIC_VOICES:
+            raise SystemExit(f"{v!r} is {_SYNTHETIC_VOICE}")
 
 
 def build_lines(turns, offset=0):
