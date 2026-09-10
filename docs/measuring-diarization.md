@@ -129,16 +129,42 @@ cargo build --release -p scribe-asr --example diarize_check
 ./scripts/diar-regression.sh --full   # adds the eleven-minute windowed case
 ```
 
-It builds its own fixtures, runs the diarizer over each, and exits non-zero if
-any comes back with the wrong number of speakers or below its recorded accuracy.
+It builds its own fixtures and exits non-zero if any check falls short. Eleven
+of them: speaker counts and accuracy from one voice up to eight, clean and
+degraded, with somebody moving about and somebody on a phone; word error rate
+and speaker attribution on the finished transcript; and a name given in one
+meeting still recognised in another recorded in a different room, with nobody
+else wrongly named. The transcription and enrolment checks are skipped with a
+note when no ASR checkpoint is installed, since they need one and the
+diarization checks do not.
+
 The floors sit a little under what is measured today, so ordinary variation does
-not cry wolf and a real regression cannot hide. `diarize_check` takes
-`DIARIZE_EXPECT_SPEAKERS` and `DIARIZE_MIN_CORRECT` directly if you want to
-assert on a fixture of your own.
+not cry wolf and a real regression cannot hide. Each harness takes its own
+assertions if you want to check a fixture of your own:
+`DIARIZE_EXPECT_SPEAKERS`, `DIARIZE_MIN_CORRECT`, `TRANSCRIPT_MAX_WER`,
+`TRANSCRIPT_MIN_CORRECT`, `ENROLL_EXPECT_RECOGNISED`, `ENROLL_FORBID_FALSE`.
 
 Checked against a known-bad setting — the cut threshold pushed to 0.95, which
 earlier sweeps showed breaks two fixtures — it reports three failures with the
 speaker counts and the shortfalls, and exits 1.
+
+## Small and degenerate recordings
+
+Not every recording is a meeting.
+
+| | speakers | correct |
+|---|---|---|
+| one voice, 40 s (a dictation) | 1 of 1 | 99.9% |
+| two voices, 49 s | 2 of 2 | 99.8% |
+| one voice, 2 s | 1 of 1 | 98.5% |
+| twenty seconds of silence | 0 | — |
+
+The single-voice case matters more than it looks: the rule that reads the
+speaker count off a recording's own merge sequence has to be able to answer
+"one", and a rule that always cuts somewhere never can. Silence produces no
+speakers and no turns rather than an error, and all four run through the whole
+pipeline to `ready` — the silent one with an empty transcript and no summary,
+which is the right answer to a recording of nothing.
 
 ## Where it stands
 

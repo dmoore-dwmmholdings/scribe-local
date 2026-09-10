@@ -197,6 +197,31 @@ fn main() {
     println!("misidentified    {wrong}");
     println!("missed           {missed}");
     println!("false positives  {false_positive}  (someone who was never enrolled, named anyway)");
+
+    // Assertions, for the regression suite. A name that stops carrying across
+    // recordings, or one that starts being given to the wrong person, should
+    // fail rather than be noticed.
+    let mut failed = Vec::new();
+    if let Some(want) = std::env::var("ENROLL_EXPECT_RECOGNISED")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if right < want {
+            failed.push(format!("recognised {right}, want {want}"));
+        }
+    }
+    if std::env::var("ENROLL_FORBID_FALSE").is_ok() && (false_positive > 0 || wrong > 0) {
+        failed.push(format!(
+            "{false_positive} false positive(s) and {wrong} misidentification(s)"
+        ));
+    }
+    if !failed.is_empty() {
+        println!("─────────────────────────────────────────────────────────");
+        for f in &failed {
+            println!("FAIL  {f}");
+        }
+        std::process::exit(1);
+    }
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {

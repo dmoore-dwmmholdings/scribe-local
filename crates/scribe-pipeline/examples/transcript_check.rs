@@ -126,13 +126,14 @@ fn main() {
     println!("words            {}", words.len());
     println!("speaker islands  {islands}  (brief runs both neighbours disagree with)");
 
+    let mut wer_pct = 0.0f64;
     let spoken: Vec<String> = truth.turns.iter().flat_map(|t| normalise(&t.text)).collect();
     if !spoken.is_empty() {
         let heard: Vec<String> = words.iter().flat_map(|w| normalise(&w.text)).collect();
         let distance = edit_distance(&spoken, &heard);
+        wer_pct = 100.0 * distance as f64 / spoken.len() as f64;
         println!(
-            "word error rate  {:.1}%  ({distance} edits over {} spoken words)",
-            100.0 * distance as f64 / spoken.len() as f64,
+            "word error rate  {wer_pct:.1}%  ({distance} edits over {} spoken words)",
             spoken.len()
         );
     }
@@ -225,6 +226,27 @@ fn main() {
         );
     }
 
+    // Assertions, for using this as a regression check. A shortfall becomes an
+    // exit code so a change that quietly costs accuracy is caught by something
+    // other than a person reading numbers.
+    let mut failed = Vec::new();
+    if let Some(max) = std::env::var("TRANSCRIPT_MAX_WER")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    {
+        if wer_pct > max {
+            failed.push(format!("word error rate {wer_pct:.1}% above {max:.1}%"));
+        }
+    }
+    if let Some(floor) = std::env::var("TRANSCRIPT_MIN_CORRECT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    {
+        if pct(correct) < floor {
+            failed.push(format!("right speaker {:.1}% below {floor:.1}%", pct(correct)));
+        }
+    }
+
     let spans = utterance_spans(&words);
     println!("utterances       {} (from {} spoken turns)", spans.len(), truth.turns.len());
     if std::env::var("TRANSCRIPT_CHECK_LINES").is_ok() {
@@ -233,6 +255,14 @@ fn main() {
             let who = idx.and_then(|i| map.get(&i).copied()).unwrap_or("(unknown)");
             println!("  {:>7}  {who:<10} {text}", format_ms(*start));
         }
+    }
+
+    if !failed.is_empty() {
+        println!("─────────────────────────────────────────────────────────");
+        for f in &failed {
+            println!("FAIL  {f}");
+        }
+        std::process::exit(1);
     }
 }
 
