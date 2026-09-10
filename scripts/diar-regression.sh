@@ -65,6 +65,26 @@ note() { # label dir variant expected-speakers was
   printf "  note  %-34s %s   (wants %s; was %s)\n" "$1" "$got" "$4" "$5"
 }
 
+# Run a case that is known to kill the process, and report rather than die.
+#
+# The diarizer does not always fail by returning something wrong. On some
+# recordings the pyannote-3.0 segmentation model reads out of bounds and the
+# process takes SIGBUS, which in the worker means the whole worker goes down and
+# takes any other job in flight with it. That is worth a line in this output.
+crashcheck() { # label dir variant
+  local out code
+  out=$("$BIN" models "$FIX/$2/$3.wav" "$FIX/$2/truth.json" 2>&1)
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    printf "  ok    %-34s did not crash (%s)\n" "$1" \
+      "$(echo "$out" | awk '/found speakers/{s=$3} /correct speaker/{a=$3} END{printf "%s spk, %s", s, a}')"
+    PASS=$((PASS+1))
+  else
+    printf "  note  %-34s CRASHED, exit %s\n" "$1" "$code"
+    printf "        %-34s known fault in pyannote-3.0; reverb-v1 does not\n" ""
+  fi
+}
+
 check() { # label dir variant expected-speakers min-correct [stated]
   local label=$1 dir=$2 var=$3 spk=$4 minc=$5 stated=${6:-}
   local out
@@ -203,6 +223,15 @@ if [ "${1:-}" = "--full" ]; then
   # "the mover who becomes three people" in docs/measuring-diarization.md.
   degrade six moving --moving Moira --reverb 0.4 --snr 18
   note  "6 voices, one moving, reverb"    six moving        6 "8 spk, 91.3%"
+
+  # One person dictating into a reverberant, noisy room. Some such recordings
+  # take the segmentation model out of bounds and kill the process; this one
+  # does, reproducibly. Not every single-speaker recording does — the same
+  # length and degradation through two other voices is fine — so it is content,
+  # not a simple length rule.
+  SCRIBE_FIXTURE_VOICES="Daniel" build dictation 14
+  degrade dictation dirty --reverb 0.4 --snr 15
+  crashcheck "70 s dictation in a bad room" dictation dirty
 
   SCRIBE_FIXTURE_GAP=300-9000 build lull 40
   degrade lull dirty --reverb 0.4 --snr 15

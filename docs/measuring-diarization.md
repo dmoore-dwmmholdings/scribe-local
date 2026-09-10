@@ -237,6 +237,71 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## The segmentation model crashes the process on some recordings
+
+Not every failure is a wrong answer. On some recordings the pyannote-3.0
+segmentation model reads out of bounds and the process takes SIGBUS — exit 138,
+no panic, no message. In the worker that is not one job failing: the worker
+process dies and takes whatever else was in flight with it, and the job is
+retried into the same crash until `max_attempts` gives up.
+
+Found by accident while measuring something else. A seventy-second recording of
+one person dictating into a reverberant, noisy room does it, reproducibly, from
+a freshly built fixture.
+
+**What it takes.** Both reverb and noise, together: neither alone crashes. It
+needs about twenty-eight seconds — the same audio truncated to 27.6 s is fine and
+27.7 s is not, a boundary of 500 samples. It is not a general rule about length
+or about single speakers: the same length and degradation through two other
+voices is fine, and every multi-speaker fixture on this page is longer and
+fine. It is a property of the particular segmentation output.
+
+**What it is not.** Not the embedding model — swapping that changes nothing.
+Not the speaker count — stating it changes nothing. Not the level — amplifying
+by four and attenuating by four both still crash.
+
+**Both reverb-diarization models handle the same file.** That is the workaround,
+and it is a stronger argument for the swap described below than any of the
+accuracy numbers were:
+
+| | pyannote 3.0 | reverb v1 | reverb v2 |
+|---|---|---|---|
+| 70 s dictation, reverb+noise | **exit 138** | 1 spk | 1 spk |
+
+The suite runs this case on every `--full` and reports what happened without
+dying with it:
+
+```
+  note  70 s dictation in a bad room       CRASHED, exit 138
+        known fault in pyannote-3.0; reverb-v1 does not
+```
+
+## Where the word errors on degraded audio actually are
+
+With the fixtures no longer repeating themselves, word error rate on a
+reverberant, noisy recording is 8.5%. All of it is one person:
+
+| | word error rate |
+|---|---|
+| Karen — the distant speaker, `--far 0.3` | **23.4%** |
+| Daniel | 4.0% |
+| Samantha | 0.0% |
+| Rishi | 0.0% |
+
+**It is signal-to-noise, not level, and that rules out the obvious fix.** Being
+quiet is harmless on its own — the same recording with reverb and no noise
+gives Karen 3%. Noise is harmless on its own — with everyone at the same level
+she gets 4%. Only the combination hurts, because scaling one speaker down by
+0.3 against a fixed noise floor costs her 10 dB of signal-to-noise that nobody
+else pays.
+
+So gain cannot recover it, and measuring confirms it: sliding-window level
+normalisation takes 8.5% to 8.9%. Amplifying her amplifies her noise.
+
+Denoising was re-tested here too, since it had been rejected against a word
+error rate of 2.7% that turned out to be flattered. It is still much worse —
+19.8% against 8.5% — so that rejection holds against the honest number.
+
 ## Interruptions, and a fixture that was quietly making them an echo
 
 Nothing here had ever measured overlapped speech, which is what a meeting is
