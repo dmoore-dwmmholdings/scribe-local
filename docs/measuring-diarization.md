@@ -452,6 +452,51 @@ threshold that wants adjusting. Somebody who only ever interjects will be folded
 into a neighbour, and the transcript will under-count the room. Naming them by
 hand still works, and a name given that way is not affected by any of this.
 
+## Rooms have things in them that are not people
+
+`scripts/add-room-noise.py` mixes non-speech events into a fixture — keystrokes,
+a door slam, a chair scrape, hold music, paper shuffling — placed in the pauses
+where a real room puts most of them.
+
+```bash
+python3 scripts/add-room-noise.py in.wav out.wav --truth truth.json --level 1.2
+```
+
+None of it becomes a speaker. Fifteen events at half the level of the speech,
+and again at 1.2 times it, leave the count at four of four and attribution at
+99.7% against 99.9% clean. The segmentation model is deciding what speech *is*,
+not where the energy is, and a door slam is not close. This is also the clearest
+illustration of why the cheap substitutes for it failed.
+
+Background **speech** is a different matter, and the finding is worth stating
+plainly because it is the one condition here that produces a wrong answer a user
+will notice.
+
+A television left on, at a third of the level of the room, audible only in the
+pauses between turns:
+
+| | speakers found | truth |
+|---|---|---|
+| discovering the count | 4 | 3 |
+| told there are 3 people | 3, but the wrong 3 | 3 |
+
+Discovering, the television is a speaker — 36% of the speech in the recording,
+more than any person in the room, because it talks steadily through every lull.
+The three real participants are still separated correctly at 99.7%; the
+transcript simply gains a fourth attendee reading the weather.
+
+Telling it there are three people does not fix this and makes it worse. The
+count constrains how many clusters there are, not which of them are people, and
+the television is the *most* acoustically distinct voice present — it is a
+different speaker at a different level. So it survives, and two real
+participants who sound more like each other are merged instead.
+
+There is no signal in a single mixed channel that separates "person in this
+meeting" from "voice in this room". A quiet participant and a distant television
+both speak at a lower level, both mostly in the gaps, and both are somebody
+else's voice. The remedy is the one the app already has: rename or clear the
+speaker afterwards. Worth knowing before recording in a room with a radio in it.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —
