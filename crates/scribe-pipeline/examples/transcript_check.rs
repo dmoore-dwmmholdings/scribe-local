@@ -62,6 +62,14 @@ fn main() {
             }
         }
     }
+    // SCRIBE_ASR_THREADS overrides the resolved thread count, so the effect of
+    // the thread count can be measured here as well as in diarize_check. Without
+    // this a thread sweep silently measured the default over and over.
+    if let Ok(t) = std::env::var("SCRIBE_ASR_THREADS") {
+        if let Ok(v) = t.parse::<usize>() {
+            cfg.num_threads = v;
+        }
+    }
     println!("model            {}", cfg.model);
     println!(
         "hotwords         {}",

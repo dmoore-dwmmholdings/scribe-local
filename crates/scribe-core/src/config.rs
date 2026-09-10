@@ -140,12 +140,45 @@ pub struct AsrConfig {
 
 /// Cap on the auto-detected ONNX thread count.
 ///
-/// ONNX Runtime stops scaling well before a big machine's core count on these
-/// models — the graphs are not wide enough to keep dozens of threads busy, and
-/// past this point the scheduling overhead costs more than the parallelism
-/// buys. It also leaves cores for the rest of the worker, which is running a
-/// database, an HTTP server and possibly a second stage alongside this one.
-const MAX_AUTO_ASR_THREADS: usize = 8;
+/// This was 8, on the belief that ONNX Runtime stopped scaling well before a
+/// big machine's core count. Measured, it does not: on a 15-core machine the
+/// whole pipeline runs at 7.4x real time with 8 threads and 9.2x with 13.
+///
+///   threads      8     10     11     12     13     14     15
+///   transcribe  26.3x  28.8x  30.5x  31.2x  33.6x  32.5x  25.5x
+///   diarize     10.4x  11.7x  12.0x  12.4x  12.6x  11.7x   9.7x
+///   total        7.4x   8.3x   8.6x   8.9x   9.2x   8.6x   7.0x
+///
+/// The earlier belief was measured with a harness that ignored the thread
+/// override and reported the default every time, so every row of that sweep was
+/// the same run.
+///
+/// What is true is the collapse at the top: at the core count and above,
+/// threads contend and it gets rapidly worse — 20 threads on this machine runs
+/// segmentation at 0.42x of its 8-thread speed. So the rule leaves headroom
+/// rather than taking the machine, and keeps a cap for the large-server case
+/// where these graphs really do run out of width.
+///
+/// Measured on one machine. `[asr].num_threads` overrides it.
+const MAX_AUTO_ASR_THREADS: usize = 16;
+
+/// Cores held back from the auto-detected thread count, as a fraction, so the
+/// worker is not competing with itself for the last of the machine. It also
+/// runs a database, an HTTP server and possibly a second stage.
+const THREAD_HEADROOM_DIVISOR: usize = 8;
+
+/// Threads to use on a machine with `cores` of them, with the `0` default.
+///
+/// Split out from [`AsrConfig::resolved_num_threads`] so the rule can be
+/// checked without depending on whatever machine the tests run on.
+fn auto_threads(cores: usize) -> i32 {
+    // On one or two cores there is no headroom to give back, and taking any
+    // would leave a single thread doing everything.
+    if cores <= 2 {
+        return cores.max(1) as i32;
+    }
+    (cores - (cores / THREAD_HEADROOM_DIVISOR + 1)).clamp(1, MAX_AUTO_ASR_THREADS) as i32
+}
 
 impl AsrConfig {
     /// Threads to give each speech model, resolving the `0` default.
@@ -159,10 +192,10 @@ impl AsrConfig {
         if self.num_threads > 0 {
             return self.num_threads as i32;
         }
-        std::thread::available_parallelism()
+        let cores = std::thread::available_parallelism()
             .map(|n| n.get())
-            .unwrap_or(2)
-            .clamp(1, MAX_AUTO_ASR_THREADS) as i32
+            .unwrap_or(2);
+        auto_threads(cores)
     }
 }
 
@@ -481,6 +514,35 @@ impl Config {
 mod tests {
     use super::*;
     use figment::{providers::Env, Figment};
+
+    /// The thread rule, which is worth pinning because getting it wrong is
+    /// expensive in both directions: too few threads and the pipeline runs at
+    /// 7.4x real time instead of 9.2x, too many and threads contend and it
+    /// falls to 7.0x or worse.
+    #[test]
+    fn auto_threads_leaves_headroom_without_starving_small_machines() {
+        // Never more threads than cores — that is the direction that collapses.
+        for cores in 1..=64 {
+            let t = auto_threads(cores) as usize;
+            assert!(t <= cores, "{cores} cores -> {t} threads oversubscribes");
+            assert!(t >= 1, "{cores} cores -> {t} threads");
+        }
+        // A small machine keeps what it has.
+        assert_eq!(auto_threads(1), 1);
+        assert_eq!(auto_threads(2), 2);
+        // The measured machine: 15 cores, where 13 was the peak.
+        assert_eq!(auto_threads(15), 13);
+        // A big server is capped rather than handed the whole box.
+        assert_eq!(auto_threads(64), MAX_AUTO_ASR_THREADS as i32);
+        // Monotonic: more cores never means fewer threads.
+        for cores in 2..=64 {
+            assert!(
+                auto_threads(cores) >= auto_threads(cores - 1),
+                "{cores} cores gave fewer threads than {}",
+                cores - 1
+            );
+        }
+    }
 
     /// `deploy/docker-compose.lan.yml` turns discovery on with
     /// `SCRIBE_API__ADVERTISE_LAN=true`, which only works if figment coerces the

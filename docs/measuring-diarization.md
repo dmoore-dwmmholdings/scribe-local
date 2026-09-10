@@ -237,6 +237,49 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## The thread cap that was never measured
+
+Both speech models got at most 8 ONNX threads, however large the machine, on the
+reasoning that these graphs are not wide enough to keep more busy. That was
+never measured. Measured, it is wrong:
+
+| threads | 8 | 10 | 11 | 12 | 13 | 14 | 15 |
+|---|---|---|---|---|---|---|---|
+| transcribe | 26.3x | 28.8x | 30.5x | 31.2x | **33.6x** | 32.5x | 25.5x |
+| diarize | 10.4x | 11.7x | 12.0x | 12.4x | **12.6x** | 11.7x | 9.7x |
+| total | 7.4x | 8.3x | 8.6x | 8.9x | **9.2x** | 8.6x | 7.0x |
+
+The whole pipeline is 1.24x faster with 13 threads than with 8, on a 15-core
+machine, at identical accuracy — all fifteen regression checks return the same
+numbers to the decimal.
+
+What is true is the collapse at the top. At the core count and past it the
+threads contend: 15 threads is slower than 8, and 20 runs segmentation at 0.42x
+of its 8-thread speed. So the default takes the machine's cores less an eighth,
+capped at 16 — 13 here — rather than all of them.
+
+Where diarization time actually goes, on an eleven-minute recording:
+
+| | time | share |
+|---|---|---|
+| segmentation | 60.8 s | 92% |
+| embedding | 6.0 s | 9% |
+| clustering | negligible | — |
+
+Which is why the thread count is the whole story for speed, and why the levers
+tried against embedding and clustering never moved anything.
+
+**How the wrong belief survived.** `transcript_check` read no thread override —
+it printed `threads 8` whatever it was given, so every row of a thread sweep was
+the same run at the default. The sweep looked flat because it was one
+measurement repeated. `diarize_check` did honour the override, which is why the
+two harnesses disagreed and the disagreement is what exposed it.
+
+That is the third time on this page a measurement has been the thing at fault
+rather than the code: a sweep on material that could not show the effect, a
+check that reported ok for a run that never happened, and now a knob that was
+not connected.
+
 ## The cluster that is too loose
 
 Eight voices is where counting fails first. Two of them join at a similarity
@@ -477,12 +520,11 @@ caller's to get right.
 
 | fixture | transcribe | diarize | total | WER | right speaker |
 |---|---|---|---|---|---|
-| 4 voices, 2.5 min | 26.4x | 10.5x | 7.5x | 1.5% | 100.0% |
-| 4 voices, 2.5 min, dirty | 25.9x | 10.2x | 7.3x | 5.1% | 100.0% |
-| 4 voices, 11.1 min | 25.1x | 10.1x | 7.2x | 1.0% | 100.0% |
-| 4 voices, 11.1 min, dirty | 22.6x | 10.0x | 6.9x | 5.1% | 100.0% |
-| 4 voices, one moving | 26.0x | 10.4x | 7.4x | 0.8% | 100.0% |
-| 4 voices, turns 0.4 s to 12 s | 25.4x | 10.8x | 7.6x | 2.0% | 96.4% |
+| 4 voices, 2.5 min | 34.5x | 12.6x | 9.2x | 1.5% | 100.0% |
+| 4 voices, 2.5 min, dirty | 32.9x | 11.9x | 8.7x | 2.7% | 100.0% |
+| 4 voices, 11.1 min | 30.6x | 11.2x | 8.2x | 1.2% | 100.0% |
+| 4 voices, 11.1 min, dirty | 32.3x | 11.5x | 8.5x | 5.0% | 100.0% |
+| 4 voices, one moving | 33.4x | 12.6x | 9.2x | 1.3% | 100.0% |
 
 Multiples are of real time, so 7.2x means an hour of audio in about eight and a
 half minutes. These are current: the earlier numbers on this page were taken
@@ -687,9 +729,15 @@ fp32 is preferred at load, and an install carrying only the int8 model gets a
 warning saying what it costs.
 
 **Running windows in parallel.** A recording past ten minutes is diarized one
-window at a time, strictly in sequence, and ONNX Runtime stops scaling well
-before this machine's core count — 4 threads to 8 buys 9%. Two windows at once
-should therefore be nearly free.
+window at a time, strictly in sequence, and ONNX Runtime was thought to stop
+scaling well before this machine's core count — 4 threads to 8 buys 9%. Two
+windows at once should therefore be nearly free.
+
+(That premise was wrong; see "the thread cap that was never measured" below.
+Scaling continues to about two threads short of the core count, which leaves
+even less idle capacity for a second window than this assumed. The conclusion
+below — that parallel windows are not worth it — is unaffected, and if anything
+better supported.)
 
 Measured the cheap way, by running two diarizations of the same fixture as
 separate processes rather than writing the concurrency first:

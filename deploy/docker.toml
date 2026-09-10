@@ -73,9 +73,14 @@ device         = "cpu"
 remove_fillers = true
 
 # ONNX intra-op threads per speech model. 0 (the default) picks a thread count
-# from the machine, capped at 8 — these graphs stop scaling past that, and the
-# worker needs cores for everything else. Raise it on a dedicated CPU-only
-# transcription box; lower it if the worker shares a machine with other work.
+# from the machine: its cores, less an eighth held back for the rest of the
+# worker, capped at 16.
+#
+# This used to cap at 8, on the belief that these graphs stopped scaling past
+# that. Measured, they do not — on a 15-core machine the whole pipeline runs at
+# 7.4x real time with 8 threads and 9.2x with 13. What is true is that going to
+# the core count and beyond makes it rapidly worse, which is what the headroom
+# is for. Lower it if the worker shares a machine with other work.
 num_threads = 0
 
 [worker]
