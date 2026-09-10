@@ -20,8 +20,32 @@ use crate::stages::stage_err;
 
 const STAGE: &str = "diarize";
 
-/// Similarity threshold for auto-matching a diarized voice to an enrolled one.
+/// Floor below which a voice is not considered against an enrolled one at all.
+///
+/// A floor, not a decision: it rejects noise, and [`SEPARATION`] decides. An
+/// absolute cosine cannot decide identity on its own — two takes of one voice
+/// sit near 0.95 on a close mic and near 0.5 across a room, so the number that
+/// means "same person" in one recording means nothing in another. The clustering
+/// in `scribe-asr` gave up fixed thresholds for exactly this reason.
 const ENROLL_MATCH_THRESHOLD: f32 = 0.5;
+
+/// How far a voice must stand out from the rest of the library to be called a
+/// match.
+///
+/// The enrolled speakers are the calibration. They are known-different people —
+/// each is somebody distinct — and every one of them is measured against this
+/// voice across recordings, through the same microphone, the same room and the
+/// same model. At most one can be the same person, so the others are a sample
+/// of what "not this person" scores under exactly the conditions the real match
+/// would be scored under. That is the comparison an absolute cutoff cannot make.
+///
+/// A voice sitting equally close to everyone enrolled is a poor embedding, not a
+/// recognition, however high the absolute number. One sitting well clear of the
+/// rest is a recognition, even when the absolute number is unremarkable.
+///
+/// The size of the gap is a judgement, not a measurement: it is set to reject
+/// the genuinely ambiguous rather than to tighten the floor.
+const SEPARATION: f32 = 0.10;
 
 /// Cosine similarity between two vectors; 0 for degenerate or mismatched input.
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -44,11 +68,17 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// voices picking the same person, and then the transcript shows Alice
 /// answering Alice. A person is in the room once.
 ///
-/// So every (voice, enrolled) pair above the threshold is considered together,
-/// best first, and a pair is taken only while both sides are still free. Greedy
+/// So every admissible (voice, enrolled) pair is considered together, best
+/// first, and a pair is taken only while both sides are still free. Greedy
 /// rather than optimal — with a handful of speakers the two agree, and "the
 /// most confident match wins the tie" is a rule that can be explained to
 /// somebody looking at a transcript wondering why it chose that.
+///
+/// A pair is admissible when it clears [`ENROLL_MATCH_THRESHOLD`] and stands
+/// [`SEPARATION`] clear of what this voice scores against the rest of the
+/// library. Admissibility is per pair rather than per voice, so a voice whose
+/// first choice is taken can still hold a second — but only one it also stands
+/// out against, never a weak consolation.
 ///
 /// `voices` is `(local_idx, embedding)`; `enrolled` is `(speaker_id, voiceprint)`.
 fn resolve_identities(
@@ -58,11 +88,29 @@ fn resolve_identities(
 ) -> HashMap<i32, (Uuid, f32)> {
     let mut candidates: Vec<(f32, i32, Uuid)> = Vec::new();
     for (local_idx, embedding) in voices {
-        for (speaker_id, voiceprint) in enrolled {
-            let sim = cosine(embedding, voiceprint);
-            if sim >= threshold {
-                candidates.push((sim, *local_idx, *speaker_id));
+        let scores: Vec<f32> = enrolled
+            .iter()
+            .map(|(_, voiceprint)| cosine(embedding, voiceprint))
+            .collect();
+
+        for (i, (speaker_id, _)) in enrolled.iter().enumerate() {
+            if scores[i] < threshold {
+                continue;
             }
+            // What this voice scores against everybody it is not. With a library
+            // of one there is no such sample, and the floor is all there is.
+            let rest: Vec<f32> = scores
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, s)| *s)
+                .collect();
+            if let Some(baseline) = median(&rest) {
+                if scores[i] - baseline < SEPARATION {
+                    continue;
+                }
+            }
+            candidates.push((scores[i], *local_idx, *speaker_id));
         }
     }
     // Best first. Ties break on the local index then the speaker id, so the
@@ -84,6 +132,22 @@ fn resolve_identities(
         claimed.insert(speaker_id);
     }
     resolved
+}
+
+/// Median of `values`, or `None` when empty. The median rather than the mean so
+/// one unusually confusable library member cannot move the comparison.
+fn median(values: &[f32]) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    Some(if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    })
 }
 
 /// Run the diarize stage for `recording_id`.
@@ -241,6 +305,88 @@ mod tests {
         let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
         assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(1)), "Alice to voice 1");
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(2)), "voice 0 falls to Bob");
+    }
+
+    /// A voice equally close to everybody enrolled has told us nothing, however
+    /// high the absolute number. This is the case a fixed cutoff cannot see: a
+    /// smeared embedding clears 0.5 against the whole library at once.
+    #[test]
+    fn a_voice_close_to_everyone_matches_no_one() {
+        // Sits in the middle of three enrolled people, ~0.58 from each.
+        let voices = vec![(0, unit(&[1.0, 1.0, 1.0]))];
+        let enrolled = vec![
+            (id(1), unit(&[1.0, 0.0, 0.0])),
+            (id(2), unit(&[0.0, 1.0, 0.0])),
+            (id(3), unit(&[0.0, 0.0, 1.0])),
+        ];
+
+        // Every one of them clears the floor on its own.
+        for (_, voiceprint) in &enrolled {
+            assert!(
+                cosine(&voices[0].1, voiceprint) >= ENROLL_MATCH_THRESHOLD,
+                "guard: the floor alone would have accepted this"
+            );
+        }
+        assert!(resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD).is_empty());
+    }
+
+    /// The mirror image: a voice that stands clear of the library is recognised
+    /// even though it is barely over the floor in absolute terms — a real match
+    /// recorded across a room.
+    #[test]
+    fn standing_clear_of_the_library_is_enough() {
+        // 0.55 against the right person, 0.44 against the others. The fourth
+        // component is slack nobody is enrolled on — a voice is never entirely
+        // accounted for by the library.
+        let voices = vec![(0, unit(&[0.55, 0.44, 0.44, 0.557]))];
+        let enrolled = vec![
+            (id(1), unit(&[1.0, 0.0, 0.0, 0.0])),
+            (id(2), unit(&[0.0, 1.0, 0.0, 0.0])),
+            (id(3), unit(&[0.0, 0.0, 1.0, 0.0])),
+        ];
+        let best = cosine(&voices[0].1, &enrolled[0].1);
+        assert!(best < 0.6, "guard: an unremarkable absolute score ({best})");
+
+        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
+    }
+
+    /// With one person enrolled there is no sample of "not this person" to
+    /// compare against, so the floor is all there is. It must still work.
+    #[test]
+    fn a_library_of_one_falls_back_to_the_floor() {
+        let voices = vec![(0, unit(&[1.0, 0.05, 0.0]))];
+        let enrolled = vec![(id(1), unit(&[1.0, 0.0, 0.0]))];
+        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
+    }
+
+    /// Separation is judged per pair, so losing a contested person does not cost
+    /// a voice a second choice it also stands clear of.
+    #[test]
+    fn a_second_choice_must_stand_out_on_its_own_terms() {
+        let alice = unit(&[1.0, 0.0, 0.0]);
+        let bob = unit(&[0.0, 1.0, 0.0]);
+        let carol = unit(&[0.0, 0.0, 1.0]);
+        let voices = vec![
+            // Wants Alice, but is also clearly Bob-ish and not at all Carol-ish.
+            (0, unit(&[0.75, 0.66, 0.0])),
+            // Unambiguously Alice.
+            (1, unit(&[1.0, 0.02, 0.0])),
+        ];
+        let enrolled = vec![(id(1), alice), (id(2), bob), (id(3), carol)];
+
+        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(1)), "Alice to voice 1");
+        assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(2)), "voice 0 falls to Bob");
+    }
+
+    #[test]
+    fn median_handles_both_parities() {
+        assert_eq!(median(&[]), None);
+        assert_eq!(median(&[0.4]), Some(0.4));
+        assert_eq!(median(&[0.2, 0.4, 0.9]), Some(0.4));
+        assert_eq!(median(&[0.2, 0.4, 0.6, 0.8]), Some(0.5));
     }
 
     #[test]
