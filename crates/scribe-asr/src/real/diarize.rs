@@ -91,9 +91,23 @@ const EMBED_BUDGET_MS: i64 = 60_000;
 
 /// Silence long enough to be a possible speaker change.
 ///
-/// People do not swap places mid-breath; a handover has a pause in it. Below a
-/// quarter of a second a gap is punctuation inside one person's sentence.
-const MIN_SPLIT_SILENCE_MS_DEFAULT: i64 = 250;
+/// People do not swap places mid-breath; a handover has a pause in it. This was
+/// a quarter of a second on that reasoning, and a quarter of a second is what a
+/// handover sounds like in a quiet room. In a reverberant one the tail of the
+/// outgoing speaker eats the front of the gap, so the quiet part is shorter
+/// than the pause actually was, and requiring 250 ms of it misses the handover
+/// entirely — the two speakers are embedded together and become one person.
+///
+/// It could not be shortened while a cut was allowed to leave a sliver behind:
+/// at 160 ms an eleven-minute recording came back as one speaker at 18.1%, the
+/// turns cut into pieces too short to embed. With `MIN_PIECE_MS` refusing those
+/// cuts, 160 ms is where the numbers are best, and the collapse is gone.
+///
+/// Measured on a six-voice recording in a bad room, at 10 dB SNR: 87.2% with a
+/// speaker lost at 250 ms, 95.7% and the right count at 160. The working band
+/// is 140–170 ms; at 180 a noisy recording starts inventing a seventh speaker
+/// and at 120 the long recording loses one.
+const MIN_SPLIT_SILENCE_MS_DEFAULT: i64 = 160;
 
 /// Experiment hooks for the split, which was chosen by judgement and never
 /// measured. See docs/measuring-diarization.md.
@@ -102,6 +116,13 @@ fn min_split_silence_ms() -> i64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(MIN_SPLIT_SILENCE_MS_DEFAULT)
+}
+
+fn min_piece_ms() -> i64 {
+    std::env::var("SCRIBE_MIN_PIECE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MIN_PIECE_MS)
 }
 
 fn floor_alpha() -> f32 {
@@ -161,6 +182,18 @@ const SILENCE_FRAME_MS: i64 = 20;
 /// again; at 0.45 turns are cut into pieces too short to embed and the score
 /// falls back to where it started.
 const FLOOR_ALPHA: f32 = 0.35;
+
+/// Shortest piece a split may leave behind.
+///
+/// A cut that leaves a sliver is worse than no cut at all. The piece is too
+/// short to embed well, the embedding lands it on whoever it happens to
+/// resemble, and enough of them drag real speakers together — an eleven-minute
+/// degraded recording came back with 3 speakers at 75.9% instead of 4 at 99.5%.
+///
+/// Refusing those cuts is what makes a shorter `MIN_SPLIT_SILENCE_MS_DEFAULT`
+/// usable, and it is the shorter split that finds the handover in a room with
+/// reverb in it. On its own, at the old 250 ms split, this changes nothing.
+const MIN_PIECE_MS: i64 = 400;
 
 /// Where the speech level is read from — high enough to sit inside the speech
 /// rather than on a trailing syllable.
@@ -1111,6 +1144,24 @@ fn split_turns_at_silence(turns: &[SpeakerTurn], samples: &[f32], sample_rate: u
             }
         }
 
+        // A cut that leaves a sliver behind is worse than no cut: the piece is
+        // too short to embed well, and a bad embedding lands it on whoever it
+        // happens to resemble. Drop cuts that would make one, and drop the last
+        // cut if the tail after it is a sliver too.
+        let min_piece = min_piece_ms();
+        let mut kept: Vec<i64> = Vec::with_capacity(cut_ms.len());
+        let mut last = turn.start_ms;
+        for cut in cut_ms {
+            if cut - last >= min_piece {
+                kept.push(cut);
+                last = cut;
+            }
+        }
+        while kept.last().is_some_and(|c| turn.end_ms - c < min_piece) {
+            kept.pop();
+        }
+        let cut_ms = kept;
+
         let mut piece_start = turn.start_ms;
         for cut in cut_ms {
             if cut > piece_start {
@@ -1322,6 +1373,37 @@ mod tests {
             "cut at {}",
             pieces[0].end_ms
         );
+    }
+
+    /// A cut that would leave a sliver is refused. The sliver is too short to
+    /// embed well, and a bad embedding lands it on whoever it resembles; enough
+    /// of them drag real speakers together. Refusing them is what allows the
+    /// split to look for pauses short enough to survive a reverberant room.
+    #[test]
+    fn a_cut_that_would_leave_a_sliver_is_refused() {
+        let sr = 16_000u32;
+        let tone = |n: usize| (0..n).map(|i| ((i as f32 / 40.0).sin()) * 0.3);
+        // 200 ms speech, 200 ms silence, 2 s speech. The cut would fall at
+        // 300 ms and leave a 300 ms piece, under MIN_PIECE_MS.
+        let mut samples: Vec<f32> = tone((sr as usize * 200) / 1000).collect();
+        samples.extend(std::iter::repeat(0.0).take((sr as usize * 200) / 1000));
+        samples.extend(tone(sr as usize * 2));
+
+        let pieces = split_turns_at_silence(&[turn(0, 0, 2_400)], &samples, sr);
+        assert_eq!(pieces.len(), 1, "sliver was cut off: {pieces:?}");
+    }
+
+    /// The same gap, with enough speech either side to be worth cutting.
+    #[test]
+    fn a_cut_between_two_real_stretches_is_kept() {
+        let sr = 16_000u32;
+        let tone = |n: usize| (0..n).map(|i| ((i as f32 / 40.0).sin()) * 0.3);
+        let mut samples: Vec<f32> = tone(sr as usize).collect();
+        samples.extend(std::iter::repeat(0.0).take((sr as usize * 200) / 1000));
+        samples.extend(tone(sr as usize));
+
+        let pieces = split_turns_at_silence(&[turn(0, 0, 2_200)], &samples, sr);
+        assert_eq!(pieces.len(), 2, "pieces = {pieces:?}");
     }
 
     #[test]

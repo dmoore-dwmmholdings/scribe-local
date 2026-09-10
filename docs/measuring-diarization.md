@@ -192,29 +192,50 @@ the code copes with noise cannot be sized on recordings that have none; the
 sweep will report it inert and it will be inert, on that material. Two of the
 rows in the table above were swept the same way and deserve the same suspicion.
 
-### Re-sweeping the other one
+### Re-sweeping the other one, and why it could not move
 
 The same table said the minimum silence for a split was flat from 180 to 250 ms.
 Swept again on noisy material it is not flat anywhere, and the value is
 quantized: `min_run` counts 20 ms frames, so 175 and 190 are 8 and 9 frames and
 behave nothing alike.
 
-| ms | frames | 11 min, degraded | 6 voices, 15 dB | 6 voices, 10 dB |
-|---|---|---|---|---|
-| 190 | 9 | 3 spk, 75.8% | 6 spk, 97.4% | **6 spk, 94.3%** |
-| 210 | 10 | 3 spk, 75.9% | 6 spk, 97.4% | **6 spk, 94.3%** |
-| 230 | 11 | 3 spk, 75.9% | 6 spk, 97.4% | **6 spk, 94.3%** |
-| **250** | **12** | **4 spk, 99.5%** | 6 spk, 97.4% | 6 spk, 87.2% |
-| 270 | 13 | **4 spk, 99.5%** | 6 spk, 97.4% | 6 spk, 87.2% |
+Shortening it helps for the same reason the noise-floor fix helps. A handover
+has a pause in it, but in a reverberant room the tail of the outgoing speaker
+eats the front of that pause, so the *quiet* part is shorter than the pause
+actually was. Requiring 250 ms of quiet misses the handover; requiring 160 finds
+it.
 
-Below 12 frames the long windowed recording loses a speaker outright; at 12 and
-above the short high-noise one gives up 7 points. Nothing satisfies both, and
-below 9 frames everything collapses together — a six-voice recording comes back
-as one speaker at 18.1%, the turns cut into pieces too short to embed.
+It could not be shortened, because a shorter split also cuts turns in places
+that leave slivers behind, and a sliver is worse than no cut at all: too short to
+embed well, so the embedding lands it on whoever it happens to resemble, and
+enough of them drag real speakers together. At 160 ms an eleven-minute degraded
+recording came back as **one speaker at 18.1%**.
 
-250 is the right value, which is what the first sweep concluded. It reached that
-answer by measuring recordings where the choice did not matter, and the range it
-reported as safe contains values that lose a speaker.
+So the two changes only work together — refuse any cut that would leave a piece
+under 400 ms, and then the split can go looking for shorter pauses:
+
+| | 250 ms, slivers allowed | 160 ms, slivers refused |
+|---|---|---|
+| 4 voices, clean | 99.8% | **99.9%** |
+| 4 voices, reverb+noise | 99.4% | **99.5%** |
+| 4 voices, one moving | 99.7% | **99.8%** |
+| 6 voices, clean | **99.9%** | 99.8% |
+| 6 voices, 15 dB | 97.4% | 97.4% |
+| 6 voices, 10 dB | 6 spk, 87.2% | **6 spk, 95.7%** |
+| 6 voices, 5 dB | 6 spk, 82.2% | **6 spk, 86.8%** |
+| 11 min, clean | 99.6% | **99.7%** |
+| 11 min, degraded | 99.5% | 99.5% |
+
+On its own, at the old 250 ms split, the minimum piece length changes nothing on
+any fixture. It is worth having only because of what it unlocks.
+
+The working band is now 140–170 ms: at 180 a noisy recording starts inventing a
+seventh speaker, and at 120 the long one loses a speaker again. Before the
+sliver rule the band did not exist — everything below 180 collapsed.
+
+Twice now the same shape: a constant swept on clean audio, reported inert, and
+holding a real loss on anything noisier. The remaining rows in that table were
+swept the same way.
 
 ## Cleaning the audio first makes everything worse
 
