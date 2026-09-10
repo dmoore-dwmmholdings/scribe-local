@@ -94,7 +94,22 @@ class Handler(BaseHTTPRequestHandler):
                 "action_items": [],
                 "decisions": [],
             })
-        sys.stderr.write(f"[stub-llm] {MODE}: {reply[:70]}\n")
+        # Record what each stage actually sends, so a caller can check that
+        # speaker labels survive as far as the model — which is the whole point
+        # of diarizing before summarising.
+        kind = ("correct" if "numbered transcript lines" in prompt
+                else "condense" if "part " in prompt and "of a meeting transcript" in prompt
+                else "summarise")
+        # Labels at the start of a transcript line, which is how the pipeline
+        # carries who said what into a prompt.
+        speakers = sorted(set(re.findall(r"^([A-Z][\w .'-]{0,24}?): ", prompt, flags=re.M))
+                          - {"Transcript"})
+        roster = re.search(r"The people speaking are: ([^.]+)\.", prompt)
+        sys.stderr.write(
+            f"[stub-llm] {kind}: {len(prompt)} chars"
+            f", labelled lines from: {', '.join(speakers) if speakers else '(none)'}"
+            f", roster: {roster.group(1) if roster else '(none)'}\n"
+        )
 
         if self.path.endswith("/chat/completions"):
             self._send({"choices": [{"message": {"content": reply}}]})

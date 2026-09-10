@@ -63,13 +63,27 @@ pub async fn run(
         transcript.clone()
     };
 
+    // Who was in the room, stated separately from the transcript.
+    //
+    // A summary is where speaker detection is supposed to pay off — "Karen
+    // agreed to..." rather than "it was agreed". For a short recording the
+    // labels are on every line and the model can read them. For a long one the
+    // body reaching this point is not the transcript at all, it is notes made
+    // by an earlier pass that was asked to keep speaker names and may not have,
+    // and nothing checks. All the work of telling voices apart can be discarded
+    // silently at that step.
+    //
+    // Naming the participants here costs a line and survives condensation,
+    // because it does not go through it.
+    let roster = participant_line(&names);
+
     let user = format!(
         "{instructions}\n\n\
          Return ONLY a JSON object with keys: \
          \"title\" (string), \"summary\" (string), \"action_items\" (array of strings), \
          \"decisions\" (array of strings), \"topics\" (array of strings). \
          If the transcript is empty or trivial, still return the object with empty values.\n\n\
-         Transcript:\n{body}",
+         {roster}Transcript:\n{body}",
         instructions = tmpl.instructions
     );
 
@@ -236,6 +250,24 @@ fn render_transcript(utterances: &[Utterance], names: &HashMap<i32, String>) -> 
     s
 }
 
+/// A line naming the people in the recording, or nothing when none are known.
+///
+/// Anonymous speakers are included: "Speaker 0" is still information — it says
+/// four people were present and which of them said what, even without names.
+fn participant_line(names: &HashMap<i32, String>) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let mut who: Vec<(i32, &String)> = names.iter().map(|(i, n)| (*i, n)).collect();
+    who.sort_by_key(|(i, _)| *i);
+    let listed: Vec<&str> = who.iter().map(|(_, n)| n.as_str()).collect();
+    format!(
+        "The people speaking are: {}. Attribute decisions and action items to them by name \
+         where the transcript supports it.\n\n",
+        listed.join(", ")
+    )
+}
+
 /// The parsed (or degraded) summary fields.
 struct ParsedSummary {
     title: Option<String>,
@@ -338,6 +370,28 @@ fn first_json_object(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_participants_are_named_for_the_summary() {
+        let mut names = HashMap::new();
+        names.insert(1, "Samantha".to_string());
+        names.insert(0, "Daniel".to_string());
+        names.insert(2, "Speaker 2".to_string());
+
+        let line = participant_line(&names);
+        // In speaker order, so the same recording always reads the same way.
+        assert!(
+            line.starts_with("The people speaking are: Daniel, Samantha, Speaker 2."),
+            "line = {line}"
+        );
+    }
+
+    /// A recording with no diarized speakers says nothing rather than something
+    /// empty and confusing.
+    #[test]
+    fn nobody_known_means_no_roster() {
+        assert_eq!(participant_line(&HashMap::new()), "");
+    }
 
     #[test]
     fn extracts_clean_json() {

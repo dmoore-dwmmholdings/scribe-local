@@ -441,6 +441,30 @@ Both LLM stages are written to degrade rather than fail when no model is
 reachable, which `e2e-check.sh` checks by pointing them at a closed port. The
 stub checks the other direction.
 
+### Where the speaker labels were being lost
+
+The summary is where telling voices apart is supposed to pay off — "Karen agreed
+to send the note" rather than "it was agreed". Logging what each stage actually
+sent showed the labels reaching the model for a short recording and not for a
+long one.
+
+A transcript over the prompt budget is condensed first, in parts, and the parts
+do carry speaker labels — the prompt asks for them to be kept. But what reaches
+the final summary pass is then the *notes*, not the transcript, and whether the
+names survived is entirely down to whether the model honoured that instruction.
+Nothing checked, and nothing could tell afterwards.
+
+The final prompt now names the participants itself, in a line of its own that
+does not pass through the condensation:
+
+```
+The people speaking are: Daniel, Samantha, Rishi, Speaker 3. Attribute
+decisions and action items to them by name where the transcript supports it.
+```
+
+Anonymous speakers are included on purpose: "Speaker 3" still says a fourth
+person was present and which lines were theirs.
+
 ## Whisper's word timings
 
 sherpa returns no token timestamps for its Whisper models. The transcriber
