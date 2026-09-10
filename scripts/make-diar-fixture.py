@@ -159,6 +159,16 @@ def build_lines(turns, offset=0):
     a fixture that repeated its lines scored 91% where the same code scores
     99.7% on one that does not. Each voice works through the whole bank, so a
     (voice, line) pair is used at most once.
+
+    The line also advances with the voice, so that *consecutive* turns differ.
+    They used not to: every voice said the first sentence, then every voice said
+    the second, so any two neighbouring turns held the same words. That is
+    harmless for clustering, which never sees the text, and badly wrong for
+    anything about overlap — an interruption became the same sentence mixed with
+    itself a second later, which is an echo and not a conversation. It put the
+    word error rate of a heavily overlapped recording at 26.6% where two
+    different sentences give 21.9% — so overlap really does cost that much, and
+    a twentieth of what was being blamed on it was the fixture.
     """
     if turns > len(VOICES) * len(SENTENCES):
         raise SystemExit(
@@ -168,7 +178,7 @@ def build_lines(turns, offset=0):
     return [
         (
             VOICES[i % len(VOICES)],
-            SENTENCES[(offset + i // len(VOICES)) % len(SENTENCES)],
+            SENTENCES[(offset + i // len(VOICES) + i % len(VOICES)) % len(SENTENCES)],
         )
         for i in range(turns)
     ]

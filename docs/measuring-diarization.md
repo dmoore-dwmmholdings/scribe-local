@@ -237,6 +237,63 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## Interruptions, and a fixture that was quietly making them an echo
+
+Nothing here had ever measured overlapped speech, which is what a meeting is
+mostly made of. Measured, speaker detection handles it well and transcription
+does not.
+
+| overlap per interruption | overlapped | word error rate | words to the right speaker |
+|---|---|---|---|
+| none | 0.0 s | 0.9% | 100.0% |
+| 300 ms | 2.7 s | 0.4% | 100.0% |
+| 800 ms | 7.2 s | 7.8% | 100.0% |
+| 1500 ms | 13.5 s | 21.9% | 100.0% |
+
+Every word lands on the right person at every level, the speaker count is right
+every time, and the diarizer really is reporting two people at once rather than
+guessing between them: 1228 of 1359 overlapped frames carry two hypothesis
+speakers. `transcript_check` scores the two populations separately — 45 words
+spoken over, 100% of them on one of the two people actually talking, and 305 in
+the clear, 100% right.
+
+What overlap costs is the words. A light interruption is free; a second and a
+half of two people talking destroys about two and a half times its own duration
+in transcript.
+
+**A fifth of that was the fixture.** `build_lines` gave every voice the whole
+sentence bank in the same order, so turn 1 and turn 2 held the *same sentence* —
+and since an interruption overlaps neighbouring turns, every overlap was one
+sentence mixed with a delayed copy of itself. That is an echo, not a
+conversation. Advancing the line with the voice as well as with the round takes
+the same recording from 26.6% to 21.9%.
+
+**It was flattering much more than overlap.** With four voices working through
+the bank in step, the same sentence was spoken four times in a row, which hands
+a transducer's internal language model the answer. Every fixture on this page
+was built that way. Rebuilt with neighbouring turns saying different things:
+
+| | before | after |
+|---|---|---|
+| word error rate, 4 voices dirty | 2.7% | **8.5%** |
+| word error rate, 11 min dirty | 5.0% | **11.1%** |
+| word error rate, clean | 1.5% | 0.9% |
+| 6 voices, reverb+noise | 97.4% | **98.1%** |
+| 8 voices, reverb+noise | 97.7% | **98.6%** |
+| 6 voices, fast conversation | 97.0% | **99.8%** |
+| 4 voices, half of it silence, degraded | 5 spk, 97.8% | **4 spk, 99.8%** |
+| 6 voices, fast + reverb | 6 spk, 92.8% | 7 spk, 90.8% |
+
+Word error rate on degraded audio was overstated as good by a factor of three.
+Speaker detection was slightly understated nearly everywhere, and the phantom
+speaker in the half-silent recording — a whole section of this page — turns out
+to have been an artifact of the repeated text and is gone.
+
+The one thing that got worse is fast conversation in a reverberant room, which
+now splits a voice and returns seven speakers for six. It is a real condition
+and a real failure, so it is measured on every run without gating, like the
+other two. Reverb v1 returns six here.
+
 ## The mover who becomes three people
 
 A six-voice recording where one person walks about a reverberant room comes back
@@ -885,11 +942,11 @@ caller's to get right.
 
 | fixture | transcribe | diarize | total | WER | right speaker |
 |---|---|---|---|---|---|
-| 4 voices, 2.5 min | 34.5x | 12.6x | 9.2x | 1.5% | 100.0% |
-| 4 voices, 2.5 min, dirty | 32.9x | 11.9x | 8.7x | 2.7% | 100.0% |
-| 4 voices, 11.1 min | 30.6x | 11.2x | 8.2x | 1.2% | 100.0% |
-| 4 voices, 11.1 min, dirty | 32.3x | 11.5x | 8.5x | 5.0% | 100.0% |
-| 4 voices, one moving | 33.4x | 12.6x | 9.2x | 1.3% | 100.0% |
+| 4 voices, 2.5 min | 35.5x | 13.1x | 9.5x | 0.9% | 100.0% |
+| 4 voices, 2.5 min, dirty | 34.3x | 12.6x | 9.2x | 8.5% | 100.0% |
+| 4 voices, 11.1 min | 31.6x | 11.7x | 8.5x | 1.0% | 100.0% |
+| 4 voices, 11.1 min, dirty | 33.3x | 11.7x | 8.7x | 11.1% | 100.0% |
+| 4 voices, one moving | 33.8x | 12.7x | 9.2x | 1.5% | 100.0% |
 
 Multiples are of real time, so 7.2x means an hour of audio in about eight and a
 half minutes. These are current: the earlier numbers on this page were taken
