@@ -6,6 +6,8 @@
 //! (cosine ≥ 0.5); a hit attaches the known `speaker_id`. The turns are parked
 //! in the scratch artifacts table for the merge stage.
 
+use std::collections::BTreeSet;
+
 use scribe_asr::SpeechEngine;
 use scribe_core::config::Config;
 use scribe_core::storage;
@@ -50,11 +52,20 @@ pub async fn run(
         .map_err(|e| stage_err(STAGE, format!("diarize task failed: {e}")))?
         .map_err(|e| stage_err(STAGE, e))?;
 
-    // Persist each speaker's embedding, matching to an enrolled voice if close.
-    for (&local_idx, embedding) in &diarization.embeddings {
-        let matched = db
-            .match_speaker_by_embedding(embedding, ENROLL_MATCH_THRESHOLD)
-            .await?;
+    // The speakers of this recording are the ones the merge stage will actually
+    // label words with — every index appearing in a turn, not just the ones an
+    // embedding could be computed for. A voice too brief or too noisy to embed
+    // still gets a row, so the transcript can show it and a user can name it.
+    let speakers: BTreeSet<i32> = diarization.turns.iter().map(|t| t.local_idx).collect();
+
+    for &local_idx in &speakers {
+        let embedding = diarization.embeddings.get(&local_idx);
+
+        // Match to an enrolled voice, when there is a voiceprint to match on.
+        let matched = match embedding {
+            Some(e) => db.match_speaker_by_embedding(e, ENROLL_MATCH_THRESHOLD).await?,
+            None => None,
+        };
         let speaker_id = matched.as_ref().map(|(s, _)| s.id);
         if let Some((s, sim)) = &matched {
             tracing::info!(
@@ -62,13 +73,18 @@ pub async fn run(
                 "diarize: matched enrolled speaker"
             );
         }
-        db.upsert_recording_speaker(
-            recording_id,
-            local_idx,
-            speaker_id,
-            Some(embedding.clone()),
-        )
-        .await?;
+        db.upsert_recording_speaker(recording_id, local_idx, speaker_id, embedding.cloned())
+            .await?;
+    }
+
+    // Drop any speaker left over from an earlier run of this stage. Indices are
+    // assigned from scratch each time, so a run that finds fewer speakers than
+    // the last one does not overwrite the surplus — it would survive as a
+    // participant with no speech attached.
+    let found: Vec<i32> = speakers.iter().copied().collect();
+    let pruned = db.prune_recording_speakers(recording_id, &found).await?;
+    if pruned > 0 {
+        tracing::info!(%recording_id, pruned, "diarize: dropped speakers from an earlier run");
     }
 
     // Hand the turns to merge via the scratch table.

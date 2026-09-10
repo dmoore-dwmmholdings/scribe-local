@@ -40,6 +40,32 @@ impl Db {
         Ok(())
     }
 
+    /// Drop every diarized speaker for a recording outside `keep`.
+    ///
+    /// Diarization assigns indices from scratch on each run, so a second run
+    /// that finds fewer speakers than the first does not overwrite the surplus —
+    /// it upserts `0..n-1` and leaves every higher index of the previous run
+    /// standing as a participant with no speech. `reset_for_reprocess` clears
+    /// the table for an explicit reprocess, but the stage re-runs on its own
+    /// too: a failed job retries with backoff, and the reaper requeues one whose
+    /// worker stopped renewing its lease. Both paths land here instead.
+    pub async fn prune_recording_speakers(
+        &self,
+        recording_id: Uuid,
+        keep: &[i32],
+    ) -> Result<u64> {
+        let removed = sqlx::query(
+            "DELETE FROM recording_speakers              WHERE recording_id = $1 AND NOT (local_idx = ANY($2))",
+        )
+        .bind(recording_id)
+        .bind(keep)
+        .execute(self.pool())
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+        Ok(removed)
+    }
+
     /// List the diarized speakers for a recording, ordered by `local_idx`, with
     /// each `display_name` filled from the joined [`Speaker`] when matched and
     /// defaulting to `"Speaker {local_idx}"` otherwise.

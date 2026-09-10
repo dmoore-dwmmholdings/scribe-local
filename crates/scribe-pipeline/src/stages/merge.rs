@@ -1,10 +1,13 @@
 //! Stage 4 — merge (design §8, WhisperX pattern).
 //!
 //! Read the transcribe stage's words and the diarize stage's speaker turns back
-//! from the scratch table, then assign each word the speaker whose turn
-//! **maximally overlaps** the word's `[start_ms, end_ms]` interval. Group runs
-//! of consecutive same-speaker words into utterances, breaking on a speaker
-//! change or a long silent gap. Replace the recording's utterances atomically.
+//! from the scratch table, then assign each word the speaker whose turns
+//! **cover most** of the word's `[start_ms, end_ms]` interval, and move brief
+//! flickers the overlap barely supported onto their neighbours. Group runs of
+//! consecutive same-speaker words into utterances, breaking on a speaker change
+//! or a long silent gap. Replace the recording's utterances atomically.
+
+use std::collections::HashMap;
 
 use scribe_core::config::Config;
 use scribe_core::types::Word;
@@ -34,7 +37,11 @@ pub async fn run(cfg: &Config, db: &Db, ollama: &OllamaClient, recording_id: Uui
     if removed > 0 {
         tracing::debug!(%recording_id, removed, "merge: stripped filler words");
     }
-    assign_speakers(&mut words, &diarization.turns);
+    let coverage = assign_speakers(&mut words, &diarization.turns);
+    let smoothed = smooth_islands(&mut words, &coverage);
+    if smoothed > 0 {
+        tracing::debug!(%recording_id, words = smoothed, "merge: reassigned stray speaker words");
+    }
     let mut utterances = group_into_utterances(&words);
 
     // Best-effort LLM cleanup of misrecognised names / proper nouns. Never fails
@@ -202,40 +209,125 @@ fn overlap(a0: i64, a1: i64, b0: i64, b1: i64) -> i64 {
     (a1.min(b1) - a0.max(b0)).max(0)
 }
 
-/// Assign each word the diarized speaker whose turn overlaps it most.
+/// Assign each word the diarized speaker who covers most of it.
+///
+/// Overlap is accumulated **per speaker**, not per turn. pyannote does not emit
+/// one turn per stretch of speech — it emits many short ones, and a word
+/// straddling a pause can overlap three turns of the person actually talking and
+/// one of somebody else. Taking the single longest turn overlap hands the word
+/// to that somebody else even though they cover less of it; summing per speaker
+/// first asks the question that was meant.
 ///
 /// Ties and zero-overlap words (silence, ASR/diarizer drift) fall back to the
 /// turn whose midpoint is nearest the word's midpoint, so every word still gets
 /// a speaker when any turn exists. With no turns at all, `local_idx` stays None.
-fn assign_speakers(words: &mut [Word], turns: &[TurnArtifact]) {
+///
+/// Returns each word's coverage — the fraction of the word the winning speaker
+/// actually accounts for — so [`smooth_islands`] can tell a confident assignment
+/// from a coin flip.
+fn assign_speakers(words: &mut [Word], turns: &[TurnArtifact]) -> Vec<f64> {
+    let mut coverage = vec![0.0; words.len()];
     if turns.is_empty() {
-        return;
+        return coverage;
     }
-    for w in words.iter_mut() {
-        let mut best_idx: Option<i32> = None;
-        let mut best_overlap: i64 = 0;
+    let mut by_speaker: HashMap<i32, i64> = HashMap::new();
+    for (i, w) in words.iter_mut().enumerate() {
+        by_speaker.clear();
         for t in turns {
             let ov = overlap(w.start_ms, w.end_ms, t.start_ms, t.end_ms);
-            if ov > best_overlap {
-                best_overlap = ov;
-                best_idx = Some(t.local_idx);
+            if ov > 0 {
+                *by_speaker.entry(t.local_idx).or_insert(0) += ov;
             }
         }
-        if best_idx.is_none() {
-            // No overlap with any turn: nearest-midpoint fallback.
-            let wmid = (w.start_ms + w.end_ms) / 2;
-            let mut best_dist = i64::MAX;
-            for t in turns {
-                let tmid = (t.start_ms + t.end_ms) / 2;
-                let dist = (wmid - tmid).abs();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_idx = Some(t.local_idx);
+
+        // Max by overlap, ties broken by the lower speaker index so the result
+        // does not depend on hash order.
+        let best = by_speaker
+            .iter()
+            .max_by_key(|(idx, ov)| (**ov, std::cmp::Reverse(**idx)))
+            .map(|(idx, ov)| (*idx, *ov));
+
+        let best_idx = match best {
+            Some((idx, ov)) => {
+                let span = (w.end_ms - w.start_ms).max(0);
+                coverage[i] = if span > 0 {
+                    (ov as f64 / span as f64).min(1.0)
+                } else {
+                    1.0
+                };
+                Some(idx)
+            }
+            None => {
+                // No overlap with any turn: nearest-midpoint fallback, and
+                // coverage stays 0 — nothing about this word was witnessed.
+                let wmid = (w.start_ms + w.end_ms) / 2;
+                let mut best_dist = i64::MAX;
+                let mut nearest = None;
+                for t in turns {
+                    let tmid = (t.start_ms + t.end_ms) / 2;
+                    let dist = (wmid - tmid).abs();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        nearest = Some(t.local_idx);
+                    }
                 }
+                nearest
             }
-        }
+        };
         w.local_idx = best_idx;
     }
+    coverage
+}
+
+/// Longest run of words that may be reassigned as a stray.
+///
+/// A word or two. Long enough to catch the flicker a turn boundary a few
+/// hundred milliseconds out of step with the ASR produces, short enough that a
+/// real interjection — "no, wait" — is left alone.
+const MAX_ISLAND_MS: i64 = 800;
+
+/// Coverage below which an assignment is treated as unsupported rather than
+/// merely close. At half, most of the word fell outside the turn that claimed it.
+const WEAK_COVERAGE: f64 = 0.5;
+
+/// Reassign brief speaker flickers that the overlap evidence barely supported.
+///
+/// Diarization turn boundaries and ASR word boundaries are produced by different
+/// models and do not agree to the millisecond. Where they disagree, one word in
+/// the middle of somebody's sentence gets handed to whoever spoke next — which
+/// then breaks the sentence into three utterances and puts a stranger's name on
+/// the middle one. It reads as the speaker detection failing even when the
+/// diarization was right.
+///
+/// A run is only moved when the evidence for it was weak (every word in it
+/// mostly outside the turn that claimed it), it is brief, and the words on both
+/// sides agree with each other and disagree with it. A confidently-assigned
+/// word, or a genuine short turn between two different speakers, is left as it is.
+fn smooth_islands(words: &mut [Word], coverage: &[f64]) -> usize {
+    let mut moved = 0;
+    let mut i = 0;
+    while i < words.len() {
+        let mut j = i + 1;
+        while j < words.len() && words[j].local_idx == words[i].local_idx {
+            j += 1;
+        }
+        // `i..j` is a maximal run of one speaker. Interior runs only.
+        if i > 0 && j < words.len() {
+            let before = words[i - 1].local_idx;
+            let after = words[j].local_idx;
+            let span = words[j - 1].end_ms - words[i].start_ms;
+            let weak = coverage[i..j].iter().all(|c| *c < WEAK_COVERAGE);
+
+            if before == after && before != words[i].local_idx && span <= MAX_ISLAND_MS && weak {
+                for w in &mut words[i..j] {
+                    w.local_idx = before;
+                }
+                moved += j - i;
+            }
+        }
+        i = j;
+    }
+    moved
 }
 
 /// An assembled utterance before it hits the DB.
@@ -322,7 +414,7 @@ mod tests {
     fn assigns_by_max_overlap() {
         let mut words = vec![word("hi", 0, 400), word("there", 600, 1000)];
         let turns = vec![turn(0, 0, 500), turn(1, 500, 1000)];
-        assign_speakers(&mut words, &turns);
+        let _ = assign_speakers(&mut words, &turns);
         assert_eq!(words[0].local_idx, Some(0));
         assert_eq!(words[1].local_idx, Some(1));
     }
@@ -333,8 +425,90 @@ mod tests {
         // turn 0's (250): word midpoint 850 → dist 50 vs 600.
         let mut words = vec![word("um", 800, 900)];
         let turns = vec![turn(0, 0, 500), turn(1, 950, 1200)];
-        assign_speakers(&mut words, &turns);
+        let _ = assign_speakers(&mut words, &turns);
         assert_eq!(words[0].local_idx, Some(1));
+    }
+
+    #[test]
+    fn a_speakers_turns_are_weighed_together() {
+        // Speaker 0 holds the word across three short turns (300 ms total);
+        // speaker 1 has one longer turn (200 ms). Per-turn, speaker 1 wins on
+        // the single longest overlap; per-speaker, speaker 0 covers more.
+        let mut words = vec![word("straddling", 0, 1000)];
+        let turns = vec![
+            turn(0, 0, 100),
+            turn(1, 100, 300),
+            turn(0, 300, 400),
+            turn(0, 400, 500),
+        ];
+        let _ = assign_speakers(&mut words, &turns);
+        assert_eq!(words[0].local_idx, Some(0));
+    }
+
+    #[test]
+    fn coverage_reports_how_much_of_the_word_was_witnessed() {
+        let mut words = vec![word("half", 0, 1000), word("all", 2000, 2500)];
+        let turns = vec![turn(0, 0, 500), turn(0, 2000, 2500)];
+        let coverage = assign_speakers(&mut words, &turns);
+        assert!((coverage[0] - 0.5).abs() < 1e-9, "coverage = {coverage:?}");
+        assert!((coverage[1] - 1.0).abs() < 1e-9, "coverage = {coverage:?}");
+    }
+
+    #[test]
+    fn a_weakly_held_stray_word_rejoins_its_neighbours() {
+        // "in" was handed to speaker 1 by a turn boundary a fraction out of step
+        // with the ASR, in the middle of speaker 0's sentence.
+        let mut words = vec![
+            Word { local_idx: Some(0), ..word("the", 0, 300) },
+            Word { local_idx: Some(0), ..word("point", 300, 600) },
+            Word { local_idx: Some(1), ..word("in", 600, 900) },
+            Word { local_idx: Some(0), ..word("question", 900, 1200) },
+            Word { local_idx: Some(0), ..word("is", 1200, 1500) },
+        ];
+        // Barely any of "in" fell inside the turn that claimed it.
+        let coverage = vec![1.0, 1.0, 0.1, 1.0, 1.0];
+
+        assert_eq!(smooth_islands(&mut words, &coverage), 1);
+        assert!(words.iter().all(|w| w.local_idx == Some(0)));
+    }
+
+    #[test]
+    fn a_confidently_assigned_word_is_left_alone() {
+        let mut words = vec![
+            Word { local_idx: Some(0), ..word("so", 0, 300) },
+            Word { local_idx: Some(1), ..word("yes", 300, 600) },
+            Word { local_idx: Some(0), ..word("anyway", 600, 900) },
+        ];
+        // Fully witnessed: the diarizer really did hear a second voice.
+        let coverage = vec![1.0, 1.0, 1.0];
+        assert_eq!(smooth_islands(&mut words, &coverage), 0);
+        assert_eq!(words[1].local_idx, Some(1));
+    }
+
+    #[test]
+    fn a_real_turn_is_not_smoothed_away() {
+        // Weakly held, but long enough to be somebody actually taking the floor.
+        let mut words = vec![
+            Word { local_idx: Some(0), ..word("go", 0, 300) },
+            Word { local_idx: Some(1), ..word("well", 300, 900) },
+            Word { local_idx: Some(1), ..word("actually", 900, 1600) },
+            Word { local_idx: Some(0), ..word("right", 1600, 1900) },
+        ];
+        let coverage = vec![0.1, 0.1, 0.1, 0.1];
+        assert_eq!(smooth_islands(&mut words, &coverage), 0);
+    }
+
+    #[test]
+    fn a_genuine_handover_is_not_smoothed() {
+        // Flanking speakers differ, so there is no consensus to snap back to.
+        let mut words = vec![
+            Word { local_idx: Some(0), ..word("done", 0, 300) },
+            Word { local_idx: Some(1), ..word("ok", 300, 600) },
+            Word { local_idx: Some(2), ..word("next", 600, 900) },
+        ];
+        let coverage = vec![0.1, 0.1, 0.1];
+        assert_eq!(smooth_islands(&mut words, &coverage), 0);
+        assert_eq!(words[1].local_idx, Some(1));
     }
 
     #[test]
@@ -358,7 +532,7 @@ mod tests {
     #[test]
     fn empty_turns_leaves_words_unassigned() {
         let mut words = vec![word("solo", 0, 100)];
-        assign_speakers(&mut words, &[]);
+        let _ = assign_speakers(&mut words, &[]);
         assert_eq!(words[0].local_idx, None);
         let utts = group_into_utterances(&words);
         assert_eq!(utts.len(), 1);
