@@ -237,6 +237,54 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## Four other embedding models, none of them better
+
+Most of what is left on this page comes back to the embedding: the eight-voice
+count, the fast-conversation floor, the impostor who is named in a bad room.
+A better embedding would move all three at once, so it is worth knowing whether
+one is available.
+
+Four candidates from the sherpa model zoo, dropped in against the current
+ERes2Net with nothing else changed:
+
+| fixture | ERes2Net (current) | TitaNet-small | ERes2NetV2 |
+|---|---|---|---|
+| 4 voices, one moving | **4 spk, 99.8%** | 5 spk, 92.6% | 4 spk, 99.8% |
+| 6 voices, reverb+noise | **6 spk, 97.4%** | 6 spk, 97.4% | 5 spk, 81.0% |
+| 8 voices, reverb+noise | **8 spk, 97.7%** | 9 spk, 90.6% | 7 spk, 85.1% |
+| 6 voices, fast conversation | 6 spk, 92.8% | **6 spk, 93.3%** | 5 spk, 77.9% |
+| 4 voices, 11 min, degraded | **4 spk, 99.5%** | 5 spk, 97.8% | 4 spk, 99.2% |
+| brief 5th speaker | 5 spk, 99.6% | 5 spk, 99.6% | 5 spk, 99.6% |
+
+The current model wins or ties everywhere except fast conversation, where
+TitaNet-small is 0.5 of a point ahead.
+
+**Both alternatives were given a re-tune before being dismissed**, since the cut
+threshold is calibrated to a model's similarity scale and a drop-in comparison
+is not a fair one. It does not rescue either. ERes2NetV2 at a cut of 0.85 reaches
+97.6% on six voices — a shade better than the current model — but eight voices
+stays at 7 speakers and 85.1% at *every* value swept. TitaNet-small returns five
+speakers for four on the moving-speaker fixture at every value, which is the same
+failure this page already records for TitaNet-large: it is a property of that
+family, not of the tuning.
+
+**The two English-trained models are not usable.** `wespeaker_en_voxceleb_CAM++`
+and `3dspeaker_campplus_sv_en_voxceleb` are both 512-dimensional, and
+`speakers.embedding` is `vector(192)` — changing it means a migration and
+re-enrolling every person on file, because a voiceprint cannot be converted from
+one model's space to another. They also scored badly as drop-ins (2 speakers at
+42.7%, 8 at 48.2%), but that is not evidence about the models: their cosine
+distributions are different and every constant here is calibrated to the current
+one. They were not re-tuned, because the schema rules them out regardless.
+
+Worth noting what this kills as an idea: the current model is trained on Mandarin
+(`zh-cn`) and every voice in every fixture is English, which looks like an
+obvious mismatch to fix. It is not one. The English-trained models are worse or
+unusable and the newer version of the *same* model is worse.
+
+Reproduce by pointing `diarize_check` at a directory holding a different
+`diarization/embedding.onnx` — the model is a file, not a code path.
+
 ## Naming people when the database is not small
 
 Every enrolment number on this page was measured against three or four enrolled
