@@ -372,9 +372,9 @@ export const api = {
 
   /**
    * PUT /recordings/{id}/participants — state how many people speak in this
-   * recording. Diarization pins its clustering to this count, so it is the
-   * strongest correction for a recording that came back with the wrong number
-   * of speakers. Takes effect on the next reprocess.
+   * recording. Diarization settles the recording's speaker set to this count,
+   * so it is the strongest correction for a recording that came back with the
+   * wrong number of speakers. Follow with {@link rediarize} to act on it.
    */
   setParticipants(id: string, participantsExpected: number | null): Promise<void> {
     return apiFetch<void>(`/recordings/${id}/participants`, {
@@ -398,6 +398,21 @@ export const api = {
    */
   reprocess(id: string): Promise<ReprocessResponse> {
     return apiFetch<ReprocessResponse>(`/recordings/${id}/reprocess`, { method: 'POST' });
+  },
+
+  /**
+   * POST /recordings/{id}/rediarize — run speaker detection again over the
+   * transcript already on the server.
+   *
+   * What {@link reprocess} does minus the expensive half: transcription is left
+   * alone, since nothing about the speaker count can change a word of it. Use
+   * this after {@link setParticipants}, or after enrolling a voice that should
+   * now be recognised. Throws {@link ApiError} with status 409 when the server
+   * has no stored transcript to reuse — fall back to {@link reprocess}, which
+   * can always rebuild one. Poll GET /recordings/{id} until status is `ready`.
+   */
+  rediarize(id: string): Promise<ReprocessResponse> {
+    return apiFetch<ReprocessResponse>(`/recordings/${id}/rediarize`, { method: 'POST' });
   },
 
   /** POST /recordings/{id}/translate — translate the summary into `lang` (LLM). */

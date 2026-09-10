@@ -35,7 +35,7 @@ import {
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
-import { api } from '../../src/api/client';
+import { api, ApiError } from '../../src/api/client';
 import type {
   NameSpeakerRequest,
   RecordingDetailResponse,
@@ -401,7 +401,8 @@ function UtteranceActionSheet({
  * How many people are in the recording.
  *
  * Imported audio arrives with no count, and that is the case where diarization
- * goes furthest wrong — so this is the correction, not a preference.
+ * goes furthest wrong — so this is the correction, not a preference. Saving it
+ * only records it; `rediarize` is what acts on it.
  */
 function ParticipantsModal({
   visible,
@@ -430,9 +431,9 @@ function ParticipantsModal({
         <View style={styles.modalCard}>
           <Text style={styles.modalTitle}>Speaker count</Text>
           <Text style={styles.modalHint}>
-            How many people speak in this recording? Diarization pins its clustering to this
-            number instead of guessing, which is what splits one voice into many on a long
-            recording.
+            How many people speak in this recording? Left to guess, speaker detection tends
+            to split one voice into several on a long recording. Telling it the number settles
+            that.
           </Text>
           <View style={styles.countRow}>
             {[2, 3, 4, 5, 6].map((n) => (
@@ -967,11 +968,36 @@ export default function RecordingDetailScreen() {
   );
 
   /**
-   * Save the speaker count, then re-run the pipeline with it.
+   * Run speaker detection again over the transcript already on the server.
+   *
+   * Not a reprocess: transcription is the expensive half of the pipeline and
+   * nothing about who was speaking can change a word of it, so re-running it to
+   * fix a speaker count means waiting minutes for an identical transcript. A
+   * server with no stored transcript to reuse answers 409, and only then is
+   * there anything to fall back to.
+   */
+  const rediarize = useCallback(
+    async (recordingId: string) => {
+      try {
+        await api.rediarize(recordingId);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          await api.reprocess(recordingId);
+        } else {
+          throw err;
+        }
+      }
+      await loadDetail(); // status -> processing kicks the existing poll loop
+    },
+    [loadDetail],
+  );
+
+  /**
+   * Save the speaker count, then act on it.
    *
    * Diarization discovering the count by itself is exactly what goes wrong on a
-   * long recording — it split four voices into dozens. Stating the number pins
-   * the clustering to it.
+   * long recording. Stating the number settles the recording's speaker set to
+   * it — but only once diarization runs again.
    */
   const handleSetParticipants = useCallback(
     async (count: number) => {
@@ -985,18 +1011,17 @@ export default function RecordingDetailScreen() {
         );
         Alert.alert(
           'Speaker count saved',
-          `Set to ${count}. Re-run the transcript now so diarization uses it?`,
+          `Set to ${count}. Redo speaker detection now? The transcript itself is kept.`,
           [
             { text: 'Later', style: 'cancel' },
             {
-              text: 'Re-run',
+              text: 'Redo',
               onPress: async () => {
                 try {
-                  await api.reprocess(id);
-                  await loadDetail();
+                  await rediarize(id);
                 } catch (err) {
                   Alert.alert(
-                    'Could not reprocess',
+                    'Could not redo speaker detection',
                     err instanceof Error ? err.message : String(err),
                   );
                 }
@@ -1010,8 +1035,33 @@ export default function RecordingDetailScreen() {
         setSavingParticipants(false);
       }
     },
-    [id, loadDetail],
+    [id, rediarize],
   );
+
+  const handleRediarize = useCallback(() => {
+    setShowActions(false);
+    if (!id) return;
+    Alert.alert(
+      'Redo speaker detection',
+      'Work out who spoke when, again, and re-label the transcript. The words themselves are kept, so this is much quicker than a full reprocess.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Redo',
+          onPress: async () => {
+            try {
+              await rediarize(id);
+            } catch (err) {
+              Alert.alert(
+                'Could not redo speaker detection',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
+          },
+        },
+      ],
+    );
+  }, [id, rediarize]);
 
   const handleReprocess = useCallback(() => {
     setShowActions(false);
@@ -1564,6 +1614,13 @@ export default function RecordingDetailScreen() {
                 </Text>
               </View>
               <Ionicons name="people-outline" size={18} color={colors.accent} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.sheetRow} onPress={handleRediarize} accessibilityRole="button">
+              <View style={styles.sheetRowText}>
+                <Text style={styles.sheetRowLabel}>Redo speaker detection</Text>
+                <Text style={styles.sheetRowSub}>Re-label who spoke when — keeps the words</Text>
+              </View>
+              <Ionicons name="people-circle-outline" size={18} color={colors.accent} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.sheetRow} onPress={handleReprocess} accessibilityRole="button">
               <View style={styles.sheetRowText}>
