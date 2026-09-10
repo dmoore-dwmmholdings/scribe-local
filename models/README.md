@@ -23,7 +23,7 @@ scribe --config <your-config.toml> models pull --dry-run   # show the plan only
 
 There are recipes for the two checkpoints the shipped configs name:
 
-- `parakeet-tdt-0.6b-v3` (the default) — about 750 MB with the diarization pair.
+- `parakeet-tdt-0.6b-v3` (the default) — about 680 MB with the diarization pair.
 - `whisper-large-v3-turbo` — about 3.1 GB with the diarization pair.
 
 The containers do this for you on the first start. For a different checkpoint,

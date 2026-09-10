@@ -76,7 +76,12 @@ SENTENCES = [
     "That assumes the vendor honours the timeline in their proposal, which is optimistic.",
 ]
 
-VOICES = ["Daniel", "Samantha", "Rishi", "Karen"]
+# Four by default. `SCRIBE_FIXTURE_VOICES` takes a comma-separated list, for a
+# larger meeting — a room of eight is ordinary and is a different problem from a
+# room of four, since every extra voice is another chance to confuse two.
+VOICES = os.environ.get(
+    "SCRIBE_FIXTURE_VOICES", "Daniel,Samantha,Rishi,Karen"
+).split(",")
 # Round robin through the voices, and never repeat a line.
 def build_lines(turns, offset=0):
     """Round-robin the voices, and never speak the same line twice.

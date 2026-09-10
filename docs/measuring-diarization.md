@@ -598,6 +598,68 @@ On the fixture above that takes the recording from four speakers to three and
 removes exactly the three television lines. The audio is untouched, so a
 reprocess brings the voice back.
 
+## The embedding model
+
+`scribe models pull` installs 3D-Speaker's ERes2Net. It used to install NVIDIA's
+TitaNet-large. The swap is the largest single accuracy change measured here, and
+it is worth recording what it did and did not fix, since the two are not the
+same shape.
+
+Point `diarize_check` at a directory holding a different `embedding.onnx` to
+compare — the model is a file, not a code path.
+
+| fixture | TitaNet | ERes2Net |
+|---|---|---|
+| 4 voices, one moving | 6 spk, 89.9% | **4 spk, 99.8%** |
+| 4 voices, 11 min, one moving | 5 spk, 95.8% | **4 spk, 99.7%** |
+| 4 voices, second meeting, one moving | 6 spk, 83.3% | **4 spk, 99.6%** |
+| 6 voices, reverb + noise | 5 spk, 82.5% | **6 spk, 94.4%** |
+| 8 voices, reverb + noise | 7 spk, 86.9% | **8 spk, 89.4%** |
+| 8 voices, clean | **8 spk, 99.9%** | 7 spk, 88.6% |
+| everything else (16 fixtures) | — | within 1.5 points either way |
+
+**What it fixed.** A speaker who moves about the room. That failure had been
+documented across three commits as not recoverable — not by a better cut rule,
+and only sometimes by stating the participant count. It is an embedding problem,
+and a better embedding solves it.
+
+**What it cost.** One fixture: eight voices, clean audio, where two women merge
+and seven speakers come back instead of eight. That is a *counting* failure, not
+a discrimination one — told there are eight, the same model returns eight
+speakers at 99.9%, so the embeddings separate them and the merge sequence is
+read one step too far. It is also the case where a user is most likely to know
+the number.
+
+**And enrollment, which is where the difference is largest.** The same person
+heard through a different room:
+
+| | own voiceprint | nearest other |
+|---|---|---|
+| TitaNet | 0.56 – 0.69 | 0.60 |
+| ERes2Net | **0.84 – 0.87** | 0.61 |
+
+With TitaNet a true match across rooms sits a hair above the 0.5 floor and a
+stranger sits at 0.60, which is to say the false match scores higher than the
+true one and only the surrounding context separates them. With ERes2Net the gap
+is not close. It also recovers an enrolled speaker who moves, who scored 0.499
+against his own voiceprint before — under the floor, and refused — and scores
+0.949 now.
+
+### If you already have enrolled speakers
+
+Voiceprints are not comparable between models: a vector from one means nothing
+to the other. `pull` never overwrites a model file that is already there, so an
+existing install keeps whatever it enrolled against and nothing breaks by
+itself. Swapping deliberately means re-enrolling everybody — delete the
+`embedding.onnx`, pull, and enroll again.
+
+### Models that are not drop-in
+
+Both of the above produce 192 dimensions, which `speakers.embedding vector(192)`
+commits to. CAM++ and the wespeaker ResNets produce 512 and would need a
+migration. They also scored far worse here (28% to 43% of speech to the right
+speaker), which is enough to stop looking at them regardless.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —

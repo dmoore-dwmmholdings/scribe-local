@@ -15,7 +15,10 @@
 //!     tokens.txt
 //!   diarization/
 //!     segmentation.onnx          # pyannote-segmentation-3.0
-//!     embedding.onnx             # 3D-Speaker / WeSpeaker / NeMo (192-dim)
+//!     embedding.onnx             # speaker embeddings, 192-dim
+//!                                # (3D-Speaker ERes2Net by default; the
+//!                                #  dimension is a schema commitment, so a
+//!                                #  512-dim model such as CAM++ will not do)
 //! ```
 //!
 //! Whisper-style models (a single `*-encoder.onnx` / `*-decoder.onnx` pair plus

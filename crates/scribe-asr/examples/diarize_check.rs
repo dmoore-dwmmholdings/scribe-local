@@ -77,6 +77,10 @@ fn main() {
     println!("truth speakers   {}", real_speakers.len());
     println!("found speakers   {}", result.num_speakers);
     println!("turns emitted    {}", result.turns.len());
+    println!(
+        "embedding dim    {}",
+        result.embeddings.values().next().map(|e| e.len()).unwrap_or(0)
+    );
 
     // Millisecond-level frame scoring at 10 ms, the usual DER resolution.
     const STEP_MS: i64 = 10;

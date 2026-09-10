@@ -40,7 +40,8 @@ const DIARIZE_WINDOW_MS: i64 = 10 * 60 * 1000;
 
 /// Longest slice handed to the embedding extractor in one call.
 ///
-/// TitaNet's masked convolutions carry a length limit baked in at export: past
+/// A guard against a length limit baked into an exported model. TitaNet-large,
+/// which this used to install, carries one in its masked convolutions: past
 /// roughly two minutes of audio the mask and the feature map disagree, and
 /// onnxruntime throws from `mconv`'s `Where` node
 /// (`broadcast an axis by a dimension other than 1. 12288 by 14531`). That is a
@@ -49,8 +50,10 @@ const DIARIZE_WINDOW_MS: i64 = 10 * 60 * 1000;
 /// A 9-minute single-speaker recording did exactly that: diarization merged the
 /// monologue into one turn far over the limit.
 ///
-/// 30 s is well inside the limit and is already more speech than these models
-/// use — they were trained on a few seconds — so nothing is lost by splitting.
+/// 30 s is well inside that limit and is already more speech than any of these
+/// models use — they are trained on a few seconds — so nothing is lost by
+/// splitting, and the guard costs nothing on a model that would not have needed
+/// it.
 /// A longer turn is embedded in pieces and averaged, weighted by duration, so
 /// the result is what embedding the whole turn was meant to produce anyway.
 const MAX_EMBED_MS: i64 = 30_000;

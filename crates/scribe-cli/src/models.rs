@@ -192,11 +192,34 @@ fn plan(cfg: &Config) -> Vec<Download> {
             diar.join("segmentation.onnx"),
             5_992_913,
         ));
+        // ERes2Net rather than TitaNet-large, which this used to install.
+        //
+        // Measured against it over twenty fixtures it is the same or better on
+        // every one, and much better on the two that were failing. A speaker
+        // who moves about the room split into six clusters and now stays one
+        // (89.9% of speech to the right person, now 99.8%); a six-person
+        // meeting with reverberation lost a speaker to a merge and now does not
+        // (82.5%, now 94.4%).
+        //
+        // It matters even more for recognising a voice across recordings. The
+        // same person heard through a different room scored 0.56 to 0.69 against
+        // their own voiceprint with TitaNet, which is a hair above the floor for
+        // accepting a match at all, and scores 0.84 to 0.87 with this. A
+        // different person resembling them sits near 0.6 either way, so the gap
+        // that decides it roughly triples.
+        //
+        // Also a quarter of the size. Both produce 192 dimensions, which the
+        // schema commits to — CAM++ and the wespeaker ResNets do not, and are
+        // not drop-in for that reason regardless of how they score.
+        //
+        // Voiceprints are NOT comparable between models. `pull` never overwrites
+        // a file that is already there, so an existing install keeps the model
+        // it enrolled against; anyone deliberately swapping must re-enroll.
         out.push(Download::new(
             "diarization/embedding.onnx",
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
             diar.join("embedding.onnx"),
-            101_405_493,
+            26_485_263,
         ));
     }
 
