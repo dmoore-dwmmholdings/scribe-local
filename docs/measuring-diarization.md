@@ -237,6 +237,59 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## The cluster that is too loose
+
+Eight voices is where counting fails first. Two of them join at a similarity
+that looks exactly like one person's own spread, so the merge sequence has no
+step where the mistake happens and `choose_cut` sails past it. Merging down
+through 9 → 8 → 7 → 6 clusters costs 0.4609, 0.4494, 0.4334, 0.4259 — four
+merges within 0.035 of each other, one of which put two different people
+together and three of which rejoined one person's own pieces.
+
+The cluster gives itself away afterwards. Every other cluster holds one voice
+and keeps its fragments close together; this one holds two, and has a pair that
+is not close at all:
+
+| | speech | fragments | mean similarity | least similar pair |
+|---|---|---|---|---|
+| the joined cluster | 58.2 s | 15 | 0.6162 | **0.3295** |
+| every other cluster | 26–32 s | 6–10 | 0.66–0.78 | 0.4956–0.6775 |
+
+So: after cutting, if the loosest cluster is far looser than the median cluster,
+the cut stopped a merge too late — step back one and look again, up to four
+times. A stated count is left alone, being better evidence than this.
+
+Measured against the median rather than an absolute level, because the absolute
+level says nothing. The failing recording's loosest pair was 0.3295 and a
+correctly-counted eleven-minute recording's was 0.3481 — indistinguishable. As a
+share of the median cluster they are 0.52 and 0.82.
+
+| | discovered before | discovered now |
+|---|---|---|
+| 8 voices, clean | 8 spk, 99.8% | 8 spk, 99.8% |
+| 8 voices, 20 dB | 8 spk, 99.8% | 8 spk, 99.8% |
+| 8 voices, 18 dB | 7 spk, 85.2% | **8 spk, 97.7%** |
+| 8 voices, 15 dB | 7 spk, 86.3% | **8 spk, 98.8%** |
+| 8 voices, 12 dB | 7 spk, 82.0% | **8 spk, 94.4%** |
+| 8 voices, 10 dB | 6 spk, 74.7% | **7 spk, 87.1%** |
+| 8 voices, 8 dB | 6 spk, 74.8% | **7 spk, 78.6%** |
+
+Every fixture that was already counted correctly is byte-identical — one to
+eight voices, clean, reverberant, noisy, moving, phone, and the eleven-minute
+windowed pair.
+
+**The threshold is on a narrow band, and that is worth saying plainly.** Twelve
+measured recordings separate cleanly — the five miscounted ones sit at 0.447 to
+0.715 of their median, the seven correct ones at 0.752 to 0.954 — so the
+threshold has to fall between 0.715 and 0.752, and 0.73 is what it is. Sweeping
+confirms the shape: 0.70 stops fixing the 12 dB case, 0.78 starts splitting a
+six-voice recording that was already right. That is a band about 0.04 wide,
+fitted to twelve measurements, and a wider or more realistic set could move it.
+
+0.73 sits at the low edge on purpose. Too low and the step-back does nothing,
+which is where this started; too high and it invents speakers. The quiet failure
+is the better one to have.
+
 ## Cleaning the audio first makes everything worse
 
 The obvious next move after the noise-floor fix is to remove the noise instead
@@ -1038,9 +1091,12 @@ person's own pieces — and then joins two different women at 0.31, with the
 merges either side at 0.34 and 0.30. One speaker's own variation is as wide as
 the gap between two different people. Sweeping the cut threshold from 0.70 to
 0.90 changes nothing about this fixture at any value, while 0.70 to 0.85 leave
-every other fixture identical and 0.90 breaks two of them. There is no signal
-here to find, and it is the case where a user is most likely to know the number
-anyway.
+every other fixture identical and 0.90 breaks two of them.
+
+There is no signal *in the merge sequence* to find. That much still holds, and
+it is why no cut rule recovers this. What it does not follow is that nothing
+recovers it — the signal is in the clusters the cut produces, not in the
+sequence that produced them. See "the cluster that is too loose" below.
 
 **And enrollment, which is where the difference is largest.** The same person
 heard through a different room:

@@ -112,11 +112,6 @@ _SYNTHETIC_VOICES = {
     "agnes", "albert", "bruce", "fred", "junior", "kathy", "ralph", "vicki",
 }
 
-_CHARACTER_VOICE = (
-    "a character voice rather than a natural one — those do not transcribe and "
-    "will look like a broken model"
-)
-
 _SYNTHETIC_VOICE = (
     "a synthesised voice rather than a recorded one. Those either barely "
     "transcribe or are unrealistically easy to tell apart, and either way the "
@@ -124,23 +119,30 @@ _SYNTHETIC_VOICE = (
 )
 # Round robin through the voices, and never repeat a line.
 def check_voices():
-    """Refuse a voice macOS lists with a parenthesised name.
+    """Refuse a voice that would measure the fixture rather than the code.
 
-    Those are the character voices, and a fixture built from them measures the
-    fixture rather than the code.
+    Only the explicit denylist decides that. An earlier version also refused any
+    voice macOS listed with a parenthesised name, on the theory that those were
+    the character voices. They are not: the character voices have plain names
+    (Bells, Zarvox), and what the parentheses actually mark is the Siri-era
+    recorded voices — "Aman (English (India))" — which are exactly the ones
+    worth using. That heuristic threw away two of the eight usable voices and
+    reported them as not existing.
     """
     listed = subprocess.run(["say", "-v", "?"], capture_output=True, text=True).stdout
-    known = {}
+    known = set()
     for line in listed.splitlines():
         # "Name  lang_TAG  # sample" — the tag is what separates name from rest.
         m = re.match(r"^(.*?)\s+([a-z]{2}(?:_[A-Z]{2})?)\s*#", line)
         if m:
-            known[m.group(1).strip()] = "(" in m.group(1)
+            name = m.group(1).strip()
+            known.add(name)
+            # `say -v Aman` works even though the list says "Aman (English
+            # (India))", so accept what `say` accepts.
+            known.add(name.split(" (")[0].strip())
     for v in VOICES:
         if v not in known:
             raise SystemExit(f"no such voice: {v!r} (try: say -v '?')")
-        if known[v]:
-            raise SystemExit(f"{v!r} is {_CHARACTER_VOICE}")
         if v.lower() in _SYNTHETIC_VOICES:
             raise SystemExit(f"{v!r} is {_SYNTHETIC_VOICE}")
 

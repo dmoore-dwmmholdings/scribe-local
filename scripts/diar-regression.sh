@@ -56,6 +56,15 @@ check() { # label dir variant expected-speakers min-correct [stated]
         "$BIN" models "$FIX/$dir/$var.wav" "$FIX/$dir/truth.json" $stated 2>&1)
   local got
   got=$(echo "$out" | awk '/found speakers/{s=$3} /correct speaker/{a=$3} END{printf "%s spk, %s", s, a}')
+  # A run that produced no numbers did not pass — it did not happen. Without
+  # this a missing fixture printed "ok    8 voices, clean   spk," and counted
+  # toward the total.
+  if ! echo "$out" | grep -q "found speakers"; then
+    printf "  FAIL  %-34s %s\n" "$label" "did not run"
+    echo "$out" | tail -3 | sed 's/^/          /'
+    FAIL=$((FAIL+1))
+    return
+  fi
   if echo "$out" | grep -q "^FAIL"; then
     printf "  FAIL  %-34s %s\n" "$label" "$got"
     echo "$out" | grep "^FAIL" | sed 's/^/          /'
@@ -90,6 +99,15 @@ if [ "${1:-}" = "--full" ]; then
   degrade long dirty --reverb 0.4 --snr 15 --far Karen=0.3
   check "4 voices, 11 min (windowed)"  long conversation 4 99.0
   check "4 voices, 11 min, degraded"   long dirty        4 99.0
+
+  # Eight voices is where counting fails first: two of them join at a
+  # similarity that looks like one person's own spread, so the merge sequence
+  # has no step to find. The cohesion step-back is what recovers it, and this
+  # is the check that guards it — without it the degraded case returns 7.
+  SCRIBE_FIXTURE_VOICES="Daniel,Samantha,Rishi,Karen,Moira,Tessa,Aman,Tara" build eight 48
+  degrade eight dirty --reverb 0.4 --snr 15
+  check "8 voices, clean"              eight conversation 8 99.0
+  check "8 voices, reverb+noise"       eight dirty        8 95.0
 fi
 
 # The words themselves, and whether a name carries from one recording to the

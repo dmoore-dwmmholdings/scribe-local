@@ -44,6 +44,18 @@ use crate::wav::{self, WavData};
 /// return six — so 0.8 sits in the middle of the stable region, not on an edge.
 const CLUSTER_THRESHOLD: f32 = 0.8;
 
+/// How loose the loosest cluster may be, against the median cluster, before the
+/// cut is taken to have stopped a merge too late. See the step-back in
+/// `cluster_fragments`.
+const COHESION_RATIO: f32 = 0.73;
+
+/// How many merges the step-back may undo. Two people merging into one cluster
+/// costs one step; the worst measured recording needed two.
+const MAX_COHESION_STEPS: usize = 4;
+
+/// Below this many clusters there is no median worth comparing against.
+const MIN_CLUSTERS_TO_JUDGE: usize = 3;
+
 /// Diarize at most this much audio in one `process` call.
 ///
 /// sherpa's diarization holds the whole clip's segments and embeddings in
@@ -534,6 +546,37 @@ const MAX_INFERRED_SPEAKERS: usize = 12;
 /// natural number of speakers. A cosine value that means "same person" in one
 /// recording means nothing in another - different mic, room and voices - so no
 /// fixed threshold can be right for both.
+/// The least similar pair of fragments inside one cluster.
+///
+/// A cluster holding one voice keeps every pair fairly close. A cluster that
+/// has quietly swallowed a second person has at least one pair that is not
+/// close at all, and this finds it. `None` when there are not two embeddable
+/// fragments to compare.
+fn cluster_worst_pair(fragments: &[Fragment], members: &[usize]) -> Option<f32> {
+    let embs: Vec<&Vec<f32>> = members
+        .iter()
+        .filter_map(|&f| fragments[f].embedding.as_ref())
+        .filter(|e| !e.is_empty())
+        .collect();
+    if embs.len() < 2 {
+        return None;
+    }
+    let mut worst = f32::MAX;
+    for a in 0..embs.len() {
+        for b in (a + 1)..embs.len() {
+            worst = worst.min(cosine(embs[a], embs[b]));
+        }
+    }
+    Some(worst)
+}
+
+fn cohesion_ratio() -> f32 {
+    std::env::var("SCRIBE_COHESION_RATIO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(COHESION_RATIO)
+}
+
 fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> {
     // Fragments we can actually compare.
     let embedded: Vec<usize> = fragments
@@ -676,7 +719,75 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
                 .unwrap_or(discovered),
         }
     };
+    // The cut can stop one or two merges late: two people whose voices are
+    // alike join at a similarity that looks like one person's own spread, so
+    // the merge sequence shows no step there and `choose_cut` sails past it.
+    //
+    // The joined cluster gives itself away afterwards. Every other cluster
+    // holds one voice and keeps its fragments close; this one holds two and has
+    // a pair that is not close at all. Measured against the median cluster, the
+    // loosest cluster of a recording that was counted correctly never fell
+    // below 0.75 of it, and one that was miscounted never rose above 0.72.
+    //
+    // A stated count is left alone: it is better evidence than this.
+    let mut cut = cut;
+    if target.is_none() {
+        for _ in 0..MAX_COHESION_STEPS {
+            if cut == 0 {
+                break;
+            }
+            let clusters = replay(n, &history, cut, &embedded);
+            let worsts: Vec<f32> = clusters
+                .iter()
+                .filter_map(|m| cluster_worst_pair(fragments, m))
+                .collect();
+            // Too few real clusters to say what "normal" looks like here.
+            if worsts.len() < MIN_CLUSTERS_TO_JUDGE {
+                break;
+            }
+            let Some(mid) = median(&worsts) else { break };
+            let loosest = worsts.iter().copied().fold(f32::MAX, f32::min);
+            if mid > 0.0 && loosest / mid < cohesion_ratio() {
+                cut -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+    let cut = cut;
+
     let final_clusters = replay(n, &history, cut, &embedded);
+
+    // Diagnostic: how tightly each surviving cluster holds together, measured
+    // from the raw embeddings rather than the merged similarities. A cluster
+    // holding two people should be looser than one holding a voice.
+    if std::env::var("SCRIBE_DIARIZE_COHESION").is_ok() {
+        eprintln!("-- cluster cohesion at cut ({} clusters) --", final_clusters.len());
+        for (idx, members) in final_clusters.iter().enumerate() {
+            let embs: Vec<&Vec<f32>> = members
+                .iter()
+                .filter_map(|&f| fragments[f].embedding.as_ref())
+                .filter(|e| !e.is_empty())
+                .collect();
+            let mut total = 0.0f64;
+            let mut pairs = 0u64;
+            let mut worst = 1.0f32;
+            for a in 0..embs.len() {
+                for b in (a + 1)..embs.len() {
+                    let c = cosine(embs[a], embs[b]);
+                    total += c as f64;
+                    pairs += 1;
+                    worst = worst.min(c);
+                }
+            }
+            let speech: i64 = members.iter().map(|&f| fragments[f].speech_ms.max(0)).sum();
+            let mean = if pairs > 0 { total / pairs as f64 } else { f64::NAN };
+            eprintln!(
+                "   cluster {idx:>2}  {:>2} frags  {speech:>7} ms  mean {mean:.4}  worst {worst:.4}",
+                members.len()
+            );
+        }
+    }
 
     for (idx, members) in final_clusters.iter().enumerate() {
         for &fragment in members {
@@ -1582,6 +1693,39 @@ mod tests {
         let b = partition(&cluster_fragments(&reversed, None)).len();
         assert_eq!(a, 3);
         assert_eq!(a, b, "the same audio must give the same speaker count either way");
+    }
+
+    /// The looseness measure the step-back reads: the least similar pair in a
+    /// cluster, which is what gives away a cluster holding two people.
+    #[test]
+    fn a_clusters_looseness_is_its_least_similar_pair() {
+        let a = unit(&[1.0, 0.0, 0.0]);
+        let b = unit(&[0.9, 0.436, 0.0]);
+        let c = unit(&[0.6, 0.8, 0.0]);
+        let fragments = vec![
+            frag(Some(&a), 0, 1_000),
+            frag(Some(&b), 1_000, 2_000),
+            frag(Some(&c), 2_000, 3_000),
+        ];
+        let worst = cluster_worst_pair(&fragments, &[0, 1, 2]).expect("three embeddings");
+        let ac = cosine(&a, &c);
+        assert!(
+            (worst - ac).abs() < 1e-5,
+            "expected the a-c pair ({ac:.4}), got {worst:.4}"
+        );
+        // A tighter subset is not dragged down by the fragment left out.
+        let tight = cluster_worst_pair(&fragments, &[0, 1]).expect("two embeddings");
+        assert!(tight > worst, "{tight:.4} should beat {worst:.4}");
+    }
+
+    /// Nothing to compare means no opinion, rather than a default that would
+    /// make a one-fragment cluster look infinitely loose and split forever.
+    #[test]
+    fn a_cluster_too_small_to_judge_has_no_looseness() {
+        let a = unit(&[1.0, 0.0, 0.0]);
+        let fragments = vec![frag(Some(&a), 0, 1_000), frag(None, 1_000, 2_000)];
+        assert!(cluster_worst_pair(&fragments, &[0]).is_none());
+        assert!(cluster_worst_pair(&fragments, &[0, 1]).is_none(), "unembedded does not count");
     }
 
     /// A stretch too short or too noisy to embed joins whoever is speaking
