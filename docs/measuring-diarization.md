@@ -237,6 +237,77 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## The mover who becomes three people
+
+A six-voice recording where one person walks about a reverberant room comes back
+with **eight speakers at 91.3%**. Moira is split three ways — 14.5 s, 9.2 s and
+5.2 s — and both extra pieces clear the participant floor comfortably, so
+nothing folds them.
+
+Told there are six, the same recording scores 99.6%. The embeddings separate
+everyone perfectly; her own variation across the recording is simply wider than
+the gap between her and the others, and no cut of the merge sequence puts those
+three pieces together without joining somebody else too.
+
+**What would fix it is a merge, and there is no merge rule here.** The cohesion
+step-back added earlier only ever *increases* the speaker count — it exists for
+two people sharing a cluster. This is the mirror image, and the signal for it is
+too weak to act on: in this recording the two over-split clusters sit at 0.5966
+against their own internal spreads of 0.5911 and 0.6107, and in a
+correctly-counted six-voice recording the closest pair of substantial clusters
+sits at 0.5068. One case against one case, a margin of nine hundredths, and the
+failure mode of getting it wrong is two real people merged into one — which is
+worse than an extra row in the speaker list. Not built.
+
+Measured on every run without gating:
+
+```
+  note  6 voices, one moving, reverb    8 spk, 91.3%   (wants 6; was 8 spk, 91.3%)
+```
+
+## A different segmentation model is better at some of this
+
+The segmentation model had never been swapped, only the embedding — and it is
+92% of diarization time and the thing that decides where turns begin. Rev.ai's
+reverb-diarization models are drop-in replacements for pyannote 3.0.
+
+**v2 is not worth considering**: 374 MB against 6 MB, 3.7x slower, and worse
+(95.2% where pyannote gets 97.4%).
+
+**v1 is 9 MB, exactly as fast, and better at most of what is still wrong here**
+— with its own per-window clustering re-tuned to 0.6, since that constant is
+calibrated to a model's segment characteristics:
+
+| fixture | pyannote 3.0 | reverb v1 |
+|---|---|---|
+| 6 voices, fast conversation | 97.0% | **99.7%** |
+| 6 voices, fast + reverb | 6 spk, 92.8% | **6 spk, 96.6%** |
+| 6 voices, reverb+noise | 97.4% | **99.1%** |
+| 8 voices, reverb+noise | 97.7% | **99.3%** |
+| 6 voices, moving + reverb | 8 spk, 91.3% | **7 spk, 94.1%** |
+| 4 voices, one moving | **99.8%** | 95.6% |
+| everything else | — | within 0.5 either way |
+
+Five conditions better, one worse, and the one that is worse is a single fixture
+rather than a class: three other moving-speaker recordings — six voices with a
+different mover, the same with reverb, and an eleven-minute one — are equal or
+better under v1.
+
+**The default is unchanged all the same.** Switching costs every installation a
+new model download, it fails a committed check (`4 voices, one moving` has a
+99.0 floor and v1 scores 95.6), and the gains are on conditions this page
+already handles at 92–98% rather than on anything broken. Swapping is a
+one-file change for anyone whose rooms are reverberant or whose meetings are
+fast:
+
+```bash
+curl -L -o models/diarization/segmentation.onnx \
+  https://huggingface.co/csukuangfj/sherpa-onnx-reverb-diarization-v1/resolve/main/model.onnx
+```
+
+with `[asr]`-side clustering set to 0.6 (`SCRIBE_CLUSTER_THRESHOLD`) to get the
+numbers above.
+
 ## Four other embedding models, none of them better
 
 Most of what is left on this page comes back to the embedding: the eight-voice

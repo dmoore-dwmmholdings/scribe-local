@@ -186,6 +186,15 @@ if [ "${1:-}" = "--full" ]; then
   fi
   fi
 
+  # A speaker who moves about a reverberant room. Her own variation across the
+  # recording exceeds the gap between her and the others, so she comes back as
+  # three people and the meeting has eight. Told there are six it scores 99.6%,
+  # so the embeddings separate everyone — this is a counting failure, and the
+  # rule that would catch it is a merge, which nothing here has. Not gated: see
+  # "the mover who becomes three people" in docs/measuring-diarization.md.
+  degrade six moving --moving Moira --reverb 0.4 --snr 18
+  note  "6 voices, one moving, reverb"    six moving        6 "8 spk, 91.3%"
+
   SCRIBE_FIXTURE_GAP=300-9000 build lull 40
   degrade lull dirty --reverb 0.4 --snr 15
   check "4 voices, half of it silence"  lull conversation 4 99.0
