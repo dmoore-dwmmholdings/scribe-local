@@ -220,9 +220,22 @@ Not every recording is a meeting.
 | one voice, 2 s | 1 of 1 | 98.5% |
 | twenty seconds of silence | 0 | — |
 
-The single-voice case matters more than it looks: the rule that reads the
+The single-voice case matters more than it looks. The rule that reads the
 speaker count off a recording's own merge sequence has to be able to answer
-"one", and a rule that always cuts somewhere never can. Silence produces no
+"one", and a rule that always cuts somewhere never can — and separately, it was
+the case that showed the transcript being grouped wrongly. An utterance used to
+end only at a change of speaker or a second and a half of silence, and nobody
+dictating pauses that long mid-thought, so forty seconds of one voice arrived as
+a single utterance of a hundred and twenty-four words. Forty minutes would have
+arrived as one of several thousand.
+
+That matters because an utterance is the unit everything downstream works in: a
+line in the transcript, what playback scrolls to and highlights, what a mark
+anchors to, and what "edit this line" edits. An utterance now also ends at the
+end of a sentence once it has run twelve seconds, or at thirty regardless.
+Conversation is untouched — the multi-speaker fixtures return exactly the
+utterance counts they did before, 30 of 30 and 136 of 136 — because turns that
+short never reach either limit. Silence produces no
 speakers and no turns rather than an error, and all four run through the whole
 pipeline to `ready` — the silent one with an empty transcript and no summary,
 which is the right answer to a recording of nothing.

@@ -26,6 +26,30 @@ const STAGE: &str = "merge";
 /// Break an utterance when the silent gap between consecutive words exceeds this.
 const GAP_BREAK_MS: i64 = 1_500;
 
+/// Longest an utterance may run before it is broken regardless of pauses.
+///
+/// An utterance is the unit everything downstream works in: a line in the
+/// transcript, the thing playback scrolls to and highlights, what a mark
+/// anchors to, and what "edit this line" edits. Without a limit a recording
+/// with one speaker never breaks at all — nobody pauses for a second and a half
+/// mid-thought — so forty seconds of dictation came back as a single utterance
+/// of a hundred and twenty-four words, and forty minutes would come back as one
+/// of several thousand. Unreadable, unscrollable, and a mark anywhere in it
+/// points at the beginning.
+const MAX_UTTERANCE_MS: i64 = 30_000;
+
+/// Past this, break at the end of a sentence rather than waiting for the limit.
+///
+/// Speech recognition punctuates, so most of the time there is a natural place
+/// to break within a few seconds. Taking it gives paragraphs that end where a
+/// thought does instead of wherever the clock ran out.
+const SENTENCE_BREAK_AFTER_MS: i64 = 12_000;
+
+/// Whether a word ends a sentence, for the purpose of breaking after it.
+fn ends_sentence(text: &str) -> bool {
+    matches!(text.trim_end().chars().last(), Some('.') | Some('?') | Some('!'))
+}
+
 /// Run the merge stage for `recording_id`.
 pub async fn run(cfg: &Config, db: &Db, ollama: &OllamaClient, recording_id: Uuid) -> Result<()> {
     let transcript = artifacts::get_transcript(db, recording_id).await?;
@@ -360,7 +384,19 @@ pub(crate) fn group_into_utterances(words: &[Word]) -> Vec<GroupedUtterance> {
         let same_speaker = cur.as_ref().map(|c| c.local_idx == w.local_idx);
         let gap_ok = w.start_ms - prev_end <= GAP_BREAK_MS;
 
-        let continues = matches!(same_speaker, Some(true)) && gap_ok;
+        // One speaker talking steadily never trips the gap, so length has to
+        // end an utterance too — at a sentence boundary where there is one
+        // within reach, and at the limit where there is not.
+        let long_enough = cur.as_ref().map(|c| {
+            let span = w.end_ms - c.start_ms;
+            span > MAX_UTTERANCE_MS
+                || (span > SENTENCE_BREAK_AFTER_MS
+                    && c.words.last().is_some_and(|last| ends_sentence(&last.text)))
+        });
+
+        let continues = matches!(same_speaker, Some(true))
+            && gap_ok
+            && !matches!(long_enough, Some(true));
         if continues {
             let c = cur.as_mut().unwrap();
             c.end_ms = c.end_ms.max(w.end_ms);
@@ -487,6 +523,72 @@ mod tests {
             Word { local_idx: Some(2), ..word("next", 600, 900) },
         ];
         assert_eq!(speaker_islands(&words), 0);
+    }
+
+    /// One person talking steadily never pauses long enough to break, so the
+    /// whole recording used to arrive as a single utterance.
+    #[test]
+    fn a_long_single_speaker_run_is_broken_up() {
+        // Twenty-four seconds of one voice, a sentence every three.
+        let mut words = Vec::new();
+        for i in 0..24 {
+            let t = i * 1_000;
+            let text = if i % 3 == 2 { "end." } else { "word" };
+            words.push(Word { local_idx: Some(0), ..word(text, t, t + 900) });
+        }
+        let utts = group_into_utterances(&words);
+        assert!(utts.len() > 1, "got {} utterances", utts.len());
+        for u in &utts {
+            assert!(
+                u.end_ms - u.start_ms <= MAX_UTTERANCE_MS,
+                "utterance ran {}ms",
+                u.end_ms - u.start_ms
+            );
+        }
+    }
+
+    #[test]
+    fn a_break_prefers_the_end_of_a_sentence() {
+        let mut words = Vec::new();
+        for i in 0..20 {
+            let t = i * 1_000;
+            // One sentence end, just past the point where breaking is allowed.
+            let text = if i == 13 { "there." } else { "word" };
+            words.push(Word { local_idx: Some(0), ..word(text, t, t + 900) });
+        }
+        let utts = group_into_utterances(&words);
+        assert!(utts.len() >= 2, "got {} utterances", utts.len());
+        assert!(
+            utts[0].text.trim_end().ends_with("there."),
+            "first utterance ends at the sentence: {:?}",
+            utts[0].text
+        );
+    }
+
+    /// With nothing to break at, the limit still ends it.
+    #[test]
+    fn an_unpunctuated_monologue_still_breaks() {
+        let mut words = Vec::new();
+        for i in 0..60 {
+            let t = i * 1_000;
+            words.push(Word { local_idx: Some(0), ..word("word", t, t + 900) });
+        }
+        let utts = group_into_utterances(&words);
+        assert!(utts.len() >= 2, "got {} utterances", utts.len());
+        for u in &utts {
+            assert!(u.end_ms - u.start_ms <= MAX_UTTERANCE_MS);
+        }
+    }
+
+    /// Ordinary turn-taking is unaffected: short turns stay one line each.
+    #[test]
+    fn conversation_is_not_fragmented() {
+        let words = vec![
+            Word { local_idx: Some(0), ..word("yes.", 0, 900) },
+            Word { local_idx: Some(1), ..word("agreed.", 1_000, 1_900) },
+            Word { local_idx: Some(0), ..word("good.", 2_000, 2_900) },
+        ];
+        assert_eq!(group_into_utterances(&words).len(), 3);
     }
 
     #[test]
