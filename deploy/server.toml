@@ -76,6 +76,11 @@ num_threads = 0
 
 [worker]
 stages         = ["all"]
+# On CPU this is throughput and not latency. Two recordings at once finish about
+# 25% sooner together than one after the other, because the ONNX thread pool does
+# not scale to the whole machine by itself. It does nothing for a single
+# recording. Raise it only with a backlog, and watch memory: each concurrent job
+# holds its own model set.
 concurrency    = 1
 models_dir     = "./models"
 heartbeat_secs = 15

@@ -310,8 +310,35 @@ tested against one before anything else.
 fp32 is preferred at load, and an install carrying only the int8 model gets a
 warning saying what it costs.
 
+**Running windows in parallel.** A recording past ten minutes is diarized one
+window at a time, strictly in sequence, and ONNX Runtime stops scaling well
+before this machine's core count — 4 threads to 8 buys 9%. Two windows at once
+should therefore be nearly free.
+
+Measured the cheap way, by running two diarizations of the same fixture as
+separate processes rather than writing the concurrency first:
+
+| | wall clock |
+|---|---|
+| one process, 8 threads | 14.1 s |
+| two processes in sequence | 28.7 s |
+| two processes at once, 8 threads each | 22.9 s |
+| two processes at once, 4 threads each | 23.4 s |
+
+1.25x, and that flatters it — the two processes also load their models
+concurrently, which in-process windows would not. The thread pool is already
+using most of the machine, so a second window mostly contends with the first.
+Against that: a model set per worker is about 110 MB of resident memory, and
+concurrency inside a stage that must not crash is not free to maintain. Not
+worth building, so it was not built.
+
+The same 1.25x is available today without any code, for anyone with a *backlog*
+rather than one long recording: `[worker].concurrency = 2` runs two recordings
+at once. It does nothing for a single recording.
+
 So the cost is real work, and a speed win would have to come from a
-*genuinely* better segmentation model rather than a smaller copy of this one.
+*genuinely* better segmentation model rather than a smaller copy of this one,
+a cheaper substitute for it, or more of the same machine.
 
 ## Execution provider
 

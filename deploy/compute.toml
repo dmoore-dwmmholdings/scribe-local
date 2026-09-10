@@ -88,6 +88,11 @@ stages = ["all"]
 
 # Number of concurrent jobs. A GPU box should use 1 to avoid VRAM contention.
 # Increase only if you have multiple GPUs or run CPU-only stages here.
+# On CPU this is throughput and not latency. Two recordings at once finish about
+# 25% sooner together than one after the other, because the ONNX thread pool does
+# not scale to the whole machine by itself. It does nothing for a single
+# recording. Raise it only with a backlog, and watch memory: each concurrent job
+# holds its own model set.
 concurrency = 1
 
 # Directory containing ONNX model assets. See models/README.md for layout.

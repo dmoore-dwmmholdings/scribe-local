@@ -171,6 +171,11 @@ pub struct WorkerConfig {
     /// Which job kinds this worker handles. `["all"]` for every stage.
     pub stages: Vec<String>,
     /// Parallel jobs (GPU box: usually 1 so the card isn't oversubscribed).
+    ///
+    /// On CPU this is throughput, not latency: two recordings at once finish
+    /// about 25% sooner together than one after the other, because the ONNX
+    /// thread pool does not scale to the whole machine on its own. It does
+    /// nothing for a single recording, which is already using most of it.
     pub concurrency: usize,
     /// Directory holding ONNX model assets.
     pub models_dir: PathBuf,
