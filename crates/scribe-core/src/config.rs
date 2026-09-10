@@ -110,15 +110,29 @@ pub struct AsrConfig {
     /// case-insensitively, surrounding punctuation ignored).
     pub filler_words: Vec<String>,
     /// Optional hotwords file (one phrase per line) that biases recognition
-    /// toward known names / domain terms — the targeted fix for the ASR
-    /// mis-hearing proper nouns. When set, decoding switches to
-    /// `modified_beam_search` (required for hotwords to take effect on the
-    /// transducer). Leave unset to keep the default greedy decode unchanged.
-    /// Transducer (Parakeet) models only — ignored by Whisper.
+    /// toward known names / domain terms. When set, decoding switches to
+    /// `modified_beam_search` (required for hotwords to take effect on a
+    /// transducer). Transducer models only — ignored by Whisper.
+    ///
+    /// **Needs [`AsrConfig::bpe_vocab`] as well, and does nothing without it.**
+    /// The checkpoint `scribe models pull` installs does not publish the file
+    /// that setting needs, so on a default install this is inert and the worker
+    /// warns at startup. The thing that does fix misheard names on a default
+    /// install is `[llm].correct_transcript`, which has the model read the
+    /// transcript afterwards with the known speaker names as hints.
     pub hotwords_file: Option<String>,
     /// Boost applied to hotwords (typical range 1.5–3.0; higher = stronger bias
     /// but more risk of false positives). Only used when `hotwords_file` is set.
     pub hotwords_score: f32,
+    /// SentencePiece vocabulary for the ASR model, needed to turn hotwords into
+    /// the tokens the model actually predicts.
+    ///
+    /// Without it hotwords have **no effect at all** on a sub-word model, which
+    /// is measured: biasing toward a dozen names and product terms changed the
+    /// word error rate on a recording full of them by nothing, at any boost.
+    /// The checkpoint `scribe models pull` installs does not publish this file,
+    /// so hotwords do nothing there and the worker says so at startup.
+    pub bpe_vocab: Option<PathBuf>,
     /// ONNX Runtime intra-op threads per speech model. `0` picks a thread count
     /// from the machine (see [`AsrConfig::resolved_num_threads`]).
     pub num_threads: usize,
@@ -365,6 +379,7 @@ impl Default for AsrConfig {
             filler_words: default_filler_words(),
             hotwords_file: None,
             hotwords_score: 2.0,
+            bpe_vocab: None,
             num_threads: 0,
         }
     }

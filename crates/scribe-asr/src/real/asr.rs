@@ -163,6 +163,7 @@ impl SherpaTranscriber {
         num_threads: i32,
         hotwords_file: Option<&str>,
         hotwords_score: f32,
+        bpe_vocab: Option<&Path>,
     ) -> Result<Self> {
         let provider = provider_for(device);
 
@@ -222,7 +223,31 @@ impl SherpaTranscriber {
             }
             config.hotwords_file = Some(hw.to_string());
             config.hotwords_score = if hotwords_score > 0.0 { hotwords_score } else { 2.0 };
-            tracing::info!(file = hw, score = config.hotwords_score, "ASR hotword biasing enabled");
+
+            // Hotwords are matched against the tokens the model predicts, and on
+            // a sub-word model that means they have to be tokenized the same
+            // way it was trained. Without the vocabulary to do that they are
+            // accepted and silently ignored — measured, biasing toward a dozen
+            // names in a recording full of them changed the word error rate by
+            // nothing, at any boost, while the log said biasing was enabled.
+            match bpe_vocab {
+                Some(vocab) => {
+                    config.model_config.modeling_unit = Some("bpe".to_string());
+                    config.model_config.bpe_vocab = Some(path_str(vocab)?);
+                    tracing::info!(
+                        file = hw,
+                        score = config.hotwords_score,
+                        vocab = %vocab.display(),
+                        "ASR hotword biasing enabled"
+                    );
+                }
+                None => tracing::warn!(
+                    file = hw,
+                    "hotwords are configured but will have NO effect: [asr].bpe_vocab is unset, \
+                     so they cannot be turned into model tokens. The checkpoint `scribe models \
+                     pull` installs does not publish that file."
+                ),
+            }
         }
 
         let recognizer = OfflineRecognizer::create(&config)

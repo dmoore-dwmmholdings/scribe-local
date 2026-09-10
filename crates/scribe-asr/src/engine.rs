@@ -156,6 +156,7 @@ impl SpeechEngine {
             num_threads,
             cfg.hotwords_file.as_deref(),
             cfg.hotwords_score,
+            cfg.bpe_vocab.as_deref(),
         )?);
 
         let diar_paths = DiarizationModelPaths::discover(models_dir).ok_or_else(|| {

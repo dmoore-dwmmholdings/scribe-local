@@ -52,7 +52,21 @@ fn main() {
     if let Ok(model) = std::env::var("SCRIBE_ASR_MODEL") {
         cfg.model = model;
     }
+    // SCRIBE_ASR_HOTWORDS points at a hotwords file, for measuring what biasing
+    // recognition toward known names and terms is worth.
+    if let Ok(hw) = std::env::var("SCRIBE_ASR_HOTWORDS") {
+        cfg.hotwords_file = Some(hw);
+        if let Ok(sc) = std::env::var("SCRIBE_ASR_HOTWORD_SCORE") {
+            if let Ok(v) = sc.parse() {
+                cfg.hotwords_score = v;
+            }
+        }
+    }
     println!("model            {}", cfg.model);
+    println!(
+        "hotwords         {}",
+        cfg.hotwords_file.as_deref().unwrap_or("(none)")
+    );
     let engine = SpeechEngine::load(&models_dir, &cfg).expect("load engine");
     println!("backend          {}", engine.backend().as_str());
     println!("threads          {}", cfg.resolved_num_threads());

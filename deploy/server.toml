@@ -79,6 +79,13 @@ trust_tailscale_identity = false
 # specifically; it also decodes faster and supports hotword biasing.
 model          = "whisper-large-v3-turbo"
 diarization    = true
+# Hotwords need `bpe_vocab` as well and do nothing without it — measured, a list
+# of names changed the word error rate on a recording full of them by nothing.
+# The checkpoint `models pull` installs does not publish that file, so this is
+# inert on a default install and the worker warns at startup. `[llm]
+# .correct_transcript` is what fixes misheard names there.
+# hotwords_file = "ste-glossary.txt"
+# bpe_vocab     = "models/asr/<model>/bpe.model"
 device         = "cuda"
 remove_fillers = true
 

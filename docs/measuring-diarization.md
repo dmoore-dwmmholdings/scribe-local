@@ -390,6 +390,33 @@ So the cost is real work, and a speed win would have to come from a
 *genuinely* better segmentation model rather than a smaller copy of this one,
 a cheaper substitute for it, or more of the same machine.
 
+## Hotwords do nothing on the shipped model
+
+`[asr].hotwords_file` biases recognition toward names and terms you expect. It
+is exactly the right tool for what speech recognition gets wrong here — a
+fixture of eight lines full of Irish names, product names and infrastructure
+jargon transcribes at 16.7% word error rate, with *Siobhan* as "Shivon",
+*Kubernetes* as "Cuba Needs", *Eoghan* as "Ian" and *rota* as "rotor".
+
+Pointing it at a list containing all of those changes the word error rate by
+nothing. Not a little — 16.7% before and after, at boosts of 2.0 and 4.0, the
+same seventeen edits.
+
+Hotwords are matched against the tokens the model predicts, so on a sub-word
+model they have to be tokenized the way it was trained, which needs the
+vocabulary file. Setting `modeling_unit = "bpe"` without one stops the
+recognizer building at all. sherpa says so if you look for it — *"Some hotwords
+failed to encode and were skipped"* — but the configuration was accepted and the
+log said biasing was enabled.
+
+`[asr].bpe_vocab` now carries that file, and the worker warns loudly when
+hotwords are set without it. The checkpoint `scribe models pull` installs does
+not publish one, so on a default install hotwords are inert and now say so.
+
+What does work on a default install is `[llm].correct_transcript`, which has the
+LLM read the finished transcript with the known speaker names as hints and fix
+misheard proper nouns after the fact.
+
 ## Whisper's word timings
 
 sherpa returns no token timestamps for its Whisper models. The transcriber
