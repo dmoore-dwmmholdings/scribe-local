@@ -152,6 +152,40 @@ if [ "${1:-}" = "--full" ]; then
   # made of two scraps of Karen, 3.7 s in total, which clears the participant
   # floor. Not gated: see "the phantom that is not worth the cure" in
   # docs/measuring-diarization.md for why the floor is not raised to catch it.
+  # A roster the size of a year's meetings. Enrolment is only ever measured
+  # against a handful of enrolled people, and the risk it carries — naming
+  # somebody after a stranger who happens to sound like them — grows with how
+  # many strangers are on file. These five meetings put twenty more people in
+  # the database who are not in the room.
+  if [ -x "$EBIN" ]; then
+  ROSTER=""
+  i=0
+  for vs in "Eddy (English (UK)),Flo (English (UK)),Grandma (English (UK)),Grandpa (English (UK))" \
+            "Reed (English (UK)),Rocko (English (UK)),Sandy (English (UK)),Shelley (English (UK))" \
+            "Eddy (English (US)),Flo (English (US)),Grandma (English (US)),Grandpa (English (US))" \
+            "Reed (English (US)),Rocko (English (US)),Sandy (English (US)),Shelley (English (US))" \
+            "Aman,Tara,Tessa,Moira"; do
+    i=$((i+1))
+    if [ ! -f "$FIX/roster$i/conversation.wav" ]; then
+      echo "  building fixture roster${i}…"
+      SCRIBE_FIXTURE_VOICES="$vs" $PY scripts/make-diar-fixture.py "$FIX/roster$i" 16 >/dev/null
+    fi
+    ROSTER="${ROSTER:+$ROSTER,}$FIX/roster$i/conversation.wav:$FIX/roster$i/truth.json"
+  done
+  out=$(SCRIBE_ENROLL_EXTRA="$ROSTER" ENROLL_EXPECT_RECOGNISED=4 ENROLL_FORBID_FALSE=1 "$EBIN" models \
+        "$FIX/meetA/conversation.wav" "$FIX/meetA/truth.json" \
+        "$FIX/meetB/room.wav" "$FIX/meetB/truth.json" 2>&1)
+  got=$(echo "$out" | awk '/^recognised/{r=$2} /^false positives/{f=$3} END{printf "%s recognised, %s false", r, f}')
+  if echo "$out" | grep -q "^FAIL"; then
+    printf "  FAIL  %-34s %s\n" "4 names against a roster of 24" "$got"
+    echo "$out" | grep "^FAIL" | sed 's/^/          /'
+    FAIL=$((FAIL+1))
+  else
+    printf "  ok    %-34s %s\n" "4 names against a roster of 24" "$got"
+    PASS=$((PASS+1))
+  fi
+  fi
+
   SCRIBE_FIXTURE_GAP=300-9000 build lull 40
   degrade lull dirty --reverb 0.4 --snr 15
   check "4 voices, half of it silence"  lull conversation 4 99.0

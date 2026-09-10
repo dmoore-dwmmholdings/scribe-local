@@ -112,6 +112,22 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// hand; a wrong one has to be noticed first.
 const MATCH_CONSISTENCY: f32 = 0.75;
 
+/// Experiment hooks, so both halves of the admissibility rule can be swept the
+/// way the diarization constants are. See docs/measuring-diarization.md.
+fn match_consistency() -> f32 {
+    std::env::var("SCRIBE_MATCH_CONSISTENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MATCH_CONSISTENCY)
+}
+
+fn separation() -> f32 {
+    std::env::var("SCRIBE_ENROLL_SEPARATION")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SEPARATION)
+}
+
 /// Resolve a recording's diarized voices against the enrolled ones, one to one.
 ///
 /// Matching each voice independently against its own nearest enrolled speaker
@@ -161,7 +177,7 @@ pub fn resolve_identities(
                 .map(|(_, s)| *s)
                 .collect();
             if let Some(baseline) = median(&rest) {
-                if scores[i] - baseline < SEPARATION {
+                if scores[i] - baseline < separation() {
                     continue;
                 }
             }
@@ -189,7 +205,7 @@ pub fn resolve_identities(
         // and the rest are held to it; with nothing accepted yet there is no
         // standard, and the floor and separation are all there is.
         if let Some(standard) = median(&accepted) {
-            if sim < MATCH_CONSISTENCY * standard {
+            if sim < match_consistency() * standard {
                 continue;
             }
         }

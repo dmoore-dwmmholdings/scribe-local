@@ -237,6 +237,59 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## Naming people when the database is not small
+
+Every enrolment number on this page was measured against three or four enrolled
+people. What a real installation accumulates is a year of meetings, and the risk
+enrolment carries — naming somebody after a stranger who happens to sound like
+them — is a function of how many strangers are on file.
+
+`SCRIBE_ENROLL_EXTRA` enrols extra recordings whose speakers are not in the room,
+which is how a roster is built without pretending they attended:
+
+```bash
+SCRIBE_ENROLL_EXTRA="r1.wav:r1.json,r2.wav:r2.json" enroll_check models A.wav A.json B.wav B.json
+```
+
+**In an ordinary room the roster does not matter.** Four people recognised from a
+database of 4, 8, 12, 16, 20 and 24, every time, with nothing misidentified and
+no false positive — and the same when any one of the four is withheld from
+enrolment so they are present but unknown. The margin is wide: true matches sit
+at 0.744–0.870 and the nearest impostor across all 24 is 0.624, which is Rishi
+against Aman, two Indian-English male voices.
+
+**In a bad room it does.** At reverb 0.6 and 0.8, with Rishi present but never
+enrolled, a roster of 4 names nobody and a roster of 24 names him **Aman** at
+0.610. The mechanism is exact: the floor (0.5) admits it, `SEPARATION` compares
+against the *median* of the rest of the library and a large roster of
+dissimilar people pushes that median down, so separation gets easier as the
+roster grows. Only `MATCH_CONSISTENCY` refuses it, and at 0.75 × 0.796 = 0.597
+against a similarity of 0.610 it does not.
+
+**Tightening it is measured and not taken.** Raising `MATCH_CONSISTENCY` to 0.80
+removes that false name. Across eight configurations — two bad rooms, each of
+the four participants withheld in turn, roster of 24:
+
+| room / withheld | 0.75 | 0.80 |
+|---|---|---|
+| 0.6 / Samantha | 3 recognised, 0 wrong | **2 recognised**, 0 wrong |
+| 0.6 / Rishi | 3 recognised, **1 wrong** | 3 recognised, 0 wrong |
+| 0.8 / Rishi | 3 recognised, **1 wrong** | **2 recognised**, 0 wrong |
+| the other five | identical | identical |
+
+Two wrong names removed and two right ones lost. Both wrong names are the same
+pair — Rishi mistaken for Aman — while the losses fall on two different people.
+That is tightening a general rule to fix one pair of similar voices, at the cost
+of two others, and the sweep does not support it. 0.75 stays.
+
+What is worth keeping is the shape of the risk: **the guard against a wrong name
+weakens as the roster grows, and the floor is not what is holding it.** The
+regression suite now enrols twenty-four people against a four-person meeting and
+requires all four names and no false ones.
+
+Both constants are sweepable now — `SCRIBE_MATCH_CONSISTENCY` and
+`SCRIBE_ENROLL_SEPARATION`.
+
 ## Skipping the silence is not worth it
 
 Segmentation is 92% of diarization time and it runs over the whole recording,

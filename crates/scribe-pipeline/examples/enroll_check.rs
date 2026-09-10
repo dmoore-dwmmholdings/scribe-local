@@ -123,6 +123,38 @@ fn main() {
         enrolled.push((id, emb.clone()));
         who.insert(id, name.clone());
     }
+
+    // SCRIBE_ENROLL_EXTRA adds more recordings whose voices are enrolled but
+    // which are not meeting B — a roster of people who exist in the database
+    // and are not in this room. It is the question a single pair cannot ask:
+    // whether being able to name four people in a household still works when
+    // the database holds two dozen from a year of meetings.
+    //
+    //   SCRIBE_ENROLL_EXTRA="a2.wav:a2.json,a3.wav:a3.json"
+    let mut roster_extra = 0usize;
+    if let Ok(spec) = std::env::var("SCRIBE_ENROLL_EXTRA") {
+        for pair in spec.split(',').filter(|p| !p.trim().is_empty()) {
+            let Some((wav, tr)) = pair.split_once(':') else {
+                eprintln!("SCRIBE_ENROLL_EXTRA entries look like <wav>:<truth.json>");
+                std::process::exit(2);
+            };
+            let truth = load(tr);
+            let (d, names) = diarize_and_name(&engine, &PathBuf::from(wav), &truth);
+            for (idx, name) in &names {
+                // Never let a filler recording re-enrol somebody already on the
+                // roster: that would be a second voiceprint for one person, a
+                // different question from a bigger roster.
+                if who.values().any(|n| n == name) || withheld.contains(name.as_str()) {
+                    continue;
+                }
+                let Some(emb) = d.embeddings.get(idx) else { continue };
+                let id = Uuid::new_v4();
+                enrolled.push((id, emb.clone()));
+                who.insert(id, name.clone());
+                roster_extra += 1;
+            }
+        }
+    }
     enrolled.sort_by_key(|(id, _)| *id);
 
     let voices: Vec<(i32, Vec<f32>)> = names_b
@@ -133,6 +165,9 @@ fn main() {
 
     println!("── enroll_check ──────────────────────────────────────────");
     println!("meeting A        {} voices, {} enrolled", names_a.len(), enrolled.len());
+    if roster_extra > 0 {
+        println!("roster           {} enrolled in total, {roster_extra} of them elsewhere", enrolled.len());
+    }
     println!("meeting B        {} voices", voices.len());
     if !absent.is_empty() {
         let mut a: Vec<&str> = absent.iter().copied().collect();

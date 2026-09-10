@@ -79,10 +79,14 @@ SENTENCES = [
 # Four by default. `SCRIBE_FIXTURE_VOICES` takes a comma-separated list, for a
 # larger meeting — a room of eight is ordinary and is a different problem from a
 # room of four, since every extra voice is another chance to confuse two.
-# Use the *natural* voices only. macOS also ships character voices — Eddy,
-# Rocko, Grandma, Bells and the rest — and they are not speech: the same German
-# script transcribes at 0.0% word error rate through Anna and 82.5% through two
-# of those, which reads as the language being unsupported when it is not.
+# Use the recorded voices only; `_SYNTHETIC_VOICES` below refuses the rest.
+#
+# An earlier version of this note named Eddy, Rocko and Grandma among the
+# character voices on the strength of a German script transcribing at 82.5% word
+# error rate through two of them. That was a fact about German: they are
+# English-only Siri voices. Measured on English they transcribe at 0.0-2.9%,
+# the same as Daniel and Samantha, and they are eight more usable voices — which
+# is what makes a twenty-four-person enrolment roster possible.
 #
 # The defaults span accents deliberately: British, American, Indian, Australian,
 # and with more voices Irish and South African.
