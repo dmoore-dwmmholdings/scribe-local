@@ -254,6 +254,46 @@ separation are all there is.
 
 Before that rule, case three above returned Karen named as Samantha.
 
+## Why diarization costs what it does
+
+Diarization runs at roughly a third the speed of transcription, and inside it
+segmentation is 91% of the cost against embedding's 8%. Two obvious ways to
+reclaim that have been measured and neither works.
+
+**Skipping sherpa's internal clustering.** `OfflineSpeakerDiarization` runs
+pyannote segmentation, extracts a speaker embedding for every segment, and
+clusters them. This code uses only the segment boundaries: it discards the
+speaker labels, splits the segments at their own pauses, and embeds and clusters
+the pieces itself. So the internal embedding and clustering are pure waste — but
+sherpa-onnx exposes diarization only as one object, with no way to run the
+segmentation model alone. That would need an upstream API that does not exist.
+
+**Replacing pyannote with a voice activity detector.** pyannote answers two
+questions — where speech is, and where the speaker changes within it — and this
+code only uses the first. It is also unreliable at the second: two similar
+voices either side of a short pause come back as one turn, which is why turns
+are split at pauses at all. Silero VAD answers the question that gets used, from
+a model a tenth the size. Measured on the same audio:
+
+| fixture | pyannote | Silero VAD |
+|---|---|---|
+| 4 voices, clean | 14.3 s, 99.9% | 1.5 s, 98.7% |
+| 4 voices, reverb only | —, 99.6% | —, 99.0% |
+| 4 voices, 14 dB SNR | —, 99.6% | —, **59.9%** |
+| 4 voices, reverb + noise + one quiet | —, 99.6% | —, **30.3%** |
+
+Eight to ten times faster and correct on clean audio, and it falls apart the
+moment there is noise. The turn counts say why: on the last row the VAD emitted
+6 segments where the conversation has 30 turns. With a noise floor above its
+speech threshold it stops *closing* segments, so each one runs across several
+speakers, embeds to a blend of them, and clustering collapses. A trained
+segmentation model does not have that failure because it is not deciding on
+energy.
+
+So the cost is real work, and this is where a speed win would have to come from
+if one is wanted: a segmentation model that is cheaper rather than a cheaper
+substitute for segmentation.
+
 ## Execution provider
 
 `SCRIBE_ASR_DEVICE=coreml` is slower than the CPU provider on Apple Silicon —
