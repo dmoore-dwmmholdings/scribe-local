@@ -101,6 +101,30 @@ impl SpeechEngine {
         }
     }
 
+    /// Load only the diarizer, leaving the stub in place of ASR.
+    ///
+    /// Diarization needs two small model files; a transcriber needs a checkpoint
+    /// of an entirely different order of size. Anything measuring or exercising
+    /// speaker detection on its own — the `diarize_check` example, a
+    /// diarize-only worker — should not have to install an ASR model it will
+    /// never call.
+    #[cfg(feature = "onnx")]
+    pub fn load_diarizer_only(
+        paths: &crate::models::DiarizationModelPaths,
+        device: &str,
+        num_threads: i32,
+    ) -> Result<SpeechEngine> {
+        use crate::real::SherpaDiarizer;
+
+        let stub = Arc::new(StubEngine::new());
+        Ok(SpeechEngine {
+            transcriber: stub.clone(),
+            diarizer: Arc::new(SherpaDiarizer::load(paths.clone(), device, num_threads)?),
+            embedder: stub,
+            backend: Backend::Onnx,
+        })
+    }
+
     #[cfg(feature = "onnx")]
     fn load_real(models_dir: &Path, cfg: &AsrConfig) -> Result<SpeechEngine> {
         use crate::models::{AsrModelPaths, DiarizationModelPaths};
