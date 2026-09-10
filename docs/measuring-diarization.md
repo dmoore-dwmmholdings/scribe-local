@@ -237,6 +237,49 @@ Twice now the same shape: a constant swept on clean audio, reported inert, and
 holding a real loss on anything noisier. The remaining rows in that table were
 swept the same way.
 
+## Two ways to reach a handover shorter than the split threshold, both dead
+
+Fast conversation scores 92.8% because a gap under 160 ms produces no cut, so
+both speakers land in one fragment and half a turn gets the wrong name. Two
+things looked like they should fix it.
+
+**sherpa's own minimum silence.** `min_duration_off` defaults to 0.5 s and this
+code had never set it — a 500 ms floor on splitting a segment, against gaps of
+80–250 ms. It looked decisive. Swept from 0.05 to 0.5 it changes nothing at all:
+the fast-conversation, six-voice and eleven-minute fixtures come back identical
+to the decimal at every value.
+
+The reason is that these segments are re-split at silence afterwards and
+sherpa's own boundaries within a turn are thrown away, so its post-processing
+has nothing left to decide. The values are live — `min_duration_on` at 5 s
+collapses a six-voice recording to four speakers at 53.3% — so this is a result
+and not another disconnected knob. Both are now set explicitly rather than
+inherited.
+
+**Splitting a fragment and comparing its halves.** If a fragment secretly holds
+two people, its two halves should not match, and a second pass could find the
+handovers the silence split cannot reach. Measured by cutting each fragment at
+its quietest interior point:
+
+| | n | min | median | max |
+|---|---|---|---|---|
+| fragment = one speaker | 38 | 0.108 | 0.495 | 0.787 |
+| fragment spans a handover | 6 | 0.360 | 0.500 | 0.684 |
+
+The medians are the same, and the single-speaker range is the wider of the two —
+one person's halves differ *more* than the worst handover does. Half of a short
+fragment is about a second of audio and a one-second embedding is too noisy to
+say who is speaking.
+
+This is the same shape as the merge-sequence result: the information is not
+present at the granularity being asked. `SCRIBE_DIARIZE_HALVES=1` prints the
+table, so the question can be put again to a better embedding model, which is
+the thing that would have to change.
+
+So 92.8% stands as the floor for fast conversation, and the three levers that
+could move it — a shorter split threshold, sherpa's minimum silence, a
+second-pass split — are all measured and all rejected.
+
 ## How long the pauses are, which nobody had varied
 
 Every fixture on this page put exactly 350 ms between one turn and the next.

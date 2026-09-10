@@ -49,6 +49,21 @@ const CLUSTER_THRESHOLD: f32 = 0.8;
 /// `cluster_fragments`.
 const COHESION_RATIO: f32 = 0.73;
 
+/// Shortest stretch sherpa will call speech, and shortest silence it will split
+/// a segment at. These are sherpa's own defaults, carried explicitly so they are
+/// measured rather than inherited.
+///
+/// Swept, they do not matter: `min_duration_off` from 0.05 to 0.5 leaves the
+/// fast-conversation, six-voice and eleven-minute fixtures identical to the
+/// decimal. It looked like the obvious lever for handovers shorter than the
+/// split threshold and it is not one, because these turns are re-split at
+/// silence afterwards and sherpa's own segment boundaries within a turn are
+/// discarded. The values are live — `min_duration_on` at 5.0 collapses a
+/// six-voice recording to four speakers at 53.3% — so the flat sweep is a
+/// result rather than a disconnected knob.
+const MIN_DURATION_ON: f32 = 0.3;
+const MIN_DURATION_OFF: f32 = 0.5;
+
 /// How many merges the step-back may undo. Two people merging into one cluster
 /// costs one step; the worst measured recording needed two.
 const MAX_COHESION_STEPS: usize = 4;
@@ -135,6 +150,10 @@ fn min_piece_ms() -> i64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(MIN_PIECE_MS)
+}
+
+fn env_f32_or(key: &str, default: f32) -> f32 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn floor_alpha() -> f32 {
@@ -264,7 +283,8 @@ impl SherpaDiarizer {
                 provider: Some(provider),
             },
             clustering,
-            ..Default::default()
+            min_duration_on: env_f32_or("SCRIBE_MIN_DURATION_ON", MIN_DURATION_ON),
+            min_duration_off: env_f32_or("SCRIBE_MIN_DURATION_OFF", MIN_DURATION_OFF),
         };
 
         OfflineSpeakerDiarization::create(&config)
@@ -371,6 +391,10 @@ impl SherpaDiarizer {
                     t_emb.elapsed().as_secs_f64(),
                     pieces.len()
                 );
+            }
+
+            if std::env::var("SCRIBE_DIARIZE_HALVES").is_ok() {
+                report_halves(&extractor, slice, sr, &pieces, offset_ms);
             }
 
             for piece in &pieces {
@@ -546,6 +570,87 @@ const MAX_INFERRED_SPEAKERS: usize = 12;
 /// natural number of speakers. A cosine value that means "same person" in one
 /// recording means nothing in another - different mic, room and voices - so no
 /// fixed threshold can be right for both.
+/// Diagnostic: how alike the two halves of each fragment are.
+///
+/// A fragment that quietly holds a handover — the pause between the two
+/// speakers was too short to cut at — ought to have halves that do not match,
+/// which would allow a second pass to find the handovers the silence split
+/// cannot reach. This exists to check that before anything is built on it.
+///
+/// The signal is not there. On a fast-conversation fixture, splitting each
+/// fragment at its quietest interior point and comparing the halves:
+///
+///   fragment = one speaker      n=38  min 0.108  median 0.495  max 0.787
+///   fragment spans a handover   n=6   min 0.360  median 0.500  max 0.684
+///
+/// The medians are the same and the single-speaker range is the wider of the
+/// two, so no threshold separates them. Half of a short fragment is about a
+/// second of audio, and a one-second embedding is too noisy to say who is
+/// speaking — one person's two halves differ as much as two people's do.
+///
+/// Kept so the same question can be asked again of a better embedding model,
+/// which is the thing that would have to change for the answer to differ.
+#[cfg(feature = "onnx")]
+fn report_halves(
+    extractor: &SpeakerEmbeddingExtractor,
+    samples: &[f32],
+    sample_rate: u32,
+    pieces: &[SpeakerTurn],
+    offset_ms: i64,
+) {
+    let sr = sample_rate as i64;
+    for piece in pieces {
+        let span = piece.end_ms - piece.start_ms;
+        if span < 2 * MIN_HALF_MS {
+            continue;
+        }
+        // Cut at the quietest interior point, not the midpoint: that is where a
+        // handover would be if there is one.
+        let start = ((piece.start_ms * sr) / 1000) as usize;
+        let end = ((((piece.end_ms) * sr) / 1000) as usize).min(samples.len());
+        if end <= start {
+            continue;
+        }
+        let frame = ((SILENCE_FRAME_MS * sr) / 1000).max(1) as usize;
+        let guard = (MIN_HALF_MS / SILENCE_FRAME_MS) as usize;
+        let energies: Vec<f32> = samples[start..end]
+            .chunks(frame)
+            .map(|c| (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt())
+            .collect();
+        if energies.len() <= 2 * guard {
+            continue;
+        }
+        let mut best = guard;
+        for i in guard..(energies.len() - guard) {
+            if energies[i] < energies[best] {
+                best = i;
+            }
+        }
+        let cut_ms = piece.start_ms + best as i64 * SILENCE_FRAME_MS;
+        let halves = vec![
+            SpeakerTurn { local_idx: 0, start_ms: piece.start_ms, end_ms: cut_ms },
+            SpeakerTurn { local_idx: 1, start_ms: cut_ms, end_ms: piece.end_ms },
+        ];
+        let Ok(embs) = compute_speaker_embeddings(extractor, samples, sample_rate, &halves) else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (embs.get(&0), embs.get(&1)) else {
+            continue;
+        };
+        println!(
+            "HALVES {:>8} {:>8} cut {:>8} cos {:.4}",
+            piece.start_ms + offset_ms,
+            piece.end_ms + offset_ms,
+            cut_ms + offset_ms,
+            cosine(a, b)
+        );
+    }
+}
+
+/// Shortest half the diagnostic will consider — below this an embedding is not
+/// worth comparing.
+const MIN_HALF_MS: i64 = 700;
+
 /// The least similar pair of fragments inside one cluster.
 ///
 /// A cluster holding one voice keeps every pair fairly close. A cluster that
