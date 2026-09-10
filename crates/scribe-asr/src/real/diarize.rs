@@ -61,6 +61,20 @@ const MIN_EMBED_MS: i64 = 1_000;
 /// the result is what embedding the whole turn was meant to produce anyway.
 const MAX_EMBED_MS: i64 = 30_000;
 
+/// How much of a speaker's speech is enough to establish their voice.
+///
+/// A speaker embedding is an identity, not a summary — these models are trained
+/// on a few seconds and stop improving well before a minute. Embedding every
+/// turn a speaker takes therefore buys nothing after the first stretch, and it
+/// is the single most expensive thing diarization does: a speaker who talks for
+/// twenty minutes of an hour-long meeting had twenty minutes of audio pushed
+/// through the extractor to produce one 192-dimensional vector.
+///
+/// A minute per speaker, taken from their longest turns first, so what is
+/// embedded is also their cleanest continuous speech rather than whatever
+/// happened to come first.
+const EMBED_BUDGET_MS: i64 = 60_000;
+
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
 pub struct SherpaDiarizer {
@@ -593,22 +607,9 @@ fn compute_speaker_embeddings(
     // centroids apart and stopping enrolled voices from matching.
     let mut acc: HashMap<i32, (Vec<f32>, f32)> = HashMap::new();
 
-    // Turns long enough to embed reliably. If a speaker has none, fall back to
-    // whatever they do have rather than leaving them with no embedding at all.
-    let long_enough: Vec<&SpeakerTurn> = turns
-        .iter()
-        .filter(|t| t.end_ms - t.start_ms >= MIN_EMBED_MS)
-        .collect();
-    let speakers_with_long: std::collections::HashSet<i32> =
-        long_enough.iter().map(|t| t.local_idx).collect();
+    let chosen = choose_turns_to_embed(turns);
 
-    for turn in turns {
-        // Skip a scrap of a turn when this speaker has better audio elsewhere.
-        if turn.end_ms - turn.start_ms < MIN_EMBED_MS
-            && speakers_with_long.contains(&turn.local_idx)
-        {
-            continue;
-        }
+    for turn in chosen {
         let start = ((turn.start_ms.max(0) * sr) / 1000) as usize;
         let end = (((turn.end_ms.max(turn.start_ms)) * sr) / 1000) as usize;
         let end = end.min(samples.len());
@@ -664,6 +665,48 @@ fn compute_speaker_embeddings(
         out.insert(idx, sum);
     }
     Ok(out)
+}
+
+/// Which of each speaker's turns to actually embed.
+///
+/// Longest first, up to [`EMBED_BUDGET_MS`] per speaker: the extractor's cost is
+/// linear in the audio fed to it, and a speaker's identity stops sharpening long
+/// before their speech runs out. Turns too short to embed reliably are skipped
+/// when the speaker has better audio elsewhere, and used when that is all they
+/// said — better a noisy voiceprint than none.
+fn choose_turns_to_embed(turns: &[SpeakerTurn]) -> Vec<&SpeakerTurn> {
+    let duration = |t: &SpeakerTurn| (t.end_ms - t.start_ms).max(0);
+
+    let mut by_speaker: HashMap<i32, Vec<&SpeakerTurn>> = HashMap::new();
+    for turn in turns {
+        by_speaker.entry(turn.local_idx).or_default().push(turn);
+    }
+
+    // Speakers in index order, so the result does not depend on hash order.
+    let mut speakers: Vec<i32> = by_speaker.keys().copied().collect();
+    speakers.sort_unstable();
+
+    let mut chosen: Vec<&SpeakerTurn> = Vec::new();
+    for idx in speakers {
+        let mut speaker_turns = by_speaker.remove(&idx).unwrap_or_default();
+        speaker_turns.sort_by_key(|t| (std::cmp::Reverse(duration(t)), t.start_ms));
+        let has_long = speaker_turns
+            .first()
+            .is_some_and(|t| duration(t) >= MIN_EMBED_MS);
+
+        let mut spent = 0i64;
+        for turn in speaker_turns {
+            if has_long && duration(turn) < MIN_EMBED_MS {
+                break;
+            }
+            chosen.push(turn);
+            spent += duration(turn);
+            if spent >= EMBED_BUDGET_MS {
+                break;
+            }
+        }
+    }
+    chosen
 }
 
 /// Split `start..end` into consecutive ranges of at most `max_len`.
@@ -924,6 +967,70 @@ mod tests {
 
     /// A turn inside the limit must go to the model whole — splitting audio
     /// that did not need splitting would only blur the embedding.
+    /// Embedding cost is linear in audio, so a speaker who talks all meeting
+    /// must not have all of it pushed through the extractor.
+    #[test]
+    fn a_talkative_speaker_is_embedded_up_to_the_budget() {
+        let turns: Vec<SpeakerTurn> = (0..40)
+            .map(|i| turn(0, i * 30_000, i * 30_000 + 20_000))
+            .collect();
+
+        let chosen = choose_turns_to_embed(&turns);
+        let total: i64 = chosen.iter().map(|t| t.end_ms - t.start_ms).sum();
+
+        assert!(total >= EMBED_BUDGET_MS, "budget not met: {total}");
+        // One turn of slack past the budget, not thirteen minutes of it.
+        assert!(total < EMBED_BUDGET_MS + 20_000, "far over budget: {total}");
+    }
+
+    #[test]
+    fn the_longest_turns_are_the_ones_embedded() {
+        let turns = vec![
+            turn(0, 0, 2_000),
+            turn(0, 10_000, 55_000),
+            turn(0, 60_000, 63_000),
+        ];
+        let chosen = choose_turns_to_embed(&turns);
+        assert_eq!(chosen[0].start_ms, 10_000, "longest first");
+    }
+
+    #[test]
+    fn every_speaker_gets_their_own_budget() {
+        let mut turns: Vec<SpeakerTurn> = Vec::new();
+        for speaker in 0..3 {
+            for i in 0..20 {
+                let t = (speaker as i64 * 1_000_000) + i * 30_000;
+                turns.push(turn(speaker, t, t + 20_000));
+            }
+        }
+        let chosen = choose_turns_to_embed(&turns);
+        for speaker in 0..3 {
+            let total: i64 = chosen
+                .iter()
+                .filter(|t| t.local_idx == speaker)
+                .map(|t| t.end_ms - t.start_ms)
+                .sum();
+            assert!(total >= EMBED_BUDGET_MS, "speaker {speaker} short: {total}");
+        }
+    }
+
+    /// A speaker with nothing but scraps still needs a voiceprint.
+    #[test]
+    fn a_speaker_with_only_short_turns_is_still_embedded() {
+        let turns = vec![turn(0, 0, 400), turn(0, 1_000, 1_300)];
+        let chosen = choose_turns_to_embed(&turns);
+        assert_eq!(chosen.len(), 2);
+    }
+
+    /// But a scrap is ignored when the same speaker has real speech elsewhere.
+    #[test]
+    fn scraps_are_dropped_when_the_speaker_has_better_audio() {
+        let turns = vec![turn(0, 0, 200), turn(0, 1_000, 6_000)];
+        let chosen = choose_turns_to_embed(&turns);
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[0].start_ms, 1_000);
+    }
+
     #[test]
     fn a_short_turn_is_not_split() {
         assert_eq!(split_evenly(0, 100, 100), vec![(0, 100)]);

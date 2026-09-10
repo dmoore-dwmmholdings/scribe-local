@@ -140,6 +140,31 @@ impl Db {
         Ok(Some((speaker, similarity as f32)))
     }
 
+    /// Every enrolled speaker that has a reference voiceprint, with it.
+    ///
+    /// [`Db::match_speaker_by_embedding`] answers "who is this voice closest
+    /// to?" one voice at a time, which cannot see that two voices in the same
+    /// recording both picked the same person. Resolving a recording's speakers
+    /// as a set needs all the candidates at once.
+    pub async fn list_enrolled_voiceprints(&self) -> Result<Vec<(Speaker, Vec<f32>)>> {
+        let sql = format!(
+            "SELECT {COLS} FROM speakers WHERE embedding IS NOT NULL ORDER BY id"
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_err)?;
+        rows.iter()
+            .map(|row| {
+                let speaker = speaker_from_row(row)?;
+                let voiceprint = speaker.embedding.clone().ok_or_else(|| {
+                    Error::Internal("speaker with a non-null embedding read back empty".into())
+                })?;
+                Ok((speaker, voiceprint))
+            })
+            .collect()
+    }
+
     /// Rename a speaker. [`Error::NotFound`] if the id is unknown.
     pub async fn rename_speaker(&self, id: Uuid, display_name: &str) -> Result<()> {
         let affected = sqlx::query("UPDATE speakers SET display_name = $2 WHERE id = $1")
