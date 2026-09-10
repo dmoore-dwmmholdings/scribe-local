@@ -117,6 +117,29 @@ at the same similarities (0.58, 0.60, 0.64 through the database against 0.56 to
 0.69 in-process), so the pgvector round-trip is faithful. The numbers on this
 page are about the shipped pipeline, not only about the models.
 
+## Guarding the numbers
+
+Every figure below was established by running a harness and reading the number.
+Nothing guarded them, so a change costing ten points would have been noticed
+eventually or not at all.
+
+```bash
+cargo build --release -p scribe-asr --example diarize_check
+./scripts/diar-regression.sh          # about two minutes
+./scripts/diar-regression.sh --full   # adds the eleven-minute windowed case
+```
+
+It builds its own fixtures, runs the diarizer over each, and exits non-zero if
+any comes back with the wrong number of speakers or below its recorded accuracy.
+The floors sit a little under what is measured today, so ordinary variation does
+not cry wolf and a real regression cannot hide. `diarize_check` takes
+`DIARIZE_EXPECT_SPEAKERS` and `DIARIZE_MIN_CORRECT` directly if you want to
+assert on a fixture of your own.
+
+Checked against a known-bad setting — the cut threshold pushed to 0.95, which
+earlier sweeps showed breaks two fixtures — it reports three failures with the
+speaker counts and the shortfalls, and exits 1.
+
 ## Where it stands
 
 Scoring the share of speech given to the right person, on fixtures built by

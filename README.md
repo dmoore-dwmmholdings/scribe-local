@@ -343,7 +343,15 @@ Where it stands, on synthesised conversations with known answers:
 | speed | ~25x real time transcribing, ~10x diarizing, ~7x overall |
 | names recognised across recordings | 3 of 3 through a different room, no false positives |
 
-Four harnesses, in rough order of how much of the system they touch:
+A regression check, which builds its own fixtures and fails if speaker detection
+has got worse:
+
+```bash
+cargo build --release -p scribe-asr --example diarize_check
+./scripts/diar-regression.sh
+```
+
+Four harnesses behind it, in rough order of how much of the system they touch:
 
 ```bash
 # The diarizer alone: how many speakers, and did the right one get each stretch.

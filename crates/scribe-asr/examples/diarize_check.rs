@@ -177,10 +177,40 @@ fn main() {
         }
     }
 
+    // Assertions, for using this as a regression check rather than a report.
+    // DIARIZE_EXPECT_SPEAKERS and DIARIZE_MIN_CORRECT make a shortfall an exit
+    // code, so a change that quietly costs ten points of accuracy is noticed by
+    // something other than a person reading numbers.
+    let mut failed = Vec::new();
+    if let Some(want) = std::env::var("DIARIZE_EXPECT_SPEAKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if result.num_speakers != want {
+            failed.push(format!("speakers: got {}, want {want}", result.num_speakers));
+        }
+    }
+    if let Some(floor) = std::env::var("DIARIZE_MIN_CORRECT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    {
+        if pct(correct) < floor {
+            failed.push(format!("correct: {:.1}% below {floor:.1}%", pct(correct)));
+        }
+    }
+
     let unmapped: Vec<i32> = (0..result.num_speakers as i32)
         .filter(|i| !map.contains_key(i))
         .collect();
     if !unmapped.is_empty() {
         println!("  spurious clusters: {unmapped:?}");
+    }
+
+    if !failed.is_empty() {
+        println!("─────────────────────────────────────────────────────────");
+        for f in &failed {
+            println!("FAIL  {f}");
+        }
+        std::process::exit(1);
     }
 }
