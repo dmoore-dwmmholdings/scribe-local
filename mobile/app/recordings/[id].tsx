@@ -1179,6 +1179,52 @@ export default function RecordingDetailScreen() {
     [namingUtterance, id, loadDetail],
   );
 
+  /**
+   * Give this recording's voice to a speaker who is already enrolled.
+   *
+   * A voiceprint is written once and never updated otherwise, so a first sample
+   * that was short or noisy is permanent — and enrolling the same person again
+   * under a second name stops them being recognised at all. A diarized voice
+   * from a real meeting is usually the better sample.
+   */
+  const handleRelearnSpeaker = useCallback(
+    (speakerId: string, displayName: string) => {
+      if (!namingUtterance || !id) return;
+      const localIdx = namingUtterance.local_idx;
+      if (localIdx == null) return;
+      Alert.alert(
+        `Re-learn ${displayName}'s voice`,
+        `Replace ${displayName}'s saved voice with this speaker's, from this recording? Recordings you upload afterwards are matched against the new one.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Re-learn',
+            onPress: async () => {
+              setSavingSpeaker(true);
+              try {
+                await api.nameSpeaker(id, localIdx, {
+                  speaker_id: speakerId,
+                  enroll: true,
+                  replace_voiceprint: true,
+                });
+                setNamingUtterance(null);
+                await loadDetail();
+              } catch (err) {
+                Alert.alert(
+                  'Could not re-learn voice',
+                  err instanceof Error ? err.message : String(err),
+                );
+              } finally {
+                setSavingSpeaker(false);
+              }
+            },
+          },
+        ],
+      );
+    },
+    [namingUtterance, id, loadDetail],
+  );
+
   /** Drop the name from this recording's speaker; the library entry stays. */
   const handleUntagSpeaker = useCallback(async () => {
     if (!namingUtterance || !id) return;
@@ -1595,6 +1641,7 @@ export default function RecordingDetailScreen() {
         }
         saving={savingSpeaker}
         onTag={handleTagSpeaker}
+        onRelearn={handleRelearnSpeaker}
         onUntag={handleUntagSpeaker}
         onDismiss={() => setNamingUtterance(null)}
       />

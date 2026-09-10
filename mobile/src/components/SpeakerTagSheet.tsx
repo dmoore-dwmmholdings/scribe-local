@@ -35,6 +35,7 @@ export function SpeakerTagSheet({
   currentSpeakerId,
   saving,
   onTag,
+  onRelearn,
   onUntag,
   onDismiss,
 }: {
@@ -45,6 +46,16 @@ export function SpeakerTagSheet({
   currentSpeakerId: string | null;
   saving: boolean;
   onTag: (req: NameSpeakerRequest) => void;
+  /**
+   * Give this recording's voice to a speaker who already has one.
+   *
+   * A voiceprint is written once and never changed otherwise, so somebody
+   * enrolled from a poor first sample stays hard to recognise — and enrolling
+   * them again under a second name stops them being recognised at all. A
+   * diarized voice from a real meeting is usually a much better sample than
+   * whatever was to hand the first time.
+   */
+  onRelearn: (speakerId: string, displayName: string) => void;
   onUntag: () => void;
   onDismiss: () => void;
 }) {
@@ -106,15 +117,24 @@ export function SpeakerTagSheet({
                     key={s.id}
                     style={[styles.row, active && styles.rowActive]}
                     onPress={() => onTag({ speaker_id: s.id, enroll })}
+                    onLongPress={
+                      s.has_voiceprint
+                        ? () => onRelearn(s.id, s.display_name)
+                        : undefined
+                    }
                     disabled={saving}
                     accessibilityRole="button"
                     accessibilityState={{ selected: active }}
-                    accessibilityLabel={`Tag as ${s.display_name}`}
+                    accessibilityLabel={
+                      s.has_voiceprint
+                        ? `Tag as ${s.display_name}. Hold to re-learn their voice.`
+                        : `Tag as ${s.display_name}`
+                    }
                   >
                     <View style={styles.rowText}>
                       <Text style={styles.rowName}>{s.display_name}</Text>
                       <Text style={styles.rowMeta}>
-                        {s.has_voiceprint ? 'Voice enrolled' : 'Name only'}
+                        {s.has_voiceprint ? 'Voice enrolled · hold to re-learn' : 'Name only'}
                         {s.recording_count > 0
                           ? ` · ${s.recording_count} recording${s.recording_count === 1 ? '' : 's'}`
                           : ''}

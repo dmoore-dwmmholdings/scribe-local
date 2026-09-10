@@ -513,6 +513,7 @@ async fn full_api_flow() {
     assert_eq!(body["display_name"], "Dawson");
     assert_eq!(body["enrolled"], json!(true), "voice was enrolled: {body}");
     let dawson_id = body["speaker_id"].as_str().unwrap().to_string();
+    let dawson_uuid: Uuid = dawson_id.parse().unwrap();
 
     // The library lists them with a voiceprint flag and a usage count, and never
     // ships the raw embedding.
@@ -604,6 +605,62 @@ async fn full_api_flow() {
             .iter()
             .all(|s| s["display_name"] == "Dawson M"),
         "rename shows up on both diarized speakers: {body}"
+    );
+
+    // --- re-learning a voice ------------------------------------------------
+    // A voiceprint is written once and never changed, so a poor first sample is
+    // permanent unless it can be replaced. Enrolling the same person again
+    // under another name is not a way out: two entries for one voice stop it
+    // being recognised at all.
+    // Give this recording's speaker 0 a voice distinguishable from the enrolled
+    // one, so a replacement is observable rather than a no-op.
+    let fresh: Vec<f32> = (0..192).map(|i| 1.0 - (i as f32) / 192.0).collect();
+    db.upsert_recording_speaker(rec_id, 0, Some(dawson_uuid), Some(fresh.clone()))
+        .await
+        .unwrap();
+
+    let before: Option<Vec<f32>> = db.get_speaker(dawson_uuid).await.unwrap().embedding;
+    assert!(before.is_some(), "guard: the speaker has a voiceprint to replace");
+    assert_ne!(
+        before.as_deref(),
+        Some(fresh.as_slice()),
+        "guard: the new voice differs from the enrolled one"
+    );
+
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/speakers/0/name"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "speaker_id": dawson_id, "enroll": true, "replace_voiceprint": true })
+                    .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "re-learn status: {body}");
+    let after = db.get_speaker(dawson_uuid).await.unwrap().embedding;
+    assert!(after.is_some(), "still enrolled after re-learning");
+    assert_ne!(after, before, "the voiceprint was actually replaced");
+
+    // Without the flag it is left alone, so tagging never quietly overwrites an
+    // identity with whatever this recording happened to contain.
+    let (_, _) = call(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/recordings/{rec_id}/speakers/0/name"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "speaker_id": dawson_id, "enroll": true }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        db.get_speaker(dawson_uuid).await.unwrap().embedding,
+        after,
+        "tagging without replace_voiceprint leaves the voice alone"
     );
 
     // --- searching for what one person said --------------------------------

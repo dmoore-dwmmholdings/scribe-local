@@ -970,8 +970,14 @@ room; the poor one keeps 0.08, and in a bad room keeps none.
 `scribe enroll --replace` gives an existing speaker a new voice sample, and
 enrolling a name that is already taken now refuses and says so rather than
 quietly creating the duplicate that breaks recognition. The API takes
-`replace_voiceprint` for the same purpose. Replacing the poor voiceprint above
-takes recognition in a different room from 0.687 back to 0.824.
+`replace_voiceprint` for the same purpose, and in the app it is a long press on
+an already-enrolled speaker in the tag sheet — "hold to re-learn".
+
+Replacing the poor voiceprint takes recognition in a different room from 0.687
+to 0.824 through the CLI, and to 0.877 through the app, where the replacement
+comes from a diarized voice built out of a minute of that person across a whole
+meeting rather than from a clip. That is usually the better sample, which is why
+the affordance belongs where a recording and a speaker are both to hand.
 
 ### If you already have enrolled speakers
 
