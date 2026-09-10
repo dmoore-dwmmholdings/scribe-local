@@ -39,7 +39,7 @@ use scribe_core::{Error, Result};
 use scribe_db::Db;
 use uuid::Uuid;
 
-pub use stages::diarize::{resolve_identities, ENROLL_MATCH_THRESHOLD};
+pub use stages::diarize::{enroll_match_threshold, resolve_identities};
 pub use stages::merge::{label_words, utterance_spans};
 pub use worker::run_worker;
 

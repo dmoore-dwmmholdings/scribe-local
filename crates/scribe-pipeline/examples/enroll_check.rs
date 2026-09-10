@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use scribe_asr::{Diarization, SpeechEngine};
 use scribe_core::config::AsrConfig;
-use scribe_pipeline::{resolve_identities, ENROLL_MATCH_THRESHOLD};
+use scribe_pipeline::{enroll_match_threshold, resolve_identities};
 use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
@@ -163,7 +163,7 @@ fn main() {
         println!("  {:<10} {}", names_b[idx], row.join("  "));
     }
 
-    let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+    let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
 
     let (mut right, mut wrong, mut missed, mut false_positive) = (0, 0, 0, 0);
     println!("─── verdict ─────────────────────────────────────────────");

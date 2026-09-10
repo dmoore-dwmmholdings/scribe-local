@@ -22,12 +22,34 @@ const STAGE: &str = "diarize";
 
 /// Floor below which a voice is not considered against an enrolled one at all.
 ///
+/// It looks too low. With the current embedding model a stranger who resembles
+/// somebody scores about 0.61 against their voiceprint, which is well above
+/// this, so the floor is not what refuses them — [`SEPARATION`] and
+/// [`MATCH_CONSISTENCY`] are. Raising it to 0.7 to do that job directly is the
+/// obvious tidy-up and it is wrong: measured in a bad room, RT60 1.4 s at 4 dB
+/// signal-to-noise, a *correct* match scores 0.61 to 0.67. A floor at 0.65
+/// loses two of three real speakers there and one at 0.70 loses all three.
+///
+/// A stranger in a good room and a friend in a bad one land in the same place.
+/// That is the whole reason the rules that decide are relative ones, and the
+/// floor stays low and out of their way — it is here to reject noise, and
+/// everything from 0.5 to 0.6 behaves identically on every fixture.
+///
 /// A floor, not a decision: it rejects noise, and [`SEPARATION`] decides. An
 /// absolute cosine cannot decide identity on its own — two takes of one voice
 /// sit near 0.95 on a close mic and near 0.5 across a room, so the number that
 /// means "same person" in one recording means nothing in another. The clustering
 /// in `scribe-asr` gave up fixed thresholds for exactly this reason.
-pub const ENROLL_MATCH_THRESHOLD: f32 = 0.5;
+pub const ENROLL_MATCH_THRESHOLD_DEFAULT: f32 = 0.5;
+
+/// Experiment hook: `SCRIBE_ENROLL_FLOOR` overrides it, which is how it is
+/// checked against a change of embedding model.
+pub fn enroll_match_threshold() -> f32 {
+    std::env::var("SCRIBE_ENROLL_FLOOR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ENROLL_MATCH_THRESHOLD_DEFAULT)
+}
 
 /// How far a voice must stand out from the rest of the library to be called a
 /// match.
@@ -94,7 +116,7 @@ const MATCH_CONSISTENCY: f32 = 0.75;
 /// most confident match wins the tie" is a rule that can be explained to
 /// somebody looking at a transcript wondering why it chose that.
 ///
-/// A pair is admissible when it clears [`ENROLL_MATCH_THRESHOLD`] and stands
+/// A pair is admissible when it clears [`enroll_match_threshold`] and stands
 /// [`SEPARATION`] clear of what this voice scores against the rest of the
 /// library. Admissibility is per pair rather than per voice, so a voice whose
 /// first choice is taken can still hold a second — but only one it also stands
@@ -232,7 +254,7 @@ pub async fn run(
         .into_iter()
         .map(|(s, v)| (s.id, v))
         .collect();
-    let identities = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+    let identities = resolve_identities(&voices, &enrolled, enroll_match_threshold());
 
     for &local_idx in &speakers {
         let matched = identities.get(&local_idx);
@@ -310,7 +332,7 @@ mod tests {
         ];
         let enrolled = vec![(id(1), alice)];
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.len(), 1);
         // The better match keeps her.
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
@@ -322,7 +344,7 @@ mod tests {
         let voices = vec![(0, unit(&[1.0, 0.05, 0.0])), (1, unit(&[0.0, 1.0, 0.05]))];
         let enrolled = vec![(id(1), unit(&[1.0, 0.0, 0.0])), (id(2), unit(&[0.0, 1.0, 0.0]))];
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
         assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(2)));
     }
@@ -337,7 +359,7 @@ mod tests {
         let voices = vec![(0, unit(&[0.85, 0.5, 0.0])), (1, unit(&[1.0, 0.02, 0.0]))];
         let enrolled = vec![(id(1), alice), (id(2), bob)];
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(1)), "Alice to voice 1");
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(2)), "voice 0 falls to Bob");
     }
@@ -358,11 +380,11 @@ mod tests {
         // Every one of them clears the floor on its own.
         for (_, voiceprint) in &enrolled {
             assert!(
-                cosine(&voices[0].1, voiceprint) >= ENROLL_MATCH_THRESHOLD,
+                cosine(&voices[0].1, voiceprint) >= enroll_match_threshold(),
                 "guard: the floor alone would have accepted this"
             );
         }
-        assert!(resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD).is_empty());
+        assert!(resolve_identities(&voices, &enrolled, enroll_match_threshold()).is_empty());
     }
 
     /// The mirror image: a voice that stands clear of the library is recognised
@@ -382,7 +404,7 @@ mod tests {
         let best = cosine(&voices[0].1, &enrolled[0].1);
         assert!(best < 0.6, "guard: an unremarkable absolute score ({best})");
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
     }
 
@@ -392,7 +414,7 @@ mod tests {
     fn a_library_of_one_falls_back_to_the_floor() {
         let voices = vec![(0, unit(&[1.0, 0.05, 0.0]))];
         let enrolled = vec![(id(1), unit(&[1.0, 0.0, 0.0]))];
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
     }
 
@@ -412,7 +434,7 @@ mod tests {
         ];
         let enrolled = vec![(id(1), alice), (id(2), bob), (id(3), carol)];
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(1)), "Alice to voice 1");
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(2)), "voice 0 falls to Bob");
     }
@@ -437,7 +459,7 @@ mod tests {
             (2, unit(&[0.05, 0.05, 0.60, 0.80])),
         ];
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.get(&0).map(|(s, _)| *s), Some(id(1)));
         assert_eq!(resolved.get(&1).map(|(s, _)| *s), Some(id(2)));
         assert!(
@@ -461,7 +483,7 @@ mod tests {
             (2, unit(&[0.05, 0.05, 0.58, 0.81])),
         ];
 
-        let resolved = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let resolved = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         assert_eq!(resolved.len(), 3, "resolved = {resolved:?}");
     }
 
@@ -477,13 +499,13 @@ mod tests {
     fn a_stranger_stays_anonymous() {
         let voices = vec![(0, unit(&[0.0, 0.0, 1.0]))];
         let enrolled = vec![(id(1), unit(&[1.0, 0.0, 0.0]))];
-        assert!(resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD).is_empty());
+        assert!(resolve_identities(&voices, &enrolled, enroll_match_threshold()).is_empty());
     }
 
     #[test]
     fn nothing_enrolled_resolves_nothing() {
         let voices = vec![(0, unit(&[1.0, 0.0, 0.0]))];
-        assert!(resolve_identities(&voices, &[], ENROLL_MATCH_THRESHOLD).is_empty());
+        assert!(resolve_identities(&voices, &[], enroll_match_threshold()).is_empty());
     }
 
     /// Database row order must not change who gets matched.
@@ -492,9 +514,9 @@ mod tests {
         let voices = vec![(0, unit(&[1.0, 0.05, 0.0])), (1, unit(&[0.0, 1.0, 0.05]))];
         let mut enrolled = vec![(id(1), unit(&[1.0, 0.0, 0.0])), (id(2), unit(&[0.0, 1.0, 0.0]))];
 
-        let forward = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let forward = resolve_identities(&voices, &enrolled, enroll_match_threshold());
         enrolled.reverse();
-        let reversed = resolve_identities(&voices, &enrolled, ENROLL_MATCH_THRESHOLD);
+        let reversed = resolve_identities(&voices, &enrolled, enroll_match_threshold());
 
         assert_eq!(
             forward.get(&0).map(|(s, _)| *s),

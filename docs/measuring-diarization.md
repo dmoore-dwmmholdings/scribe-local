@@ -653,6 +653,29 @@ is not close. It also recovers an enrolled speaker who moves, who scored 0.499
 against his own voiceprint before — under the floor, and refused — and scores
 0.949 now.
 
+### How far a bad room can go
+
+Enrolling from a clean recording and then recognising the same people through
+progressively worse ones, with a fourth person present who was never enrolled:
+
+| meeting B | own voiceprint | nearest other | result |
+|---|---|---|---|
+| same room as A | 0.98 | 0.61 | 3 of 3, no false positives |
+| different room | 0.84 – 0.87 | 0.51 | 3 of 3, no false positives |
+| RT60 0.9 s, 8 dB SNR | 0.72 – 0.78 | 0.33 | 3 of 3, no false positives |
+| RT60 1.4 s, 4 dB SNR | 0.61 – 0.67 | — | 3 of 3, no false positives |
+
+The last row is the useful one, and it settles a question the floor keeps
+raising. A floor of 0.5 looks far too low, since a stranger resembling somebody
+scores about 0.61 — above it. Raising it to 0.7 so it does that job directly
+loses every real speaker in the bad room, and 0.65 loses two of three.
+
+A stranger in a good room and a friend in a bad one land on the same number.
+That is why what decides a match is relative — how far it stands clear of the
+rest of the library, and whether it is the kind of match this recording is
+producing — and why the floor stays low and out of the way. Everything from 0.5
+to 0.6 behaves identically on every fixture.
+
 ### If you already have enrolled speakers
 
 Voiceprints are not comparable between models: a vector from one means nothing
