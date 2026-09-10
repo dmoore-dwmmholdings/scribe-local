@@ -21,6 +21,7 @@ How it works:
 
 - [Architecture](#architecture)
 - [Crate layout](#crate-layout)
+- [Measuring transcription and speaker detection](#measuring-transcription-and-speaker-detection)
 - [Configuration reference](#configuration-reference)
 - [API endpoints](#api-endpoints)
 - [Self-update](#self-update)
@@ -325,6 +326,54 @@ the GPU is an optimization, not a requirement.
 
 ---
 
+## Measuring transcription and speaker detection
+
+Speaker detection is the part of this that is easiest to get subtly wrong and
+hardest to eyeball, so it is measured rather than argued about.
+[`docs/measuring-diarization.md`](docs/measuring-diarization.md) is the full
+account: how to build conversations with known speakers, how to put them through
+a room, and what the current numbers are.
+
+Where it stands, on synthesised conversations with known answers:
+
+| | |
+|---|---|
+| words given the right speaker | 99.6 – 100% clean, 99.6% with reverberation and noise |
+| word error rate | 1.0 – 1.5% clean, ~5% in a bad room |
+| speed | ~25x real time transcribing, ~10x diarizing, ~7x overall |
+| names recognised across recordings | 3 of 3 through a different room, no false positives |
+
+Four harnesses, in rough order of how much of the system they touch:
+
+```bash
+# The diarizer alone: how many speakers, and did the right one get each stretch.
+cargo run --release -p scribe-asr --example diarize_check -- models a.wav truth.json
+
+# What a reader sees: real ASR timings, real diarization, the merge stage.
+cargo run --release -p scribe-pipeline --example transcript_check -- models a.wav truth.json
+
+# Does a name given in one meeting stick to the same voice in the next.
+cargo run --release -p scribe-pipeline --example enroll_check -- models a.wav a.json b.wav b.json
+
+# The whole pipeline through the CLI and a real database, on any audio.
+./scripts/e2e-check.sh recording.wav
+```
+
+Fixtures are generated, not downloaded:
+
+```bash
+python3 scripts/make-diar-fixture.py /tmp/diar 30      # a conversation + ground truth
+python3 scripts/degrade-audio.py in.wav out.wav \
+    --reverb 0.4 --snr 15 --far Karen=0.3 --truth truth.json
+python3 scripts/add-room-noise.py in.wav out.wav --truth truth.json
+```
+
+Synthesised voices are cleaner and more separable than a room of people, so
+these numbers are an upper bound and a way to compare one change against
+another. **Run `e2e-check.sh` on a recording of real people** — it is worth more
+than any of the above, and `scribe transcript <id>` will show you what it made
+of it.
+
 ## Configuration reference
 
 Configuration is loaded in priority order:
@@ -405,12 +454,23 @@ PUT    /recordings/{id}/segments/{seq}     upload one audio segment (stream to d
 GET    /recordings/{id}/segments/{seq}     download a segment (HTTP range supported)
 GET    /recordings/{id}/audio              full stitched audio (HTTP range supported)
 POST   /recordings/{id}/speakers/{idx}/name  assign a name to a diarized speaker
+DELETE /recordings/{id}/speakers/{idx}     not a participant: drop the voice and its lines
+PUT    /recordings/{id}/participants       state how many people are in the recording
+POST   /recordings/{id}/rediarize          redo speaker detection, keeping the transcript
+POST   /recordings/{id}/reprocess          re-run the whole pipeline from the audio
 GET    /search?q=…                         hybrid full-text + vector semantic search
 POST   /ask                                RAG: {question} → {answer, citations}
 GET    /processing-schedule                weekly windows + live status + queue counts
 PUT    /processing-schedule                replace the weekly windows
 POST   /processing-schedule/override       run now / pause now / clear
 ```
+
+When a transcript has too many speakers, which of the last four you want depends
+on why: too many *people* means the count was guessed wrong, so state it and
+redo speaker detection; a voice that is not a person at all — a television, a
+conversation through a wall — should be dropped instead, because stating a count
+cannot exclude anything and will merge two real speakers trying. See
+[docs/measuring-diarization.md](docs/measuring-diarization.md).
 
 The processing schedule limits the heavy stages of the pipeline to the hours you
 select in the app. Full guide: **[docs/processing-schedule.md](docs/processing-schedule.md)**.

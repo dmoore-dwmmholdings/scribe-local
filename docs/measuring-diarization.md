@@ -126,10 +126,11 @@ Scoring the share of speech given to the right person, on fixtures built by
 |---|---|---|---|
 | 3 voices, 55 s | discover | 3 of 3 | 99.6% |
 | 3 voices, 55 s | stated 3 | 3 of 3 | 99.6% |
-| 5 voices, 69 s | discover | 5 of 5 | 99.7% |
-| 5 voices, 69 s | stated 5 | 5 of 5 | 99.7% |
-| 4 voices, 2.5 min | discover | 4 of 4 | 99.7% |
-| 4 voices, 11.2 min | discover | 4 of 4 | 99.7% |
+| 5 voices, 69 s | discover | 5 of 5 | 99.8% |
+| 5 voices, 69 s | stated 5 | 5 of 5 | 99.8% |
+| 4 voices, 2.5 min | discover | 4 of 4 | 99.8% |
+| 4 voices, 2.5 min (second script) | discover | 4 of 4 | 99.7% |
+| 4 voices, 11.1 min | discover | 4 of 4 | 99.6% |
 
 The last row matters on its own: past ten minutes diarization windows the audio
 and each window is clustered without knowing anything about the others, so the
@@ -148,13 +149,19 @@ caller's to get right.
 
 `transcript_check`, discovering the speaker count, on a 15-core M-series machine:
 
-| fixture | transcribe | diarize | total | WER | right speaker | utterances |
-|---|---|---|---|---|---|---|
-| 4 voices, 2.5 min | 18.2x | 9.2x | 6.1x | 4.2% | 100.0% | 29 of 30 turns |
-| 4 voices, 11.1 min | 20.4x | 7.3x | 5.4x | 0.7% | 100.0% | 136 of 136 turns |
+| fixture | transcribe | diarize | total | WER | right speaker |
+|---|---|---|---|---|---|
+| 4 voices, 2.5 min | 26.4x | 10.5x | 7.5x | 1.5% | 100.0% |
+| 4 voices, 2.5 min, dirty | 25.9x | 10.2x | 7.3x | 5.1% | 100.0% |
+| 4 voices, 11.1 min | 25.1x | 10.1x | 7.2x | 1.0% | 100.0% |
+| 4 voices, 11.1 min, dirty | 22.6x | 10.0x | 6.9x | 5.1% | 100.0% |
+| 4 voices, one moving | 26.0x | 10.4x | 7.4x | 0.8% | 100.0% |
+| 4 voices, turns 0.4 s to 12 s | 25.4x | 10.8x | 7.6x | 2.0% | 96.4% |
 
-Multiples are of real time, so 5.4x means an hour of audio in about eleven
-minutes. Two things worth reading off that table:
+Multiples are of real time, so 7.2x means an hour of audio in about eight and a
+half minutes. These are current: the earlier numbers on this page were taken
+before the decode window shrank and before the embedding model changed, and both
+moved them. Two things worth reading off that table:
 
 **Diarization is the bottleneck, not transcription.** It runs at roughly a third
 the speed of ASR, and the two are separate pipeline stages, so effort spent
@@ -459,87 +466,52 @@ the recording, the way somebody does who leans back, turns to a whiteboard or
 walks about. Level and reverberation change together, because both follow
 distance.
 
-| fixture | discovering | telling it there are 4 |
+This used to be the worst failure measured here, and it is now fixed. It is kept
+because how it was fixed is the point.
+
+| fixture | TitaNet, discovering | ERes2Net, discovering |
 |---|---|---|
-| 4 voices, 2.5 min, Daniel moves | 6 speakers, 89.9% | 4 speakers, 99.7% |
-| 4 voices, 11 min, Samantha moves | 5 speakers, 95.8% | 4 speakers, 95.8% |
+| 4 voices, 2.5 min, Daniel moves | 6 speakers, 89.9% | **4 speakers, 99.8%** |
+| 4 voices, 11 min, Samantha moves | 5 speakers, 95.8% | **4 speakers, 99.7%** |
+| 4 voices, second meeting, Daniel moves | 6 speakers, 83.3% | **4 speakers, 99.6%** |
 
-Left to discover, a speaker who moves splits into two or three. That is not the
-clustering being wrong: the same voice at two distances genuinely is two
-different sounds, and the embedding is right to notice.
+Three things were tried against it first, and all three were the wrong place to
+look.
 
-**It is loudness or the room?** The room. Levelling every piece to a common
-loudness before embedding changes the numbers on every fixture by nothing at
-all — the speaker-embedding model is already invariant to gain, so that axis was
-never carrying the difference. What is left is reverberation, which is a real
-spectral change and the same thing that broke both cheap substitutes for
-segmentation. The normalisation was measured and removed, since a no-op with a
-good explanation is still a no-op.
+**Levelling every piece to a common loudness before embedding.** Distance
+changes how loud somebody is, so removing loudness should remove the difference.
+It changes the numbers on every fixture by nothing at all: the embedding models
+are already invariant to gain. What was left was reverberation, a real spectral
+change.
 
-**Can the clustering work it out by itself?** The merge sequence looks like it
-should be able to. On the moving fixture the cut lands on a fall of 1.03x and
-leaves six speakers, while three merges later there is a fall of 2.27x that is
-plainly where four people become three.
+**Reading the merge sequence more cleverly.** The cut landed on a fall of 1.03x
+and left six speakers, with a fall of 2.27x three merges later that is plainly
+where four people become three. Cutting at the steepest fall — the standard
+elbow — is much worse on all fourteen fixtures it was tried against: similarity
+approaches zero as the last unrelated clusters are forced together, so the
+sharpest ratio is nearly always among the final merges, and five voices come
+back as one. The rule in place compares each merge against the family already
+accepted rather than the one before it, which anchors it to what "same voice"
+looked like earlier in this recording. It stays.
 
-Cutting at the steepest fall instead — the standard elbow — is much worse, on
-all fourteen fixtures. Similarity approaches zero as the last unrelated clusters
-are forced together, so the sharpest ratio is almost always among the final
-merges: five voices come back as one, four as one, and the moving recording this
-was meant to rescue comes back as three. The rule in place compares each merge
-against the family of merges already accepted rather than against the one
-before it, which keeps it anchored to what "same voice" looked like earlier in
-*this* recording rather than to how far the sequence has fallen by now. It
-stays.
+**Stating the participant count.** Which worked on one recording and not on
+another, because the count settles a recording to *N* voices by joining the
+closest pair repeatedly, and whether that reunites somebody who moved depends on
+whether their own two distances are closer together than the two most similar
+different people present.
 
-**The speaker count often fixes this one, but not always.** On the fixture above
-it does completely — Daniel's three clusters become one and all four speakers are
-right. On a second recording of the same four people it does not: told there are
-four, the clustering merged Samantha and Karen, who are two different women who
-sound alike, and left Daniel split across two clusters anyway.
+It was the embedding. A model that holds a voice together across a change of
+room makes all three unnecessary. Worth remembering the next time something
+looks like a clustering problem: three plausible repairs to the clustering, and
+the fault was upstream of all of them.
 
-That is the same mechanism working in both cases. The count settles a recording
-to *N* voices by joining the closest pair repeatedly, and whether that reunites
-a moved speaker depends on whether their own two distances are closer together
-than the two most similar different people in the room. Sometimes they are.
-Reverberation changes a voice more than the difference between two similar
-voices does, so sometimes they are not.
-
-Still worth putting beside the television below, because the two failures look
-alike in a transcript and want opposite things:
+The comparison below still holds for a *television*, which no embedding model
+will fix, since it is not a mistake:
 
 |  | what went wrong | does stating the count help? |
 |---|---|---|
-| a speaker moves | one person became several | **sometimes** — 89.9% to 99.7% on one recording, nothing on another |
+| a speaker moves | one person became several | not needed now — the model holds them together |
 | a television is on | something that is not a person became one | **no**, and it makes it worse |
-
-The count merges; it cannot exclude. It settles a recording to *N* voices by
-joining the closest ones, which is exactly the repair for one person split in
-two, and exactly the wrong tool for a voice that should not be counted at all —
-there it merges two real people and keeps the television, because the television
-is the most distinct voice in the room.
-
-So: too many speakers, and they are all people → state the count, and check the
-result. A speaker who is not a person → remove them (below). Those are different
-buttons and the transcript tells you which you need.
-
-### It also costs the mover their name
-
-An enrolled speaker who moves may not be recognised at all. Measured: Daniel,
-enrolled from a close recording, scores **0.499** against his own voiceprint
-after moving — below the 0.5 floor by a hair, and well below what the
-recording's other two speakers are scoring at 0.99, so the consistency rule
-refuses him too.
-
-That rule is doing exactly what it was built for and cannot tell this case from
-the one it was built against. "A voice much weaker than this recording's other
-matches" describes both a television resembling somebody and a real person heard
-from further away. The difference is not in the numbers.
-
-The failure is the recoverable one — an unrecognised speaker can be tagged by
-hand, where a wrongly-named one has to be noticed first — so it is left as it
-is. Two thresholds could be moved to admit him, and both were left alone: five
-observations is not enough to move a rule that is currently refusing the right
-things.
 
 ## Rooms have things in them that are not people
 
