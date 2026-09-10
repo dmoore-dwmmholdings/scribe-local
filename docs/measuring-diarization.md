@@ -482,6 +482,14 @@ decline. The excerpt now reads `[1] (Q3 planning, 03:42 — Karen)`, search hits
 and citations carry the name, and the system prompt says the names are there to
 be used.
 
+The `speaker` filter on `/search` was wrong in the same spirit. It matched on
+the recording — *any* chunk of any recording that speaker appeared in, including
+every word somebody else said — so filtering by Karen returned the meetings
+Karen attended rather than the things Karen said. A chunk records the speaker it
+came from, so the join belongs there. The test that covers it inserts a line
+from a second speaker matching the same query, because the first version of that
+test passed against both the old code and the new one.
+
 ## Whisper's word timings
 
 sherpa returns no token timestamps for its Whisper models. The transcriber

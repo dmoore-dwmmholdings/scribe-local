@@ -606,44 +606,56 @@ async fn full_api_flow() {
         "rename shows up on both diarized speakers: {body}"
     );
 
-    // Untagging one line reverts it to "Speaker N" without touching the library.
-    let (status, _) = call(
-        &app,
-        Request::builder()
-            .method("DELETE")
-            .uri(format!("/recordings/{rec_id}/speakers/1/name"))
-            .body(Body::empty())
-            .unwrap(),
+    // --- searching for what one person said --------------------------------
+    // Filtering by speaker must return that speaker's lines, not every line of
+    // every recording they happened to be in. Speaker 2 is somebody else — no
+    // enrolled identity — and says something that matches the same query.
+    let other_text = "We agreed to move the launch date to October and finalize the pricing.";
+    db.insert_chunks(
+        rec_id,
+        &[NewChunk {
+            local_idx: Some(2),
+            start_ms: Some(40_000),
+            end_ms: Some(44_000),
+            text: other_text.to_string(),
+            embedding: embedder.embed_one(other_text).await.unwrap(),
+        }],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "untag status");
-    let rec_speakers = db.list_recording_speakers(rec_id).await.unwrap();
-    assert!(
-        rec_speakers
-            .iter()
-            .find(|s| s.local_idx == 1)
-            .unwrap()
-            .speaker_id
-            .is_none(),
-        "speaker 1 is anonymous again"
-    );
+    .await
+    .unwrap();
+    db.upsert_recording_speaker(rec_id, 2, None, None).await.unwrap();
 
-    // Deleting the speaker forgets it everywhere; tagged rows fall back to null.
-    let (status, _) = call(
+    // Unfiltered, both speakers' lines come back.
+    let (_, body) = call(
         &app,
         Request::builder()
-            .method("DELETE")
-            .uri(format!("/speakers/{dawson_id}"))
+            .uri("/search?q=launch%20date%20pricing&limit=10")
             .body(Body::empty())
             .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "delete speaker status");
-    assert!(db.list_speakers().await.unwrap().is_empty(), "library is empty");
-    let rec_speakers = db.list_recording_speakers(rec_id).await.unwrap();
+    let all = body["hits"].as_array().expect("hits array").len();
+    assert!(all >= 2, "both speakers' lines match the query: {body}");
+
+    // Filtered to Dawson, speaker 2's line must not appear.
+    let (status, body) = call(
+        &app,
+        Request::builder()
+            .uri(format!("/search?q=launch%20date%20pricing&speaker={dawson_id}&limit=10"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "filtered search status: {body}");
+    let hits = body["hits"].as_array().expect("hits array");
+    assert!(!hits.is_empty(), "the named speaker's own line is found: {body}");
     assert!(
-        rec_speakers.iter().all(|s| s.speaker_id.is_none()),
-        "deleting a speaker un-tags the recordings it was in"
+        hits.len() < all,
+        "filtering by speaker excluded somebody else's line: {body}"
+    );
+    assert!(
+        hits.iter().all(|h| h["speaker"] == json!("Dawson M")),
+        "every hit is that speaker's, not the recording's: {body}"
     );
 
     // --- a voice that was not a participant --------------------------------

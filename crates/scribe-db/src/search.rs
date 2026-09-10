@@ -10,7 +10,9 @@
 //! `score = Σ 1 / (k + rank)`. RRF needs only ranks, so the wildly different
 //! score scales of FTS vs cosine distance never have to be normalized.
 //!
-//! Date / speaker / recording filters are applied inside both rankings. Because
+//! Date / speaker / recording filters are applied inside both rankings. The
+//! speaker filter selects what that person *said* — it joins the chunk's own
+//! speaker index, not merely the recording they appear in. Because
 //! we filter, the filtered-vector queries run in a transaction that sets
 //! `hnsw.iterative_scan = relaxed_order` so the HNSW index keeps returning
 //! candidates until `limit` survivors pass the filter (design §9).
@@ -222,9 +224,19 @@ fn filter_clause(filters: &SearchFilters, base: usize) -> String {
     }
     if filters.speaker_id.is_some() {
         n += 1;
+        // What this person said, not what was said near them.
+        //
+        // This used to match on the recording alone: any chunk of any recording
+        // the speaker appeared in, including every word somebody else spoke.
+        // Filtering a search by "Karen" returned the meetings Karen attended
+        // rather than the things Karen said, which is the whole point of
+        // knowing who said what. A chunk records the speaker it came from, so
+        // the join belongs on that too.
         clause.push_str(&format!(
             " AND EXISTS (SELECT 1 FROM recording_speakers rs \
-                          WHERE rs.recording_id = c.recording_id AND rs.speaker_id = ${n})"
+                          WHERE rs.recording_id = c.recording_id \
+                            AND rs.local_idx = c.local_idx \
+                            AND rs.speaker_id = ${n})"
         ));
     }
     if filters.recording_id.is_some() {
