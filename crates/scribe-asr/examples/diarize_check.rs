@@ -131,6 +131,20 @@ fn main() {
     for idx in idxs {
         println!("  cluster {idx} → {}", map[idx]);
     }
+    let mut cluster_ms: HashMap<i32, i64> = HashMap::new();
+    for t in &result.turns {
+        *cluster_ms.entry(t.local_idx).or_insert(0) += t.end_ms - t.start_ms;
+    }
+    let mut sizes: Vec<(i32, i64)> = cluster_ms.into_iter().collect();
+    sizes.sort_by_key(|(_, ms)| -*ms);
+    println!("─── speech per cluster ──────────────────────────────────");
+    let total: i64 = sizes.iter().map(|(_, ms)| *ms).sum();
+    for (idx, ms) in &sizes {
+        println!("  cluster {idx:<3} {:>7.1}s  {:>5.1}%   {}", *ms as f64 / 1000.0,
+                 100.0 * *ms as f64 / total.max(1) as f64,
+                 map.get(idx).copied().unwrap_or("(unmapped)"));
+    }
+
     if std::env::var("DIARIZE_CHECK_TURNS").is_ok() {
         println!("─── turns ───────────────────────────────────────────────");
         println!("  {:>8} {:>8}  {:<12} {:<12}", "start", "end", "truth", "found");

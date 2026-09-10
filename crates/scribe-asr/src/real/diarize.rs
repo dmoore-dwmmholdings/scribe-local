@@ -75,6 +75,23 @@ const MAX_EMBED_MS: i64 = 30_000;
 /// happened to come first.
 const EMBED_BUDGET_MS: i64 = 60_000;
 
+/// Silence long enough to be a possible speaker change.
+///
+/// People do not swap places mid-breath; a handover has a pause in it. Below a
+/// quarter of a second a gap is punctuation inside one person's sentence.
+const MIN_SPLIT_SILENCE_MS: i64 = 250;
+
+/// How quiet, relative to the speech around it, a stretch has to be to count as
+/// silence.
+///
+/// Measured against the turn's own loudness rather than an absolute level, so
+/// the same rule works on a close mic and across a room.
+const SILENCE_RATIO: f32 = 0.15;
+
+/// Frame size for the silence scan. Fine enough to place a boundary accurately,
+/// coarse enough that one quiet glottal stop is not a pause.
+const SILENCE_FRAME_MS: i64 = 20;
+
 /// Wraps `OfflineSpeakerDiarization` plus a standalone embedding extractor used
 /// to compute the per-speaker mean embeddings the pipeline needs for enrollment.
 pub struct SherpaDiarizer {
@@ -213,23 +230,25 @@ impl SherpaDiarizer {
                 continue;
             }
 
-            let local_embs = compute_speaker_embeddings(&extractor, slice, sr, &local_turns)?;
+            // Split at any pause long enough to be a handover, and treat each
+            // piece as its own voice. Grouping by the segmentation model's own
+            // speaker label instead makes its mistakes permanent: two similar
+            // voices merged into one turn embed to a blend of the two, and no
+            // amount of clustering afterwards can take them apart again.
+            let pieces = split_turns_at_silence(&local_turns, slice, sr);
+            let piece_embs = compute_speaker_embeddings(&extractor, slice, sr, &pieces)?;
 
-            let mut by_local: HashMap<i32, Fragment> = HashMap::new();
-            for turn in &local_turns {
-                let frag = by_local.entry(turn.local_idx).or_insert_with(|| Fragment {
-                    turns: Vec::new(),
-                    embedding: local_embs.get(&turn.local_idx).cloned(),
-                    speech_ms: 0,
-                });
-                frag.speech_ms += (turn.end_ms - turn.start_ms).max(0);
-                frag.turns.push(SpeakerTurn {
-                    local_idx: turn.local_idx,
-                    start_ms: turn.start_ms + offset_ms,
-                    end_ms: turn.end_ms + offset_ms,
+            for piece in &pieces {
+                fragments.push(Fragment {
+                    turns: vec![SpeakerTurn {
+                        local_idx: piece.local_idx,
+                        start_ms: piece.start_ms + offset_ms,
+                        end_ms: piece.end_ms + offset_ms,
+                    }],
+                    embedding: piece_embs.get(&piece.local_idx).cloned(),
+                    speech_ms: (piece.end_ms - piece.start_ms).max(0),
                 });
             }
-            fragments.extend(by_local.into_values());
 
             start = end;
         }
@@ -317,6 +336,18 @@ struct Fragment {
     speech_ms: i64,
 }
 
+/// Total speech a cluster must hold, across the whole recording, to stand as a
+/// participant when the count was not stated.
+///
+/// Speaker-embedding models need about a second of speech to say anything, and
+/// a second or two split across a recording is not a person — it is the residue
+/// of splitting turns finely enough to catch a handover. Someone real, however
+/// quiet, clears this; a sliver left over from over-segmentation does not.
+///
+/// A stated count is a count of people who clear this, not of clusters — see
+/// the stop condition in `cluster_fragments`.
+const MIN_SPEAKER_SPEECH_MS: i64 = 3_000;
+
 /// Most speakers we will infer when the count was not stated.
 ///
 /// A bound on the search, not a similarity threshold: past a dozen distinct
@@ -384,12 +415,29 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     // cluster that has not been absorbed; `size[i]` counts its members.
     let mut alive = vec![true; n];
     let mut size = vec![1.0f32; n];
+    // Speech behind each cluster, so the stated count can be read as a number of
+    // participants rather than a number of clusters.
+    let mut speech: Vec<i64> = embedded
+        .iter()
+        .map(|&i| fragments[i].speech_ms.max(0))
+        .collect();
     let mut live = n;
 
     // The merge sequence: clusters before the merge, what it cost, and which
     // pair joined. Recording the pair rather than a snapshot of the whole
     // partition keeps this linear in the number of merges.
     let mut history: Vec<(usize, f32, (usize, usize))> = Vec::new();
+    // How many clusters hold enough speech to be somebody, after each merge.
+    // `substantial[k]` is that count once `k` merges have been applied — which
+    // is how a stated number of *people* is located in a sequence of merges
+    // between *clusters*.
+    let count_substantial = |alive: &[bool], speech: &[i64]| -> usize {
+        (0..alive.len())
+            .filter(|&k| alive[k] && speech[k] >= MIN_SPEAKER_SPEECH_MS)
+            .count()
+    };
+    let mut substantial: Vec<usize> = vec![count_substantial(&alive, &speech)];
+
     while live > 1 {
         let mut best: Option<(usize, usize, f32)> = None;
         for i in 0..n {
@@ -427,19 +475,40 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
             sim[k * n + i] = merged;
         }
         size[i] = wi + wj;
+        speech[i] += speech[j];
         alive[j] = false;
         live -= 1;
+        substantial.push(count_substantial(&alive, &speech));
+    }
 
-        if target.is_some_and(|t| live == t) {
-            break;
+    if std::env::var("SCRIBE_DIARIZE_MERGES").is_ok() {
+        eprintln!("-- merge sequence ({n} fragments) --");
+        for (count, sim, _) in &history {
+            eprintln!("   {count:>3} clusters -> {:<3}  sim {sim:.4}", count - 1);
         }
     }
 
-    // Stated count: the loop already stopped there, so every merge stands.
-    // Otherwise the recording decides where to cut its own merge sequence.
-    let cut = match target {
-        Some(_) => history.len(),
-        None => choose_cut(&history),
+    // Where to stop. The recording's own merge sequence decides, and a stated
+    // count picks a point in that sequence instead.
+    //
+    // The count used to halt the merge the moment it was reached, which stopped
+    // it mid-sort: on a five-person meeting one speaker was still split in two
+    // while two others had already been joined, and the answer came out worse
+    // than taking no hint at all. Merging now always runs to completion, and the
+    // count selects the *last* point at which that many people were present —
+    // the most-merged partition holding the stated number, rather than the first
+    // partition to stumble into it.
+    let cut = {
+        let discovered = choose_cut(&history);
+        match target {
+            None => discovered,
+            // No point holds the stated number: the audio does not support it,
+            // and what the recording itself says is the better answer.
+            Some(t) => (0..substantial.len())
+                .rev()
+                .find(|&k| substantial[k] == t)
+                .unwrap_or(discovered),
+        }
     };
     let final_clusters = replay(n, &history, cut, &embedded);
 
@@ -457,7 +526,110 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
         }
         assignment[i] = nearest_assigned(fragments, &assignment, i).unwrap_or(0);
     }
+
+    fold_slight_speakers(fragments, &mut assignment);
     assignment
+}
+
+/// Fold clusters holding too little speech to be a participant into the voice
+/// they most resemble.
+///
+/// Where the merge sequence has a clean step, `choose_cut` finds it. Where it
+/// does not — two people whose voices are genuinely alike, so that joining them
+/// looks much like joining two stretches of one of them — it stops early and
+/// leaves slivers standing beside the real speakers. They are easy to tell apart
+/// afterwards even though they were not during merging: a participant holds a
+/// share of the conversation, and a sliver holds a second or two.
+///
+/// Each is folded into the surviving cluster whose voice it is closest to, not
+/// the nearest in time: a sliver is usually a fragment of somebody already
+/// present, and its embedding says which.
+fn fold_slight_speakers(fragments: &[Fragment], assignment: &mut [i32]) {
+    let mut speech: HashMap<i32, i64> = HashMap::new();
+    for (frag, &cluster) in fragments.iter().zip(assignment.iter()) {
+        *speech.entry(cluster).or_insert(0) += frag.speech_ms.max(0);
+    }
+
+    let surviving: Vec<i32> = speech
+        .iter()
+        .filter(|(_, ms)| **ms >= MIN_SPEAKER_SPEECH_MS)
+        .map(|(c, _)| *c)
+        .collect();
+    // Everything is slight - a very short recording. Nothing to fold into.
+    if surviving.is_empty() || surviving.len() == speech.len() {
+        return;
+    }
+
+    // A voice per surviving cluster, weighted by how much speech backs it.
+    let mut centroids: HashMap<i32, (Vec<f32>, f32)> = HashMap::new();
+    for (frag, &cluster) in fragments.iter().zip(assignment.iter()) {
+        let Some(emb) = &frag.embedding else { continue };
+        if !surviving.contains(&cluster) {
+            continue;
+        }
+        let weight = (frag.speech_ms.max(1) as f32) / 1000.0;
+        let entry = centroids
+            .entry(cluster)
+            .or_insert_with(|| (vec![0.0; emb.len()], 0.0));
+        if entry.0.len() != emb.len() {
+            entry.0 = vec![0.0; emb.len()];
+        }
+        for (a, b) in entry.0.iter_mut().zip(emb.iter()) {
+            *a += *b * weight;
+        }
+        entry.1 += weight;
+    }
+    for (sum, weight) in centroids.values_mut() {
+        if *weight > 0.0 {
+            for x in sum.iter_mut() {
+                *x /= *weight;
+            }
+        }
+        l2_normalize(sum);
+    }
+
+    let mut folded = 0usize;
+    for i in 0..fragments.len() {
+        if surviving.contains(&assignment[i]) {
+            continue;
+        }
+        let best = fragments[i].embedding.as_ref().and_then(|emb| {
+            let mut ranked: Vec<(i32, f32)> = centroids
+                .iter()
+                .map(|(c, (centroid, _))| (*c, cosine(centroid, emb)))
+                .collect();
+            // Ties break on the cluster index, never on hash order.
+            ranked.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.cmp(&b.0))
+            });
+            ranked.first().map(|(c, _)| *c)
+        });
+        assignment[i] = best.unwrap_or_else(|| *surviving.iter().min().unwrap());
+        folded += 1;
+    }
+
+    // Renumber to a contiguous 0..k-1, so a speaker index is still a count.
+    let mut seen: Vec<i32> = assignment.to_vec();
+    seen.sort_unstable();
+    seen.dedup();
+    let renumber: HashMap<i32, i32> = seen
+        .iter()
+        .enumerate()
+        .map(|(new, old)| (*old, new as i32))
+        .collect();
+    for a in assignment.iter_mut() {
+        *a = renumber[a];
+    }
+
+    if folded > 0 {
+        tracing::debug!(
+            folded,
+            speakers = seen.len(),
+            "diarize: folded slight clusters into the voices they resemble"
+        );
+    }
 }
 
 
@@ -709,6 +881,85 @@ fn choose_turns_to_embed(turns: &[SpeakerTurn]) -> Vec<&SpeakerTurn> {
     chosen
 }
 
+/// Split every turn at any silence inside it long enough to be a handover.
+///
+/// The segmentation model decides where speech starts and stops, and it is
+/// wrong about that in a specific, repeatable way: two people whose voices are
+/// alike, one following the other across a short pause, come back as a single
+/// turn attributed to whichever of them it preferred. Nothing downstream can
+/// undo that — the turn is one unit by then, it embeds to a blend of two
+/// people, and both the clustering and the transcript inherit the mistake.
+///
+/// But the pause is in the audio, whatever the model made of it. Splitting there
+/// costs nothing when the model was right: a pause inside one person's speech
+/// yields two pieces of that person, which the clustering puts straight back
+/// together. It is the same trade as everywhere else here — over-segmentation is
+/// repairable and a merge is not.
+///
+/// Each piece is numbered uniquely, so a piece is embedded and clustered on its
+/// own rather than inheriting the segmentation model's opinion of who spoke.
+fn split_turns_at_silence(turns: &[SpeakerTurn], samples: &[f32], sample_rate: u32) -> Vec<SpeakerTurn> {
+    let sr = sample_rate as i64;
+    let frame = ((SILENCE_FRAME_MS * sr) / 1000).max(1) as usize;
+    let min_run = (MIN_SPLIT_SILENCE_MS / SILENCE_FRAME_MS).max(1) as usize;
+
+    let mut out = Vec::with_capacity(turns.len());
+    let mut next_idx = 0i32;
+    let mut emit = |start_ms: i64, end_ms: i64, out: &mut Vec<SpeakerTurn>| {
+        if end_ms > start_ms {
+            out.push(SpeakerTurn { local_idx: next_idx, start_ms, end_ms });
+            next_idx += 1;
+        }
+    };
+
+    for turn in turns {
+        let start = ((turn.start_ms.max(0) * sr) / 1000) as usize;
+        let end = (((turn.end_ms.max(turn.start_ms)) * sr) / 1000) as usize;
+        let end = end.min(samples.len());
+        if end <= start || end - start < frame * 2 {
+            emit(turn.start_ms, turn.end_ms, &mut out);
+            continue;
+        }
+
+        // Frame energies, and the turn's own speech level to judge them against.
+        let energies: Vec<f32> = samples[start..end]
+            .chunks(frame)
+            .map(|c| (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt())
+            .collect();
+        let mean = energies.iter().sum::<f32>() / energies.len() as f32;
+        let threshold = mean * SILENCE_RATIO;
+
+        // Runs of quiet frames long enough to be a handover; the boundary goes
+        // in the middle of each, so neither side carries the other's silence.
+        let mut cut_ms: Vec<i64> = Vec::new();
+        let mut run_start: Option<usize> = None;
+        for i in 0..=energies.len() {
+            let quiet = i < energies.len() && energies[i] <= threshold;
+            match (quiet, run_start) {
+                (true, None) => run_start = Some(i),
+                (false, Some(from)) => {
+                    if i - from >= min_run {
+                        let mid = from + (i - from) / 2;
+                        cut_ms.push(turn.start_ms + mid as i64 * SILENCE_FRAME_MS);
+                    }
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+
+        let mut piece_start = turn.start_ms;
+        for cut in cut_ms {
+            if cut > piece_start {
+                emit(piece_start, cut, &mut out);
+                piece_start = cut;
+            }
+        }
+        emit(piece_start, turn.end_ms, &mut out);
+    }
+    out
+}
+
 /// Split `start..end` into consecutive ranges of at most `max_len`.
 ///
 /// The pieces come out as equal as the range divides, rather than a run of
@@ -846,6 +1097,97 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "clustering 300 fragments took {elapsed:?}"
         );
+    }
+
+    /// A pause long enough to be a handover splits the turn, so two people the
+    /// segmentation model ran together can still be told apart afterwards.
+    #[test]
+    fn a_turn_is_split_at_a_pause() {
+        let sr = 16_000u32;
+        // 1s tone, 400 ms silence, 1s tone — one "turn" holding two stretches.
+        let mut samples = vec![0.0f32; 0];
+        for i in 0..sr as usize {
+            samples.push(((i as f32 / 40.0).sin()) * 0.3);
+        }
+        samples.extend(std::iter::repeat(0.0).take((sr as usize * 400) / 1000));
+        for i in 0..sr as usize {
+            samples.push(((i as f32 / 40.0).sin()) * 0.3);
+        }
+
+        let pieces = split_turns_at_silence(&[turn(0, 0, 2_400)], &samples, sr);
+        assert_eq!(pieces.len(), 2, "pieces = {pieces:?}");
+        assert_ne!(pieces[0].local_idx, pieces[1].local_idx, "numbered separately");
+        // The boundary lands inside the silence, not at either edge of it.
+        assert!(
+            (1_000..=1_400).contains(&pieces[0].end_ms),
+            "cut at {}",
+            pieces[0].end_ms
+        );
+    }
+
+    #[test]
+    fn continuous_speech_is_left_whole() {
+        let sr = 16_000u32;
+        let samples: Vec<f32> = (0..sr as usize * 2)
+            .map(|i| ((i as f32 / 40.0).sin()) * 0.3)
+            .collect();
+        let pieces = split_turns_at_silence(&[turn(0, 0, 2_000)], &samples, sr);
+        assert_eq!(pieces.len(), 1);
+    }
+
+    #[test]
+    fn a_brief_gap_is_punctuation_not_a_handover() {
+        let sr = 16_000u32;
+        let mut samples: Vec<f32> = (0..sr as usize)
+            .map(|i| ((i as f32 / 40.0).sin()) * 0.3)
+            .collect();
+        // 100 ms — under MIN_SPLIT_SILENCE_MS.
+        samples.extend(std::iter::repeat(0.0).take((sr as usize * 100) / 1000));
+        samples.extend((0..sr as usize).map(|i| ((i as f32 / 40.0).sin()) * 0.3));
+
+        let pieces = split_turns_at_silence(&[turn(0, 0, 2_100)], &samples, sr);
+        assert_eq!(pieces.len(), 1, "pieces = {pieces:?}");
+    }
+
+    /// Splitting finely enough to catch a handover leaves slivers. A second of
+    /// speech across a whole recording is not a participant.
+    #[test]
+    fn a_sliver_is_folded_into_the_voice_it_resembles() {
+        let alice = [1.0, 0.02, 0.0];
+        let bob = [0.0, 1.0, 0.02];
+        let mut fragments = vec![
+            frag(Some(&alice), 0, 20_000),
+            frag(Some(&bob), 20_000, 40_000),
+        ];
+        // A 0.5 s scrap of Alice, well under the floor to stand alone.
+        fragments.push(frag(Some(&[0.99, 0.10, 0.0]), 40_000, 40_500));
+
+        let assignment = cluster_fragments(&fragments, None);
+        let groups = partition(&assignment);
+        assert_eq!(groups.len(), 2, "groups = {groups:?}");
+        assert_eq!(
+            assignment[2], assignment[0],
+            "the scrap joins Alice, not Bob"
+        );
+    }
+
+    /// Speaker indices must stay a contiguous 0..k-1 after folding, or a count
+    /// read off the maximum index is wrong.
+    #[test]
+    fn folding_leaves_contiguous_speaker_numbers() {
+        let mut fragments = vec![
+            frag(Some(&[1.0, 0.0, 0.0]), 0, 20_000),
+            frag(Some(&[0.0, 1.0, 0.0]), 20_000, 40_000),
+        ];
+        for i in 0..4 {
+            let t = 40_000 + i * 1_000;
+            fragments.push(frag(Some(&[0.0, 0.0, 1.0]), t, t + 400));
+        }
+        let assignment = cluster_fragments(&fragments, None);
+        let mut seen: Vec<i32> = assignment.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, (0..seen.len() as i32).collect::<Vec<_>>(), "seen = {seen:?}");
     }
 
     /// Three voices, several stretches each, must come back as three speakers

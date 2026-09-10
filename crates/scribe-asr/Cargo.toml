@@ -14,6 +14,12 @@ license.workspace = true
 default = ["onnx"]
 onnx = ["dep:sherpa-onnx"]
 
+# Scores the real diarizer against a conversation with known speakers; needs the
+# ONNX models, so it does not exist in a stub build. See docs/measuring-diarization.md.
+[[example]]
+name = "diarize_check"
+required-features = ["onnx"]
+
 [dependencies]
 scribe-core = { workspace = true }
 serde = { workspace = true }

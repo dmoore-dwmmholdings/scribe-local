@@ -46,3 +46,26 @@ which is how you see *where* it went wrong rather than only how far.
 
 The `DYLD_LIBRARY_PATH` is needed because the sherpa-onnx dylib is emitted next
 to the binary without an rpath entry pointing at itself.
+
+## Where it stands
+
+Measured on the two fixtures `make-diar-fixture.py` builds, scoring the share of
+speech given to the right person:
+
+| fixture | mode | speakers found | correct |
+|---|---|---|---|
+| 3 voices, 55 s | discover | 3 of 3 | 99.6% |
+| 3 voices, 55 s | stated 3 | 3 of 3 | 99.6% |
+| 5 voices, 69 s | discover | 5 of 5 | 99.7% |
+| 5 voices, 69 s | stated 5 | 5 of 5 | 99.7% |
+
+Before turns were split at pauses the three-voice fixture scored 69.7%: every
+time Karen spoke and Samantha followed, the segmentation model ran the two
+together into a single turn and attributed it to Samantha.
+
+A wrong count is honoured rather than overridden — say 4 on the five-voice
+fixture and four speakers come back, at 88.9%. The stated number is the
+caller's to get right.
+
+Again: these are synthesised voices, cleaner and more separable than a real
+room. Use the numbers to compare changes, not to predict field accuracy.
