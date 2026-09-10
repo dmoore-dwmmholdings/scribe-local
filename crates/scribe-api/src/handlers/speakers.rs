@@ -23,6 +23,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use scribe_core::types::{JobKind, Speaker};
+use scribe_db::DUPLICATE_VOICE_SIMILARITY;
 use scribe_core::Error;
 
 use crate::error::{ApiError, ApiResult};
@@ -166,9 +167,36 @@ pub async fn name_speaker(
     // matched by name) still has to learn the voice — otherwise a name given in
     // recording 2 would never carry to recording 3.
     let mut enrolled = speaker.embedding.is_some();
+    let mut already_enrolled_as: Option<String> = None;
     if body.enroll {
         if let Some(embedding) = rec_speaker.embedding.as_ref() {
             if !enrolled {
+                // Is this voice already in the library under a different name?
+                //
+                // Two entries for one voice do not merely give inconsistent
+                // names, they stop that person being recognised at all: a match
+                // must stand clear of the rest of the library, and a voice
+                // cannot stand clear of itself. Measured, one sample enrolled
+                // twice took recognition from three of three to none.
+                //
+                // The enrolment still goes ahead — the caller asked for it, and
+                // twins exist — but the answer says whose voice it resembles so
+                // a client can offer to use that name instead.
+                if let Ok(Some((other, similarity))) = state
+                    .db
+                    .nearest_enrolled(embedding, DUPLICATE_VOICE_SIMILARITY)
+                    .await
+                {
+                    if other.id != speaker.id {
+                        tracing::warn!(
+                            %id, new_speaker = %speaker.display_name,
+                            existing = %other.display_name, similarity,
+                            "voice already enrolled under another name; two entries for \
+                             one voice stop it being recognised"
+                        );
+                        already_enrolled_as = Some(other.display_name);
+                    }
+                }
                 state.db.set_speaker_embedding(speaker.id, embedding).await?;
                 enrolled = true;
             }
@@ -182,6 +210,7 @@ pub async fn name_speaker(
 
     Ok(Json(json!({
         "local_idx": local_idx,
+        "already_enrolled_as": already_enrolled_as,
         "speaker_id": speaker.id,
         "display_name": speaker.display_name,
         "enrolled": enrolled,

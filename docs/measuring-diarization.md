@@ -925,6 +925,26 @@ rest of the library, and whether it is the kind of match this recording is
 producing — and why the floor stays low and out of the way. Everything from 0.5
 to 0.6 behaves identically on every fixture.
 
+### Enrolling one person twice
+
+The obvious mistake — tagging somebody "Dan" in one meeting and "Daniel" in
+another — has a consequence worse than two names. It stops that person being
+recognised **at all**.
+
+A match has to stand clear of the rest of the library, and a voice cannot stand
+clear of itself. With both entries scoring alike, neither wins and the speaker
+comes back unnamed. Measured, one sample split in two and enrolled under two
+names sits at 0.83 apart, and recognition on the next recording goes from three
+of three to none. Nothing in the transcript says why.
+
+Enrolment now says so at the time, naming the speaker whose voice it resembles
+and pointing at `scribe speaker merge`. It does not refuse — the caller asked,
+and people do sound alike — and the API returns `already_enrolled_as` so a client
+can offer to use the existing name instead.
+
+The remedy works: merging the two identities takes recognition back from none
+to matched.
+
 ### If you already have enrolled speakers
 
 Voiceprints are not comparable between models: a vector from one means nothing

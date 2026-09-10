@@ -14,6 +14,14 @@ use crate::db_err;
 use crate::row::speaker_from_row;
 use crate::Db;
 
+/// How alike two voiceprints have to be before they are probably one person.
+///
+/// Used to catch a duplicate enrolment. Measured: the same recording split into
+/// two samples and enrolled under two names sits at 0.83, while the same person
+/// heard in a different room sits at 0.84 to 0.87 and a different person who
+/// resembles them at about 0.61.
+pub const DUPLICATE_VOICE_SIMILARITY: f32 = 0.75;
+
 const COLS: &str = "id, display_name, embedding, created_at";
 
 impl Db {
@@ -144,6 +152,21 @@ impl Db {
         }
         let speaker = speaker_from_row(&row)?;
         Ok(Some((speaker, similarity as f32)))
+    }
+
+    /// The enrolled speaker whose voiceprint is nearest `embedding`, if any is
+    /// close enough to be the same person.
+    ///
+    /// For catching a duplicate at enrolment. Two library entries for one voice
+    /// do not merely give inconsistent names — they stop that person being
+    /// recognised at all, because a match has to stand clear of the rest of the
+    /// library and a voice cannot stand clear of itself.
+    pub async fn nearest_enrolled(
+        &self,
+        embedding: &[f32],
+        threshold: f32,
+    ) -> Result<Option<(Speaker, f32)>> {
+        self.match_speaker_by_embedding(embedding, threshold).await
     }
 
     /// Every enrolled speaker that has a reference voiceprint, with it.

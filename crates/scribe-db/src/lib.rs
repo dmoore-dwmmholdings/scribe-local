@@ -45,6 +45,7 @@ mod error;
 mod row;
 
 pub use error::db_err;
+pub use speakers::DUPLICATE_VOICE_SIMILARITY;
 
 /// The NOTIFY channel workers `LISTEN` on for instant wakeups (design §6/§7).
 /// Matches the trigger payload in `migrations/0001_init.sql`.
