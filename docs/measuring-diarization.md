@@ -636,6 +636,50 @@ will fix, since it is not a mistake:
 | a speaker moves | one person became several | not needed now — the model holds them together |
 | a television is on | something that is not a person became one | **no**, and it makes it worse |
 
+## Somebody on the phone
+
+A hybrid meeting has one participant coming through a telephone: band-limited to
+roughly 300–3400 Hz, compressed, with a little line noise. That is a large
+change to a voice, and it is the most common asymmetric condition there is —
+one person heard through a different channel from everybody else.
+
+```bash
+python3 scripts/degrade-audio.py in.wav out.wav --phone Karen --truth truth.json
+```
+
+**Diarization is fine, and slightly better than fine.**
+
+| fixture | speakers | correct |
+|---|---|---|
+| 4 voices, clean | 4 of 4 | 99.8% |
+| 4 voices, one on the phone | 4 of 4 | 99.9% |
+| 4 voices, one on the phone, in a room | 4 of 4 | 99.4% |
+
+Band-limiting makes that voice *more* distinct from the others, so separating
+them gets marginally easier. Word error rate barely moves either, 1.5% to 1.9%.
+
+**Recognising them across recordings is where it breaks.** Somebody enrolled in
+the room and dialling in next week scores 0.774 against their own voiceprint,
+which is recognised. Add any reverberation to the room the others are sitting
+in and it falls to about 0.57–0.60, and they lose their name — not to the floor
+or to the separation rule, both of which they clear, but to the requirement that
+a match resemble the other matches this recording is producing. The people in
+the room are matching at 0.85–0.90.
+
+**And that requirement cannot be loosened.** The obvious fix is to lower the
+ratio: the three dial-in matches that fail sit at 0.655 to 0.673 of their
+recording's median match, and the false positive this protects against — a
+different person resembling somebody enrolled — sits at 0.616. There looks to be
+room between them.
+
+There is not. In the same recording where the dial-in Daniel scores 0.566
+against his own voiceprint, Karen, who is not enrolled at all, scores 0.566
+against Samantha's. Identical numbers, identical ratios, one right and one
+wrong. Any threshold admitting the first admits the second.
+
+So a dial-in participant in a reverberant room may need naming by hand. The
+transcript is right about who spoke; it is the name that does not carry over.
+
 ## Rooms have things in them that are not people
 
 `scripts/add-room-noise.py` mixes non-speech events into a fixture — keystrokes,

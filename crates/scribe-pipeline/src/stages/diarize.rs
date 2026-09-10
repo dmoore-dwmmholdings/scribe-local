@@ -101,6 +101,15 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// establish what recognition looks like here. Against Daniel and Rishi at 0.99,
 /// a third voice at 0.599 is not a quieter version of the same event. Against
 /// Daniel and Rishi at 0.59 and 0.69, a third at 0.561 plainly is.
+///
+/// The cost of this is real and worth stating. It refuses a participant heard
+/// through a different channel from everybody else — somebody dialling into a
+/// meeting from a phone, where the people in the room match at 0.85 and they
+/// match at 0.57. Loosening it to admit them is not possible: in the recording
+/// where that dial-in scores 0.566 against his own voiceprint, a fourth person
+/// who is not enrolled at all scores 0.566 against somebody else's. Same
+/// number, same ratio, one right and one wrong. A missed name can be given by
+/// hand; a wrong one has to be noticed first.
 const MATCH_CONSISTENCY: f32 = 0.75;
 
 /// Resolve a recording's diarized voices against the enrolled ones, one to one.

@@ -15,6 +15,10 @@ conversation can be scored clean and dirty.
              0.3 is a small meeting room, 0.8 a hard-surfaced one.
   --far      scale one speaker's turns, for somebody sitting away from the mic.
              Needs --truth to know which stretches are theirs.
+  --phone    one speaker comes through a telephone: band-limited to roughly
+             300-3400 Hz, lightly compressed, with a little codec noise. A
+             hybrid meeting has one of these in it almost by definition, and it
+             is a large spectral change to a voice.
   --moving   one speaker drifts nearer and further as the recording goes on, the
              way somebody does who leans back, turns to a whiteboard, or walks.
              Their level and their reverberation change together, because both
@@ -87,6 +91,7 @@ def main():
     ap.add_argument("--reverb", type=float)
     ap.add_argument("--far", action="append", default=[])
     ap.add_argument("--moving", action="append", default=[])
+    ap.add_argument("--phone", action="append", default=[])
     ap.add_argument("--truth")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -132,6 +137,34 @@ def main():
                 b = min(int(turn["end_ms"] * SR / 1000), len(x))
                 x[a:b] = x[a:b] * gain * (1 - distance) + wet[a:b] * gain * distance
         applied.append("moving=" + ",".join(args.moving))
+
+    # Somebody on the phone. The band limit is the point: a voice with its low
+    # end and its top removed is spectrally a different voice, which is exactly
+    # what a speaker embedding measures.
+    if args.phone:
+        if not args.truth:
+            raise SystemExit("--phone needs --truth to know whose turns to band-limit")
+        truth = json.load(open(args.truth))
+        for name in args.phone:
+            for turn in truth["turns"]:
+                if turn["speaker"] != name:
+                    continue
+                a = int(turn["start_ms"] * SR / 1000)
+                b = min(int(turn["end_ms"] * SR / 1000), len(x))
+                seg = x[a:b]
+                if seg.size < 64:
+                    continue
+                # Band-pass by zeroing everything outside the telephone band.
+                spec = np.fft.rfft(seg)
+                freqs = np.fft.rfftfreq(seg.size, 1 / SR)
+                spec[(freqs < 300) | (freqs > 3400)] = 0
+                seg = np.fft.irfft(spec, seg.size)
+                # A little compression and codec hiss, as a phone line has.
+                peak = np.max(np.abs(seg)) or 1.0
+                seg = np.tanh(seg / peak * 1.8) * peak * 0.8
+                seg += rng.standard_normal(seg.size) * peak * 0.01
+                x[a:b] = seg
+        applied.append("phone=" + ",".join(args.phone))
 
     if args.reverb:
         x = reverberate(x, args.reverb, rng)
