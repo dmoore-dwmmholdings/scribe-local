@@ -99,16 +99,20 @@ class Handler(BaseHTTPRequestHandler):
         # of diarizing before summarising.
         kind = ("correct" if "numbered transcript lines" in prompt
                 else "condense" if "part " in prompt and "of a meeting transcript" in prompt
+                else "ask" if "Excerpts from my recordings" in prompt
                 else "summarise")
         # Labels at the start of a transcript line, which is how the pipeline
         # carries who said what into a prompt.
         speakers = sorted(set(re.findall(r"^([A-Z][\w .'-]{0,24}?): ", prompt, flags=re.M))
                           - {"Transcript"})
         roster = re.search(r"The people speaking are: ([^.]+)\.", prompt)
+        # Retrieval excerpts carry their speaker in the header: [1] (Title, 03:42 — Karen)
+        cited = re.findall(r"^\[\d+\] \([^)]*?— ([^)]+)\)", prompt, flags=re.M)
         sys.stderr.write(
             f"[stub-llm] {kind}: {len(prompt)} chars"
             f", labelled lines from: {', '.join(speakers) if speakers else '(none)'}"
-            f", roster: {roster.group(1) if roster else '(none)'}\n"
+            f", roster: {roster.group(1) if roster else '(none)'}"
+            f"{', excerpts attributed to: ' + ', '.join(sorted(set(cited))) if cited else ''}\n"
         )
 
         if self.path.endswith("/chat/completions"):

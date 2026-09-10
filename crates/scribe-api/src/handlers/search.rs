@@ -170,6 +170,7 @@ fn hit_to_citation(hit: &SearchHit) -> Citation {
         recording_title: hit.recording_title.clone(),
         start_ms: hit.start_ms,
         end_ms: hit.end_ms,
+        speaker: hit.speaker.clone(),
         snippet: hit.text.clone(),
     }
 }
@@ -230,6 +231,9 @@ fn build_prompt(question: &str, history: &[AskTurn], hits: &[SearchHit]) -> Vec<
           bare stock sentence.\n\
         - If the question is not about the recordings at all (a greeting, a question about this \
           conversation, a general request), just answer it normally. Do not mention the search.\n\
+        - Each excerpt names who was speaking where the recording knows. Use those names when \
+          the question is about who said or agreed to something, and say when an excerpt has \
+          no name attached.\n\
         - Do not fabricate quotes, speakers, decisions, numbers, or dates. If you are unsure \
           whether something was said, say that plainly.";
 
@@ -260,7 +264,14 @@ fn build_prompt(question: &str, history: &[AskTurn], hits: &[SearchHit]) -> Vec<
             let n = i + 1;
             let title = hit.recording_title.as_deref().unwrap_or("Untitled recording");
             let ts = format_timestamp(hit.start_ms);
-            context.push_str(&format!("[{n}] ({title}{ts})\n{}\n\n", hit.text.trim()));
+            // Who said it goes in the header, so the model can answer "who
+            // agreed to send the note" from excerpts rather than declining to.
+            let who = hit
+                .speaker
+                .as_deref()
+                .map(|s| format!(" — {s}"))
+                .unwrap_or_default();
+            context.push_str(&format!("[{n}] ({title}{ts}{who})\n{}\n\n", hit.text.trim()));
         }
         format!("Excerpts from my recordings:\n\n{context}\n{question}")
     };

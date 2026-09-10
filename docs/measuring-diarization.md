@@ -465,6 +465,23 @@ decisions and action items to them by name where the transcript supports it.
 Anonymous speakers are included on purpose: "Speaker 3" still says a fourth
 person was present and which lines were theirs.
 
+### And the same gap in search
+
+Following the labels the rest of the way turned up a second place they stopped.
+Retrieval chunks carry the speaker index, but a search hit did not carry the
+name and a retrieval excerpt reached the model as:
+
+```
+[1] (Q3 planning, 03:42)
+Nobody has looked at that dashboard since the person who built it moved teams.
+```
+
+So "who mentioned the dashboard?" could not be answered from a transcript that
+records precisely that, and a model told not to invent speakers would correctly
+decline. The excerpt now reads `[1] (Q3 planning, 03:42 — Karen)`, search hits
+and citations carry the name, and the system prompt says the names are there to
+be used.
+
 ## Whisper's word timings
 
 sherpa returns no token timestamps for its Whisper models. The transcriber

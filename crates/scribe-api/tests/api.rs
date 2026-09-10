@@ -444,6 +444,13 @@ async fn full_api_flow() {
     assert!(!hits.is_empty(), "search should return at least one hit: {body}");
     assert_eq!(hits[0]["recording_id"], json!(rec_id));
     assert!(hits[0]["text"].as_str().unwrap().contains("launch"));
+    // A hit says who said it. Without this, "who agreed to send the note?" is
+    // unanswerable from a transcript that records exactly that.
+    assert_eq!(
+        hits[0]["speaker"].as_str(),
+        Some("Speaker 0"),
+        "a search hit carries its speaker: {body}"
+    );
 
     // --- ask --------------------------------------------------------------
     // Ollama isn't running (we pointed it at a dead port), so the answer is a

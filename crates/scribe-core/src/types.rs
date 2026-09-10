@@ -374,6 +374,13 @@ pub struct SearchHit {
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
     pub text: String,
+    /// Who said it, when the recording's speakers are known — an enrolled name
+    /// where the voice was recognised, `Speaker N` where it was not.
+    ///
+    /// Diarization works this out and it was being dropped here, which made
+    /// "who agreed to send the note?" unanswerable from a transcript that
+    /// records exactly that.
+    pub speaker: Option<String>,
     /// Fused relevance score (higher = better).
     pub score: f32,
 }
@@ -385,6 +392,9 @@ pub struct Citation {
     pub recording_title: Option<String>,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
+    /// Who said it, when known. Lets a client show "Karen, 03:42" on a citation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
     pub snippet: String,
 }
 

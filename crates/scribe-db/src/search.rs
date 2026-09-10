@@ -107,10 +107,12 @@ impl Db {
                ) s GROUP BY id \
              ) \
              SELECT c.recording_id, r.title AS recording_title, c.start_ms, c.end_ms, c.text, \
+                    coalesce(sp.display_name, 'Speaker ' || c.local_idx::text) AS speaker, \
                     f.score::float8 AS score \
              FROM fused f \
              JOIN chunks c ON c.id = f.id \
              JOIN recordings r ON r.id = c.recording_id \
+             LEFT JOIN recording_speakers rs ON rs.recording_id = c.recording_id AND rs.local_idx = c.local_idx LEFT JOIN speakers sp ON sp.id = rs.speaker_id  \
              ORDER BY f.score DESC, c.id \
              LIMIT $5"
         );
@@ -147,9 +149,11 @@ impl Db {
         let filter_sql = filter_clause(filters, 2);
         let sql = format!(
             "SELECT c.recording_id, r.title AS recording_title, c.start_ms, c.end_ms, c.text, \
+                    coalesce(sp.display_name, 'Speaker ' || c.local_idx::text) AS speaker, \
                     ts_rank_cd(c.tsv, plainto_tsquery('english', $1))::float8 AS score \
              FROM chunks c \
              JOIN recordings r ON r.id = c.recording_id \
+             LEFT JOIN recording_speakers rs ON rs.recording_id = c.recording_id AND rs.local_idx = c.local_idx LEFT JOIN speakers sp ON sp.id = rs.speaker_id  \
              WHERE c.tsv @@ plainto_tsquery('english', $1){filter_sql} \
              ORDER BY score DESC, c.id \
              LIMIT $2"
@@ -173,9 +177,11 @@ impl Db {
         let filter_sql = filter_clause(filters, 2);
         let sql = format!(
             "SELECT c.recording_id, r.title AS recording_title, c.start_ms, c.end_ms, c.text, \
+                    coalesce(sp.display_name, 'Speaker ' || c.local_idx::text) AS speaker, \
                     (1 - (c.embedding <=> $1))::float8 AS score \
              FROM chunks c \
              JOIN recordings r ON r.id = c.recording_id \
+             LEFT JOIN recording_speakers rs ON rs.recording_id = c.recording_id AND rs.local_idx = c.local_idx LEFT JOIN speakers sp ON sp.id = rs.speaker_id  \
              WHERE c.embedding IS NOT NULL{filter_sql} \
              ORDER BY c.embedding <=> $1 \
              LIMIT $2"
@@ -257,6 +263,7 @@ fn hit_from_row(row: &PgRow) -> Result<SearchHit> {
         start_ms: row.try_get("start_ms").map_err(db_err)?,
         end_ms: row.try_get("end_ms").map_err(db_err)?,
         text: row.try_get("text").map_err(db_err)?,
+        speaker: row.try_get("speaker").map_err(db_err)?,
         score: score as f32,
     })
 }

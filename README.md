@@ -467,6 +467,7 @@ POST   /recordings/{id}/rediarize          redo speaker detection, keeping the t
 POST   /recordings/{id}/reprocess          re-run the whole pipeline from the audio
 GET    /search?q=…                         hybrid full-text + vector semantic search
 POST   /ask                                RAG: {question} → {answer, citations}
+                                           (hits and citations name the speaker)
 GET    /processing-schedule                weekly windows + live status + queue counts
 PUT    /processing-schedule                replace the weekly windows
 POST   /processing-schedule/override       run now / pause now / clear
