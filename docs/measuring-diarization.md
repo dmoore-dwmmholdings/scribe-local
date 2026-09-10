@@ -626,9 +626,17 @@ and a better embedding solves it.
 **What it cost.** One fixture: eight voices, clean audio, where two women merge
 and seven speakers come back instead of eight. That is a *counting* failure, not
 a discrimination one — told there are eight, the same model returns eight
-speakers at 99.9%, so the embeddings separate them and the merge sequence is
-read one step too far. It is also the case where a user is most likely to know
-the number.
+speakers at 99.9%, so the embeddings separate them perfectly well.
+
+The merge sequence shows why no rule recovers it. Merging down to eight clusters
+goes 0.58, 0.56, 0.56, 0.53, 0.45, 0.38, 0.34 — every one of those rejoining one
+person's own pieces — and then joins two different women at 0.31, with the
+merges either side at 0.34 and 0.30. One speaker's own variation is as wide as
+the gap between two different people. Sweeping the cut threshold from 0.70 to
+0.90 changes nothing about this fixture at any value, while 0.70 to 0.85 leave
+every other fixture identical and 0.90 breaks two of them. There is no signal
+here to find, and it is the case where a user is most likely to know the number
+anyway.
 
 **And enrollment, which is where the difference is largest.** The same person
 heard through a different room:

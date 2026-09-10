@@ -683,9 +683,30 @@ fn fold_slight_speakers(fragments: &[Fragment], assignment: &mut [i32]) {
 /// sequence - joining takes of one voice looks consistent, and joining two
 /// people is a visible step down from whatever "consistent" meant in this
 /// recording.
-const RELATIVE_DROP: f32 = 0.8;
+/// Swept from 0.70 to 0.90 after the embedding model changed, since the value
+/// was originally chosen against a different model's similarity distribution.
+/// Everything from 0.70 to 0.85 gives an identical answer on every fixture;
+/// 0.90 breaks two. A plateau rather than an edge, and 0.8 sits in it.
+const RELATIVE_DROP_DEFAULT: f32 = 0.8;
+
+/// Experiment hook: `SCRIBE_RELATIVE_DROP` overrides it, which is how the value
+/// is checked against a change of embedding model.
+fn relative_drop() -> f32 {
+    std::env::var("SCRIBE_RELATIVE_DROP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RELATIVE_DROP_DEFAULT)
+}
 
 /// Decide where to stop merging, using only this recording's own numbers.
+///
+/// There are recordings where the numbers do not contain the answer. Eight
+/// voices in a clean room merge down through 0.58, 0.56, 0.53, 0.45, 0.38,
+/// 0.34 — all of those joining one person's own pieces back together — and then
+/// join two different women at 0.31, with the merges either side at 0.34 and
+/// 0.30. One speaker's variation is as wide there as the gap between two
+/// people, so no threshold on this sequence separates them and none was found
+/// by sweeping. Stating the participant count does, completely.
 ///
 /// The obvious alternative — cut where the sequence falls away most steeply,
 /// the standard elbow — was measured against this across fourteen fixtures and
@@ -709,6 +730,7 @@ const RELATIVE_DROP: f32 = 0.8;
 ///
 /// Returns how many merges to keep.
 fn choose_cut(history: &[(usize, f32, (usize, usize))]) -> usize {
+    let drop = relative_drop();
     let mut accepted: Vec<f32> = Vec::new();
     for (m, (count, sim, _)) in history.iter().enumerate() {
         // Above the sanity bound, keep merging whatever it looks like: that
@@ -717,7 +739,7 @@ fn choose_cut(history: &[(usize, f32, (usize, usize))]) -> usize {
             // With nothing accepted yet there is no family to compare against;
             // a fragment is perfectly similar to itself, so use 1.0.
             let within = median(&accepted).unwrap_or(1.0);
-            if *sim < RELATIVE_DROP * within {
+            if *sim < drop * within {
                 return m;
             }
         }
