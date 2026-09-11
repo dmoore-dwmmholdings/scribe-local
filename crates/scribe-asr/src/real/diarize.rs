@@ -899,6 +899,49 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     // Diagnostic: how tightly each surviving cluster holds together, measured
     // from the raw embeddings rather than the merged similarities. A cluster
     // holding two people should be looser than one holding a voice.
+    // Diagnostic: for every pair of substantial clusters, how their similarity
+    // depends on the time between the fragments compared. A speaker whose voice
+    // drifts should look like herself across a short gap and less like herself
+    // across a long one; two different people should look equally unalike at
+    // every gap. Unlike a raw similarity this is a shape, so it does not depend
+    // on the microphone.
+    if std::env::var("SCRIBE_DIARIZE_DRIFT").is_ok() {
+        let mid = |f: usize| -> i64 {
+            let t = &fragments[f].turns;
+            if t.is_empty() { 0 } else { (t[0].start_ms + t[t.len() - 1].end_ms) / 2 }
+        };
+        eprintln!("-- drift: similarity by time gap, per cluster pair --");
+        for (a, ma) in final_clusters.iter().enumerate() {
+            for (b, mb) in final_clusters.iter().enumerate().skip(a + 1) {
+                if ma.len() < 2 || mb.len() < 2 {
+                    continue;
+                }
+                let mut pairs: Vec<(i64, f32)> = Vec::new();
+                for &x in ma {
+                    for &y in mb {
+                        let (Some(ex), Some(ey)) =
+                            (fragments[x].embedding.as_ref(), fragments[y].embedding.as_ref())
+                        else { continue };
+                        if ex.is_empty() || ey.is_empty() { continue }
+                        pairs.push(((mid(x) - mid(y)).abs(), cosine(ex, ey)));
+                    }
+                }
+                if pairs.len() < 6 {
+                    continue;
+                }
+                pairs.sort_by_key(|(g, _)| *g);
+                let third = pairs.len() / 3;
+                let near: f32 = pairs[..third].iter().map(|(_, s)| *s).sum::<f32>() / third as f32;
+                let far: f32 = pairs[pairs.len() - third..].iter().map(|(_, s)| *s).sum::<f32>()
+                    / third as f32;
+                eprintln!(
+                    "   {a:>2} x {b:<2}  closest-third {near:.4}  farthest-third {far:.4}                       drop {:.4}",
+                    near - far
+                );
+            }
+        }
+    }
+
     if std::env::var("SCRIBE_DIARIZE_COHESION").is_ok() {
         eprintln!("-- cluster cohesion at cut ({} clusters) --", final_clusters.len());
         for (idx, members) in final_clusters.iter().enumerate() {

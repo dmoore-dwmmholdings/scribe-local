@@ -475,8 +475,36 @@ The margin is 0.036, and the failure mode is two people merged into one, which
 is worse than an extra row in the speaker list and harder to notice.
 
 The two scale-free formulations are the ones that would have been safe to ship,
-and neither separates. That is the result: not that a merge rule is impossible,
-but that what it needs is not in the quantities that survive a change of room.
+and neither separates.
+
+**A fourth, after the linkage result showed the information is there.** If a
+drifting speaker is what breaks average linkage, then her two clusters should
+look like each other across a short gap and less like each other across a long
+one, while two different people should look equally unalike at every gap. That
+is a shape rather than a level, so it would survive a change of microphone.
+`SCRIBE_DIARIZE_DRIFT=1` measures it — mean similarity over the closest third of
+fragment pairs by time, minus the farthest third:
+
+| | largest drop across any cluster pair |
+|---|---|
+| 6 voices, reverb+noise — **counts correctly** | **+0.0867** |
+| mover + reverb — over-counts | +0.0863 |
+| fast + reverb — over-counts | +0.0762 |
+| 8 voices, reverb+noise — counts correctly | +0.0570 |
+| 4 voices, one moving — counts correctly | +0.0167 |
+| brief 5th speaker — counts correctly | +0.0103 |
+| 11 min degraded — counts correctly | +0.0049 |
+
+The recording with the largest drift of all is one that gets the right answer,
+by a hair over the mover. Its drop comes from a pair at 0.29 falling to 0.21 —
+two people who never resembled each other, where the difference is noise.
+Dividing the drop by the near value to account for that makes it worse: 29.5%
+for the correct recording against 16.4% for the mover.
+
+So: four formulations, and the only one that separates is the raw similarity,
+which is the one that cannot be trusted to transfer. Not that a merge rule is
+impossible — single linkage proves the information is present — but none of the
+statistics tried so far isolates it in a form that survives a change of room.
 
 ## The mover who becomes three people
 
