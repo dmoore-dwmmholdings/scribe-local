@@ -360,6 +360,57 @@ now splits a voice and returns seven speakers for six. It is a real condition
 and a real failure, so it is measured on every run without gating, like the
 other two. Reverb v1 returns six here.
 
+## The merge rule, looked for three ways and not found
+
+Two conditions on this page fail the same way. Fast conversation in a
+reverberant room returns seven speakers for six; a speaker who moves about one
+returns eight. Both are counting failures rather than discrimination failures —
+told the number, both come back at 98% or better — and both would be fixed by
+the same thing: a rule that merges two clusters that are really one person. The
+cohesion step-back is its mirror and only ever splits.
+
+Three candidate signals, measured across ten fixtures of which two over-count.
+
+**Closeness against the pair's own internal spread**, which is the shape that
+works for the step-back. It does not work here: the two over-counting recordings
+sit at 1.043 and 0.931 of their spread, and the eleven-minute degraded recording
+— which counts correctly — sits at 1.461, above both.
+
+**Closeness against the median link in the same recording**, which is scale-free
+and so indifferent to what microphone was used. Also no: over-counting at 2.627
+and 2.371 against a correct range of 2.113 to 3.775, the highest of which is an
+eight-voice recording that got the right answer.
+
+**The raw similarity between the two closest real speakers.** This separates:
+
+| | strongest link between two participants |
+|---|---|
+| fast + reverb (7 for 6) | **0.6410** |
+| mover + reverb (8 for 6) | **0.6074** |
+| 8 voices, reverb+noise | 0.5715 |
+| 6 voices, clean | 0.5524 |
+| 4 voices, one moving | 0.5435 |
+| brief 5th speaker | 0.5319 |
+| 4 voices, reverb+noise | 0.5038 |
+| half of it silence | 0.4965 |
+| 6 voices, reverb+noise | 0.4907 |
+| 11 min, degraded | 0.4638 |
+
+A threshold near 0.59 would fix both failures and touch nothing else.
+
+**It is not being taken, for the reason already written into `choose_cut`.**
+That function refuses to use a fixed cosine value precisely because what "the
+same person" scores depends on the microphone, the room and the voices — which
+is why the speaker count is read off each recording's own merge sequence. Every
+fixture here shares one synthesiser, one set of eight voices and one degradation
+script, so a constant fitted across them is fitted to a single acoustic setup.
+The margin is 0.036, and the failure mode is two people merged into one, which
+is worse than an extra row in the speaker list and harder to notice.
+
+The two scale-free formulations are the ones that would have been safe to ship,
+and neither separates. That is the result: not that a merge rule is impossible,
+but that what it needs is not in the quantities that survive a change of room.
+
 ## The mover who becomes three people
 
 A six-voice recording where one person walks about a reverberant room comes back
@@ -431,77 +482,6 @@ Both are a one-file change, for anyone who wants to measure their own material:
 curl -L -o models/diarization/segmentation.onnx \
   https://huggingface.co/csukuangfj/sherpa-onnx-reverb-diarization-v1/resolve/main/model.onnx
 ```
-
-## The mover who becomes three people
-
-A six-voice recording where one person walks about a reverberant room comes back
-with **eight speakers at 91.3%**. Moira is split three ways — 14.5 s, 9.2 s and
-5.2 s — and both extra pieces clear the participant floor comfortably, so
-nothing folds them.
-
-Told there are six, the same recording scores 99.6%. The embeddings separate
-everyone perfectly; her own variation across the recording is simply wider than
-the gap between her and the others, and no cut of the merge sequence puts those
-three pieces together without joining somebody else too.
-
-**What would fix it is a merge, and there is no merge rule here.** The cohesion
-step-back added earlier only ever *increases* the speaker count — it exists for
-two people sharing a cluster. This is the mirror image, and the signal for it is
-too weak to act on: in this recording the two over-split clusters sit at 0.5966
-against their own internal spreads of 0.5911 and 0.6107, and in a
-correctly-counted six-voice recording the closest pair of substantial clusters
-sits at 0.5068. One case against one case, a margin of nine hundredths, and the
-failure mode of getting it wrong is two real people merged into one — which is
-worse than an extra row in the speaker list. Not built.
-
-Measured on every run without gating:
-
-```
-  note  6 voices, one moving, reverb    8 spk, 91.3%   (wants 6; was 8 spk, 91.3%)
-```
-
-## A different segmentation model is better at some of this
-
-The segmentation model had never been swapped, only the embedding — and it is
-92% of diarization time and the thing that decides where turns begin. Rev.ai's
-reverb-diarization models are drop-in replacements for pyannote 3.0.
-
-**v2 is not worth considering**: 374 MB against 6 MB, 3.7x slower, and worse
-(95.2% where pyannote gets 97.4%).
-
-**v1 is 9 MB, exactly as fast, and better at most of what is still wrong here**
-— with its own per-window clustering re-tuned to 0.6, since that constant is
-calibrated to a model's segment characteristics:
-
-| fixture | pyannote 3.0 | reverb v1 |
-|---|---|---|
-| 6 voices, fast conversation | 97.0% | **99.7%** |
-| 6 voices, fast + reverb | 6 spk, 92.8% | **6 spk, 96.6%** |
-| 6 voices, reverb+noise | 97.4% | **99.1%** |
-| 8 voices, reverb+noise | 97.7% | **99.3%** |
-| 6 voices, moving + reverb | 8 spk, 91.3% | **7 spk, 94.1%** |
-| 4 voices, one moving | **99.8%** | 95.6% |
-| everything else | — | within 0.5 either way |
-
-Five conditions better, one worse, and the one that is worse is a single fixture
-rather than a class: three other moving-speaker recordings — six voices with a
-different mover, the same with reverb, and an eleven-minute one — are equal or
-better under v1.
-
-**The default is unchanged all the same.** Switching costs every installation a
-new model download, it fails a committed check (`4 voices, one moving` has a
-99.0 floor and v1 scores 95.6), and the gains are on conditions this page
-already handles at 92–98% rather than on anything broken. Swapping is a
-one-file change for anyone whose rooms are reverberant or whose meetings are
-fast:
-
-```bash
-curl -L -o models/diarization/segmentation.onnx \
-  https://huggingface.co/csukuangfj/sherpa-onnx-reverb-diarization-v1/resolve/main/model.onnx
-```
-
-with `[asr]`-side clustering set to 0.6 (`SCRIBE_CLUSTER_THRESHOLD`) to get the
-numbers above.
 
 ## Four other embedding models, none of them better
 
