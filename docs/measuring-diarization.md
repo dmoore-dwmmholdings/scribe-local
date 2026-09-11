@@ -320,6 +320,17 @@ being told there is one, and the shortcut must never swallow a recording that
 turns out to hold two. Stating 1 over a four-voice meeting returns one speaker
 at 27%, which is the honest consequence of telling it something untrue.
 
+**Windowing does not avoid it.** Long audio is already handed to the model in
+ten-minute pieces, so the obvious cheap mitigation is to hand it smaller ones.
+Of the four recordings that crash at the default, three still crash in
+twenty-second pieces (`SCRIBE_DIARIZE_WINDOW_MS`). Whatever is read out of
+bounds is not a function of how much the model is given at once.
+
+What remains for a recording whose speaker count was never stated is process
+isolation — running the segmentation in a child process so a crash fails one
+job instead of the worker and everything else in flight. That is the correct
+fix and it has not been done.
+
 The suite runs this case on every `--full` and reports what happened without
 dying with it:
 

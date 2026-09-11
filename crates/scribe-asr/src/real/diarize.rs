@@ -376,7 +376,16 @@ impl SherpaDiarizer {
     /// a recording's speaker count depend on which side of ten minutes it fell.
     fn diarize_windowed(&self, audio: &WavData, expected: Option<i32>) -> Result<Diarization> {
         let sr = audio.sample_rate;
-        let window = match ((DIARIZE_WINDOW_MS * sr as i64) / 1000) as usize {
+        // SCRIBE_DIARIZE_WINDOW_MS shortens the window, which was worth trying
+        // against the segmentation crash and does not help: of four recordings
+        // that crash at the ten-minute default, three still crash when the same
+        // audio is handed over in twenty-second pieces. Whatever the model
+        // reads out of bounds, it is not a function of how much it is given.
+        let window_ms = std::env::var("SCRIBE_DIARIZE_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DIARIZE_WINDOW_MS);
+        let window = match ((window_ms * sr as i64) / 1000) as usize {
             // A sample rate so low the window rounds to nothing: one window.
             0 => audio.samples.len().max(1),
             w => w,
