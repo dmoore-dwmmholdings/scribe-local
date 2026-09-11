@@ -685,6 +685,21 @@ fn cluster_worst_pair(fragments: &[Fragment], members: &[usize]) -> Option<f32> 
     Some(worst)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Linkage {
+    Average,
+    Single,
+    Complete,
+}
+
+fn linkage() -> Linkage {
+    match std::env::var("SCRIBE_LINKAGE").ok().as_deref() {
+        Some("single") => Linkage::Single,
+        Some("complete") => Linkage::Complete,
+        _ => Linkage::Average,
+    }
+}
+
 fn cohesion_ratio() -> f32 {
     std::env::var("SCRIBE_COHESION_RATIO")
         .ok()
@@ -794,7 +809,15 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
             if !alive[k] || k == i || k == j {
                 continue;
             }
-            let merged = (sim[i * n + k] * wi + sim[j * n + k] * wj) / (wi + wj);
+            // SCRIBE_LINKAGE=single follows a chain instead of averaging it,
+            // which is what a speaker whose voice drifts across a recording
+            // looks like: her first and last stretches do not match, but every
+            // neighbouring pair does. Measured, not shipped — see the docs.
+            let merged = match linkage() {
+                Linkage::Single => sim[i * n + k].max(sim[j * n + k]),
+                Linkage::Complete => sim[i * n + k].min(sim[j * n + k]),
+                Linkage::Average => (sim[i * n + k] * wi + sim[j * n + k] * wj) / (wi + wj),
+            };
             sim[i * n + k] = merged;
             sim[k * n + i] = merged;
         }

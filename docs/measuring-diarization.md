@@ -393,6 +393,40 @@ now splits a voice and returns seven speakers for six. It is a real condition
 and a real failure, so it is measured on every run without gating, like the
 other two. Reverb v1 returns six here.
 
+## What the mover actually costs: it is the linkage, not the tuning
+
+The merge sequence joins clusters by average linkage — the merged cluster's
+similarity to everything else is the size-weighted mean of its two halves. That
+choice is why a speaker who walks about the room comes back as three people, and
+it is not a tuning failure that a constant could fix.
+
+Her first stretch and her last do not resemble each other. Every neighbouring
+pair does. Average linkage averages that chain away; single linkage follows it.
+`SCRIBE_LINKAGE` switches between them:
+
+| fixture | average (default) | single | complete |
+|---|---|---|---|
+| 6 voices, one moving, reverb | 8 spk, 89.3% | **6 spk, 97.8%** | 9 spk, 85.5% |
+| 4 voices, one moving | **4 spk, 99.8%** | **4 spk, 99.8%** | 5 spk, 95.2% |
+| 6 voices, reverb+noise | **6 spk, 98.1%** | 7 spk, 85.5% | 8 spk, 91.2% |
+| 8 voices, reverb+noise | **8 spk, 98.6%** | 7 spk, 86.8% | **8 spk, 98.6%** |
+| 6 voices, fast + reverb | 7 spk, 90.8% | 5 spk, 70.5% | 8 spk, 87.6% |
+| 4 voices, 11 min, degraded | **4 spk, 99.5%** | 3 spk, 75.8% | 4 spk, 99.3% |
+| brief 5th speaker | **5 spk, 99.6%** | **5 spk, 99.6%** | 6 spk, 94.4% |
+
+Single linkage fixes the mover completely — the right count and 8.5 points — and
+chains unrelated people together everywhere else, which is the classic failure
+of single linkage and the reason average linkage is the default. An
+eleven-minute recording comes back as three speakers instead of four. Complete
+linkage is worse or equal everywhere except one tie.
+
+So the mover is not an open tuning question. She is the case where average
+linkage's virtue — refusing to chain — is exactly the wrong instinct, and the
+recording that needs the other instinct is rarer than the recordings that would
+be ruined by it. The information is demonstrably there, which the earlier
+sections could not say; what is missing is a way to use it on her without using
+it on everybody.
+
 ## The merge rule, looked for three ways and not found
 
 Two conditions on this page fail the same way. Fast conversation in a
