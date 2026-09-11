@@ -326,10 +326,20 @@ Of the four recordings that crash at the default, three still crash in
 twenty-second pieces (`SCRIBE_DIARIZE_WINDOW_MS`). Whatever is read out of
 bounds is not a function of how much the model is given at once.
 
-What remains for a recording whose speaker count was never stated is process
-isolation — running the segmentation in a child process so a crash fails one
-job instead of the worker and everything else in flight. That is the correct
-fix and it has not been done.
+**The first thing to try is an upgrade.** This is pinned to sherpa-onnx 1.13.2
+and 1.13.8 exists — six patch releases, any of which could be the out-of-bounds
+read. It does not build as a drop-in: `FastClusteringConfig` gains
+`compute_confidence` and `OfflineSpeakerSegmentationPyannoteModelConfig` gains
+`window_shift_ratio`, both of which need a value here. That second field is also
+the segmentation window/shift knob this page looked for and could not find in
+1.13.2, so the upgrade is worth doing for its own sake even if the crash
+survives it. Not attempted beyond the build error, because changing the speech
+library underneath every number here needs the whole suite re-run behind it.
+
+If the crash survives the upgrade, what remains for a recording whose speaker
+count was never stated is process isolation — running segmentation in a child
+process so a crash fails one job instead of the worker and everything else in
+flight. That is the correct fix and it has not been done.
 
 The suite runs this case on every `--full` and reports what happened without
 dying with it:
