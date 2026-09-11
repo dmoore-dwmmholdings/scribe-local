@@ -751,6 +751,14 @@ code would have said why. It is still not a route to handovers shorter than the
 split threshold — 0.05 does not rescue fast conversation, it costs six voices a
 speaker.
 
+Its sibling `min_duration_on` **is** inert, and this time the claim is made
+against fixtures that do not repeat themselves: 0.1 through 0.6 give identical
+numbers on eight voices, six voices, fast conversation and the brief
+participant. It is live — 5 s collapses a six-voice recording to four speakers
+at 53.3% — so that is a measurement rather than a disconnected knob. Shortest
+stretch that counts as speech simply does not bind at any sane value, because
+the split and the participant floor downstream are stricter than it is.
+
 **Splitting a fragment and comparing its halves.** If a fragment secretly holds
 two people, its two halves should not match, and a second pass could find the
 handovers the silence split cannot reach. Measured by cutting each fragment at

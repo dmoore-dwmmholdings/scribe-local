@@ -66,6 +66,11 @@ const COHESION_RATIO: f32 = 0.73;
 /// right value happens to be the upstream default, so nothing needed changing,
 /// but a future sherpa release moving it would cost a speaker on an eight-voice
 /// recording and nothing would say why.
+///
+/// `MIN_DURATION_ON` really is inert, measured the same way: 0.1 through 0.6
+/// are identical on every fixture, and it is live (5.0 collapses six voices to
+/// four at 53.3%). The split and the participant floor downstream are stricter
+/// than it is, so it never binds.
 const MIN_DURATION_ON: f32 = 0.3;
 const MIN_DURATION_OFF: f32 = 0.5;
 
