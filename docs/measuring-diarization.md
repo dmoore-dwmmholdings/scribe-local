@@ -11,6 +11,39 @@ on its own and needs only the two diarization models. `transcript_check` (in
 real diarization, and the merge stage's own labelling — and needs an ASR
 checkpoint as well.
 
+## How to read the numbers on this page
+
+They were not all measured against the same fixtures, and the difference
+matters.
+
+Until part-way through this work, `build_lines` handed every voice the sentence
+bank in the same order, so four speakers said the same sentence four times
+running and any two neighbouring turns held the same words. That flattered
+transcription badly — a transducer's language model was being handed the answer
+— and slightly understated speaker detection. Fixing it moved a lot of numbers:
+
+| | before the fix | after |
+|---|---|---|
+| word error rate, 4 voices degraded | 2.7% | **8.5%** |
+| word error rate, 11 min degraded | 5.0% | **11.1%** |
+| 6 voices, reverb+noise | 97.4% | **98.1%** |
+| 8 voices, reverb+noise | 97.7% | **98.6%** |
+| 6 voices, fast conversation | 97.0% | **99.8%** |
+| 6 voices, fast + reverb | 6 spk, 92.8% | 7 spk, 90.8% |
+| 4 voices, half silent, degraded | 5 spk, 97.8% | **4 spk, 99.8%** |
+
+**The current figures are the ones in the regression suite**, which is the only
+place that is re-run in full. `./scripts/diar-regression.sh --full` prints them.
+
+Sections written before the fix keep the numbers they were written with, because
+they are the record of what was measured and when — a section that says a change
+took a recording from 83.2% to 97.4% is describing the comparison that was
+actually run. Where a conclusion drawn before the fix has been re-tested, the
+section says so and gives both. Three were re-tested: the embedding models
+(held, with wider margins), `min_duration_off` (did not hold — it was called
+inert and is a sharp optimum), and the reverb-v1 segmentation model (did not
+hold — the recommendation was withdrawn).
+
 ## Get the models
 
 The diarization pair is about 107 MB and is all `diarize_check` needs:
