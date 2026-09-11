@@ -232,6 +232,10 @@ if [ "${1:-}" = "--full" ]; then
   SCRIBE_FIXTURE_VOICES="Daniel" build dictation 14
   degrade dictation dirty --reverb 0.4 --snr 15
   crashcheck "70 s dictation in a bad room" dictation dirty
+  # The same recording, with the count stated. Saying "one voice" skips
+  # segmentation entirely — nothing left for it to decide — which avoids the
+  # crash above and is about ten times faster.
+  check "the same, told it is one voice"  dictation dirty 1 99.0 1
 
   SCRIBE_FIXTURE_GAP=300-9000 build lull 40
   degrade lull dirty --reverb 0.4 --snr 15

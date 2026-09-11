@@ -305,11 +305,61 @@ impl SherpaDiarizer {
 impl Diarizer for SherpaDiarizer {
     fn diarize(&self, wav_path: &Path, expected_speakers: Option<i32>) -> Result<Diarization> {
         let audio = wav::read_wav(wav_path)?;
+
+        // Somebody dictating has told us there is one voice, and segmentation
+        // and clustering have nothing left to decide. Running them anyway is
+        // not merely wasted work: the pyannote segmentation model reads out of
+        // bounds on some single-speaker recordings and takes the process down
+        // with SIGBUS, which in the worker kills every job in flight. Measured
+        // over eighteen one-voice recordings in reverberant, noisy rooms, four
+        // crashed; over ten multi-speaker ones, none did.
+        //
+        // Only when the count was *stated*. Discovering one voice is a weaker
+        // claim than being told there is one, and this must never swallow a
+        // recording that turns out to hold two.
+        if expected_speakers == Some(1) {
+            return self.single_speaker(&audio);
+        }
+
         self.diarize_windowed(&audio, expected_speakers)
     }
 }
 
 impl SherpaDiarizer {
+    /// The whole recording as one speaker, without asking the segmentation
+    /// model anything.
+    ///
+    /// Turns come from the same silence split the normal path uses, so the
+    /// merge stage still breaks utterances where the speaker stopped talking
+    /// and a word timed into silence is still visible as one. The embedding is
+    /// still computed — that is what a voiceprint match needs, and it is the
+    /// segmentation model that crashes, not the extractor — so a dictation can
+    /// still be named from an enrolled voice.
+    fn single_speaker(&self, audio: &WavData) -> Result<Diarization> {
+        let whole = SpeakerTurn { local_idx: 0, start_ms: 0, end_ms: audio.duration_ms() };
+        let mut turns = split_turns_at_silence(&[whole], &audio.samples, audio.sample_rate);
+        for t in turns.iter_mut() {
+            t.local_idx = 0;
+        }
+        if turns.is_empty() {
+            turns.push(whole);
+        }
+
+        let extractor = build_extractor(&self.paths, &self.device, self.num_threads)?;
+        let embeddings = compute_speaker_embeddings(
+            &extractor,
+            &audio.samples,
+            audio.sample_rate,
+            &turns,
+        )?;
+
+        Ok(Diarization {
+            num_speakers: 1,
+            turns,
+            embeddings,
+        })
+    }
+
     /// Diarize in windows, then decide the recording's speaker set once, over
     /// every window at once.
     ///

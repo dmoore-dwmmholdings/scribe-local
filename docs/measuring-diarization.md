@@ -302,6 +302,24 @@ swapping trades this crash for that. See the section below.
 |---|---|---|---|
 | 70 s dictation, reverb+noise | **exit 138** | 1 spk | 1 spk |
 
+**How often.** Eighteen one-voice recordings through six voices and three
+degradations: four crashed, a rate of about one in five. Ten multi-speaker
+degraded recordings: none. It is specific to recordings holding a single voice,
+which is to say dictation — the one thing a user is most likely to record alone
+in a room.
+
+**Saying "one voice" avoids it entirely.** If the participant count is stated as
+1 there is nothing for segmentation or clustering to decide, so neither runs:
+turns come from the silence split and the embedding is still taken, which is
+what a voiceprint match needs. All four recordings that crashed come back at 1
+speaker and 100.0%, and it is about ten times faster — 5.2 s to 0.5 s on a
+seventy-second recording, because segmentation was 92% of the work.
+
+Only a *stated* count does this. Discovering one voice is a weaker claim than
+being told there is one, and the shortcut must never swallow a recording that
+turns out to hold two. Stating 1 over a four-voice meeting returns one speaker
+at 27%, which is the honest consequence of telling it something untrue.
+
 The suite runs this case on every `--full` and reports what happened without
 dying with it:
 
