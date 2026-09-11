@@ -925,13 +925,40 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
                     best = (link, other);
                 }
             }
+            // Every link from this cluster to the others, so the closest can be
+            // judged against what "a different person" looks like in this
+            // recording rather than against a fixed number.
+            let mut links: Vec<f32> = Vec::new();
+            for (other, others) in final_clusters.iter().enumerate() {
+                if other == idx {
+                    continue;
+                }
+                let oembs: Vec<&Vec<f32>> = others
+                    .iter()
+                    .filter_map(|&f| fragments[f].embedding.as_ref())
+                    .filter(|e| !e.is_empty())
+                    .collect();
+                if oembs.is_empty() || embs.is_empty() || others.len() < 2 {
+                    continue;
+                }
+                let mut acc = 0.0f64;
+                let mut n = 0u64;
+                for a in &embs {
+                    for b in &oembs {
+                        acc += cosine(a, b) as f64;
+                        n += 1;
+                    }
+                }
+                links.push((acc / n as f64) as f32);
+            }
+            let link_median = median(&links).unwrap_or(f32::NAN);
             let host_spread = if best.1 == usize::MAX {
                 f32::NAN
             } else {
                 cluster_worst_pair(fragments, &final_clusters[best.1]).unwrap_or(f32::NAN)
             };
             eprintln!(
-                "   cluster {idx:>2}  {:>2} frags  {speech:>7} ms  mean {mean:.4}  worst {worst:.4}                   nearest {:>2} at {:.4} (its own spread {host_spread:.4})",
+                "   cluster {idx:>2}  {:>2} frags  {speech:>7} ms  mean {mean:.4}  worst {worst:.4}                   nearest {:>2} at {:.4} (its own spread {host_spread:.4}) linkmed {link_median:.4}",
                 members.len(),
                 best.1 as i64,
                 best.0
