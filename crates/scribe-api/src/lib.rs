@@ -45,6 +45,7 @@
 //! GET    /processing-schedule                            (windows + live status + backlog)
 //! PUT    /processing-schedule                            (replace the weekly windows)
 //! POST   /processing-schedule/override                   (run now / pause now / clear)
+//! POST   /mcp                                            (MCP tools for Claude Code etc.)
 //! ```
 //!
 //! Every route except `GET /health` passes through the device-token auth layer
@@ -54,6 +55,7 @@ mod auth;
 mod discovery;
 mod error;
 mod handlers;
+mod mcp;
 mod range;
 mod state;
 
@@ -164,6 +166,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/summary-templates",
             get(handlers::recordings::list_summary_templates),
+        )
+        // Behind the same auth as everything else, so an MCP client gets in
+        // exactly the way the phone does.
+        .route(
+            "/mcp",
+            post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

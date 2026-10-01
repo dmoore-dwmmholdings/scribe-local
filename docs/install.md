@@ -275,6 +275,40 @@ A PERSON WHO GETS THE DEVICE TOKEN CAN READ EACH TRANSCRIPT.
 
 ---
 
+## Use your meetings from Claude Code
+
+The server has an MCP endpoint at `/mcp`. Connect Claude Code to it once:
+
+```bash
+claude mcp add --transport http scribe https://my-server.tail1234.ts.net/mcp
+```
+
+On a computer signed in to Tailscale as the account that owns the server, that
+is all. Elsewhere, send a device token as well:
+
+```bash
+claude mcp add --transport http scribe https://my-server.tail1234.ts.net/mcp \
+  --header "Authorization: Bearer <token from deploy/devices.toml>"
+```
+
+The tools:
+
+| Tool | What it does |
+|---|---|
+| `list_recordings` | Meetings, newest first, with id, date, title, length and status |
+| `get_transcript` | One meeting's speakers and its transcript, as timestamped lines |
+| `get_summary` | The generated summaries, decisions and action items |
+| `search` | Passages from every transcript that match a query |
+| `ask` | An answer from the server's own model, with sources |
+| `list_speakers` | The enrolled voices |
+| `set_participants` | State the number of speakers and run speaker detection again |
+| `rediarize` | Run speaker detection again with the current settings |
+
+`set_participants` and `rediarize` change the meeting. They keep the words, and
+run speaker detection and the stages after it again.
+
+---
+
 ## Add summaries
 
 The transcript, the speaker labels, the search index, and the embeddings do not

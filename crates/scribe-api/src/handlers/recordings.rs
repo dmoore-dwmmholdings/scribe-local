@@ -484,7 +484,7 @@ pub struct SetParticipantsBody {
 ///
 /// Imported audio arrives with no count, and diarization discovering it from
 /// scratch over a long meeting is exactly where it goes wrong. Setting the
-/// count does not re-diarize by itself — follow with `POST .../reprocess`.
+/// count does not re-diarize by itself — follow with `POST .../rediarize`.
 pub async fn set_participants(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
