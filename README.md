@@ -72,6 +72,8 @@ curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/ma
   Administrator. The installer installs NSSM with winget if it is missing.
 - `--no-lan` — do not announce the server on the local network. The app's
   **Find server** then cannot see it.
+- `--no-tailnet-auth` — always require the device key. By default, a phone
+  signed in to Tailscale as the account that owns the server needs no key.
 - `--dir PATH` — install to a different directory (default `~/scribe`).
 - `--model NAME` — `parakeet-tdt-0.6b-v3` (default) or `whisper-large-v3-turbo`.
 - `--no-tailscale` — do not publish the API on your tailnet.

@@ -35,6 +35,8 @@
 #   --no-tailscale  skip publishing on the tailnet
 #   --no-lan        do not announce the server on the local network (the
 #                   app's "Find server" then cannot see it)
+#   --no-tailnet-auth  always require the device key, even from a phone
+#                   signed in to Tailscale as you
 #   --no-start      set everything up, but do not start the API or the worker
 #   --docker        force the container install even on Windows
 set -euo pipefail
@@ -46,6 +48,7 @@ INSTALL_DIR=""
 ASR_MODEL="parakeet-tdt-0.6b-v3"
 USE_TAILSCALE=1
 ADVERTISE_LAN=1
+TAILNET_AUTH=1
 DO_START=1
 AS_SERVICE=0
 FORCE_DOCKER=0
@@ -61,6 +64,7 @@ while [ $# -gt 0 ]; do
     --service) AS_SERVICE=1 ;;
     --no-tailscale) USE_TAILSCALE=0 ;;
     --no-lan) ADVERTISE_LAN=0 ;;
+    --no-tailnet-auth) TAILNET_AUTH=0 ;;
     --no-start) DO_START=0 ;;
     --docker) FORCE_DOCKER=1 ;;
     --api-port) API_PORT="$2"; API_PORT_PINNED=1; shift ;;
@@ -355,6 +359,31 @@ toml_set() {
     sed -i "s|^${key}\([[:space:]]*\)=.*|${key}\1= ${value}|" "$file"
 }
 
+# toml_set, but adds the key under `[section]` when the file has no such line.
+# Re-runs keep the existing server.toml, which lacks every key added since it
+# was first written.
+toml_ensure() {
+    local file="$1" section="$2" key="$3" value="$4"
+    if grep -q "^${key}[[:space:]]*=" "$file"; then
+        toml_set "$file" "$key" "$value"
+    else
+        sed -i "/^\[${section}\]/a ${key} = ${value}" "$file"
+    fi
+}
+
+# The Tailscale login that owns this machine, e.g. you@example.com. Empty when
+# it cannot be read, and "tagged-devices" for a node owned by a tag.
+tailnet_owner() {
+    local ts="$1" json login=""
+    command -v powershell >/dev/null 2>&1 || return 0
+    json="$(mktemp -t scribe-ts-XXXXXX.json)"
+    if "$ts" status --json > "$json" 2>/dev/null; then
+        login="$(powershell -NoProfile -Command "\$j = Get-Content -Raw '$(cygpath -w "$json")' | ConvertFrom-Json; \$u = \$j.User.('' + \$j.Self.UserID); if (\$u) { \$u.LoginName }" 2>/dev/null | tr -d '\r' | head -1)" || true
+    fi
+    rm -f "$json"
+    echo "$login"
+}
+
 is_admin() {
     net session >/dev/null 2>&1
 }
@@ -545,10 +574,9 @@ install_native_windows() {
     note "About 750 MB the first time. Files that are already there are skipped."
     ./scribe.exe --config "$cfg" models pull || die "the model download did not finish — re-run this installer to continue it"
 
-    local url="http://127.0.0.1:$API_PORT"
+    local url="http://127.0.0.1:$API_PORT" ts=""
     if [ "$USE_TAILSCALE" = 1 ]; then
         step "Publishing on your tailnet"
-        local ts=""
         command -v tailscale >/dev/null 2>&1 && ts="tailscale"
         [ -z "$ts" ] && [ -x "/c/Program Files/Tailscale/tailscale.exe" ] && ts="/c/Program Files/Tailscale/tailscale.exe"
         if [ -z "$ts" ]; then
@@ -575,17 +603,32 @@ install_native_windows() {
     # refuses to, since it would send the phone to itself.
     local lan=false
     case "$url" in http://127.0.0.1*) ;; *) [ "$ADVERTISE_LAN" = 1 ] && lan=true ;; esac
-    if grep -q '^advertise_lan' "$cfg"; then
-        toml_set "$cfg" advertise_lan "$lan"
-    else
-        # A config written before discovery existed has no such key. Re-runs
-        # keep the old server.toml, so add it to [api] beside public_base_url.
-        sed -i "/^public_base_url/a advertise_lan = $lan" "$cfg"
-    fi
+    toml_ensure "$cfg" api advertise_lan "$lan"
     if [ "$lan" = true ]; then
         ok "announcing on the local network for \"Find server\""
         allow_mdns "$dir"
     fi
+
+    # Pair without the device key. `tailscale serve` authenticates every peer it
+    # proxies and passes on its login, so a phone already signed in to Tailscale
+    # has proved who it is. Only this machine's owner is trusted: on a shared
+    # tailnet, everyone else still needs the key, and the key keeps working for
+    # everyone. Sound only because `bind` is loopback (set above), which leaves
+    # the local `tailscale serve` as the one process that can reach the API.
+    local owner="" trust=false users="[]"
+    if [ "$TAILNET_AUTH" = 1 ] && [ -n "$ts" ] && [ "$url" != "http://127.0.0.1:$API_PORT" ]; then
+        owner="$(tailnet_owner "$ts")"
+        case "$owner" in
+        "" | tagged-devices*)
+            note "could not tell which Tailscale account owns this machine, so the phone"
+            note "still needs the device key"
+            ;;
+        *) trust=true; users="[\"$owner\"]" ;;
+        esac
+    fi
+    toml_ensure "$cfg" auth trust_tailscale_identity "$trust"
+    toml_ensure "$cfg" auth tailnet_users "$users"
+    [ "$trust" = true ] && ok "no device key needed on a phone signed in to Tailscale as $owner"
 
     ./scribe.exe --config "$cfg" doctor 2>&1 | sed 's/^/    /' || true
 
