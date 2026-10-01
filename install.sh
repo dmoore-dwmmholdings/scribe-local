@@ -442,6 +442,36 @@ allow_mdns() {
         note "could not add the firewall rule for LAN discovery"
 }
 
+# Fetch /health through the tailnet URL, the way the phone will. Without this,
+# a `tailscale serve` that failed still leaves its URL in the config and in the
+# LAN announcement: "Find server" finds a URL that nothing answers, and the app
+# reports only "Network request failed".
+check_tailnet_url() {
+    local url="$1" ts="$2"
+    case "$url" in https://*) ;; *) return 0 ;; esac
+    step "Checking the server answers at $url"
+    note "the first request can take a minute while Tailscale gets a certificate"
+    local i err=""
+    for i in 1 2 3 4 5 6; do
+        err="$(curl -fsS --max-time 30 "$url/health" 2>&1 >/dev/null)" && {
+            ok "reachable over the tailnet"
+            return 0
+        }
+        sleep 5
+    done
+    printf '\n\033[31mThe phone will not be able to connect: %s/health did not answer.\033[0m\n' "$url" >&2
+    note "curl: $err"
+    note "tailscale serve status:"
+    "$ts" serve status 2>&1 | sed 's/^/      /'
+    note "Usual causes:"
+    note "  - Tailscale Serve or HTTPS certificates are off for the tailnet:"
+    note "      https://login.tailscale.com/f/serve"
+    note "      https://login.tailscale.com/admin/dns (HTTPS Certificates: Enable)"
+    note "  - MagicDNS is off, so the .ts.net name does not resolve (same DNS page)"
+    note "Fix it, then run this installer again."
+    return 0
+}
+
 install_native_windows() {
     local dir="${INSTALL_DIR:-}"
     if [ -z "$dir" ]; then
@@ -583,10 +613,12 @@ install_native_windows() {
             note "tailscale is not installed — skipping (the phone will not reach this server)"
         else
             local out
-            out="$("$ts" serve --bg "http://127.0.0.1:$API_PORT" 2>&1 || true)"
-            case "$out" in
-            *"not enabled"*) note "Tailscale Serve is off for your tailnet: https://login.tailscale.com/f/serve" ;;
-            esac
+            if ! out="$("$ts" serve --bg "http://127.0.0.1:$API_PORT" 2>&1)"; then
+                case "$out" in
+                *"not enabled"*) note "Tailscale Serve is off for your tailnet: https://login.tailscale.com/f/serve" ;;
+                *) note "tailscale serve failed:"; printf '%s\n' "$out" | sed 's/^/      /' ;;
+                esac
+            fi
             local dns
             dns="$("$ts" status --json 2>/dev/null | sed -n 's/.*"DNSName": *"\([^"]*\)\..*/\1/p' | head -1)"
             if [ -n "$dns" ]; then
@@ -676,6 +708,7 @@ install_native_windows() {
             tail -1 serve.log 2>/dev/null | sed 's/^/      /'
             note "full log: $dir/serve.log"
         fi
+        check_tailnet_url "$url" "$ts"
     fi
 
     summary "$url" "$(sed -n 's/^phone = "\(.*\)"/\1/p' deploy/devices.toml)" "$dir" "$logcmd" "$stopcmd"
