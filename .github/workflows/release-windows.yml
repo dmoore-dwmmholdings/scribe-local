@@ -1,0 +1,74 @@
+# Build the Windows server bundle that install.sh downloads.
+#
+# Push a tag `vX.Y.Z` and this builds the CPU bundle on a hosted Windows runner
+# and attaches it to a DRAFT release for that tag. Review the draft, write the
+# notes, then publish it: install.sh reads `releases/latest`, which ignores
+# drafts, so nothing reaches a server until the release is published.
+#
+# Run it by hand (workflow_dispatch) to check that the bundle still builds. That
+# uploads the zip as a workflow artifact and touches no release.
+name: Windows release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      # install.sh compares `scribe.exe --version` with the version in the
+      # asset's file name. If the tag and Cargo.toml disagree, every re-run of
+      # the installer sees an "upgrade" and downloads the bundle again.
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          cargo_ver="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "v$cargo_ver" = "$GITHUB_REF_NAME" ] || {
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_ver"
+            exit 1
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the CPU bundle
+        shell: pwsh
+        run: .\scripts\package-release.ps1 -Cpu -Zip
+
+      # The installer finds the asset by `windows-x64` in its name and reads the
+      # version from the `vX.Y.Z` in it. The zip must hold a scribe-server/
+      # directory, which package-release.ps1 produces.
+      - name: Name the asset
+        id: asset
+        shell: bash
+        run: |
+          cargo_ver="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          name="scribe-server-v${cargo_ver}-windows-x64-cpu.zip"
+          mv dist/scribe-server.zip "dist/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.asset.outputs.name }}
+          path: dist/${{ steps.asset.outputs.name }}
+          retention-days: 14
+
+      - name: Attach to a draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+              --title "$GITHUB_REF_NAME — Scribe" --notes "Draft. Write the notes, then publish."
+          gh release upload "$GITHUB_REF_NAME" "dist/${{ steps.asset.outputs.name }}" --clobber
