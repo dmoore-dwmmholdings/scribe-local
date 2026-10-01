@@ -14,6 +14,9 @@
 # Nothing has to be edited first and nothing is prompted for, so it is safe to
 # pipe into bash.
 #
+# On Windows it also sets Docker Desktop to start on login, because Postgres
+# runs in it and nothing works after a reboot otherwise.
+#
 # RE-RUNNING IS HOW YOU UPDATE. It fast-forwards the checkout, rebuilds, and
 # restarts. Your data is kept: recordings, the database, the device token and
 # the URL signing secret live in Docker volumes (pgdata, scribe-data) that this
@@ -27,8 +30,11 @@
 # Options (with a pipe, pass them after `bash -s --`):
 #   --dir PATH      install location (default: ~/scribe)
 #   --model NAME    parakeet-tdt-0.6b-v3 (default) or whisper-large-v3-turbo
-#   --service       install as always-on Windows services (needs Administrator)
+#   --service       install as always-on Windows services (needs Administrator;
+#                   installs NSSM with winget if it is missing)
 #   --no-tailscale  skip publishing on the tailnet
+#   --no-lan        do not announce the server on the local network (the
+#                   app's "Find server" then cannot see it)
 #   --no-start      set everything up, but do not start the API or the worker
 #   --docker        force the container install even on Windows
 set -euo pipefail
@@ -39,6 +45,7 @@ FFMPEG_URL="https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 INSTALL_DIR=""
 ASR_MODEL="parakeet-tdt-0.6b-v3"
 USE_TAILSCALE=1
+ADVERTISE_LAN=1
 DO_START=1
 AS_SERVICE=0
 FORCE_DOCKER=0
@@ -53,6 +60,7 @@ while [ $# -gt 0 ]; do
     --model) ASR_MODEL="$2"; shift ;;
     --service) AS_SERVICE=1 ;;
     --no-tailscale) USE_TAILSCALE=0 ;;
+    --no-lan) ADVERTISE_LAN=0 ;;
     --no-start) DO_START=0 ;;
     --docker) FORCE_DOCKER=1 ;;
     --api-port) API_PORT="$2"; API_PORT_PINNED=1; shift ;;
@@ -117,6 +125,52 @@ require_docker() {
             die "The Docker daemon is not reachable. Start Docker, wait for it to settle, then re-run."
     fi
     ok "Docker $(docker version --format '{{.Server.Version}}')"
+    [ "$PLATFORM" = windows ] && ensure_docker_autostart
+    return 0
+}
+
+# Postgres runs in Docker Desktop, so a server whose Docker Desktop does not
+# start on login has no database after a reboot: the API answers /health and
+# every real request fails. Docker Desktop keeps the setting in its settings
+# file and acts on it through the per-user Run key, so both are set. A copy of
+# the settings file is kept beside it as `<name>.before-scribe`.
+ensure_docker_autostart() {
+    command -v powershell >/dev/null 2>&1 || return 0
+    # A file, not `-Command -`: PowerShell 5.1 reads stdin as interactive lines,
+    # and a multi-line block there needs a blank line to end it.
+    local ps result
+    ps="$(mktemp -t scribe-docker-XXXXXX.ps1)"
+    cat > "$ps" <<'PS'
+$ErrorActionPreference = 'Stop'
+$state = 'nofile'
+# settings-store.json is current Docker Desktop; settings.json is 4.33 and older.
+foreach ($pair in @(@('settings-store.json', 'AutoStart'), @('settings.json', 'autoStart'))) {
+  $f = Join-Path $env:APPDATA ('Docker\' + $pair[0])
+  if (-not (Test-Path $f)) { continue }
+  $j = Get-Content -Raw $f | ConvertFrom-Json
+  if ($j.($pair[1]) -eq $true) { $state = 'already'; break }
+  Copy-Item $f "$f.before-scribe" -Force
+  $j | Add-Member -NotePropertyName $pair[1] -NotePropertyValue $true -Force
+  # No BOM: Docker Desktop's JSON parser rejects one.
+  [IO.File]::WriteAllText($f, ($j | ConvertTo-Json -Depth 64), (New-Object Text.UTF8Encoding $false))
+  $state = 'set'
+  break
+}
+$exe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+$run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if ((Test-Path $exe) -and -not (Get-ItemProperty $run -Name 'Docker Desktop' -ErrorAction SilentlyContinue)) {
+  Set-ItemProperty $run -Name 'Docker Desktop' -Value ('"' + $exe + '"')
+  if ($state -eq 'already') { $state = 'set' }
+}
+$state
+PS
+    result="$(powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ps")" 2>/dev/null | tr -d '\r' | tail -1)" || true
+    rm -f "$ps"
+    case "$result" in
+    already) ok "Docker Desktop starts on login" ;;
+    set) ok "set Docker Desktop to start on login" ;;
+    *) note "could not confirm Docker Desktop starts on login — check Settings → General in Docker Desktop" ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
@@ -301,6 +355,64 @@ toml_set() {
     sed -i "s|^${key}\([[:space:]]*\)=.*|${key}\1= ${value}|" "$file"
 }
 
+is_admin() {
+    net session >/dev/null 2>&1
+}
+
+# winget installs NSSM as a portable package: a symlink in a WinGet\Links
+# directory, which is on PATH only for shells opened after the install. Look
+# there, and in the package directory itself, rather than make the operator
+# open a new shell and run the installer again.
+find_nssm() {
+    command -v nssm >/dev/null 2>&1 && return 0
+    local roots=() d found
+    [ -n "${LOCALAPPDATA:-}" ] && roots+=("$(cygpath -u "$LOCALAPPDATA")/Microsoft/WinGet")
+    roots+=("/c/Program Files/WinGet")
+    for d in "${roots[@]}"; do
+        if [ -x "$d/Links/nssm.exe" ]; then
+            export PATH="$d/Links:$PATH"
+            return 0
+        fi
+        found="$(find "$d/Packages" -ipath '*nssm*' -ipath '*win64*' -iname nssm.exe 2>/dev/null | head -1)"
+        if [ -n "$found" ]; then
+            export PATH="$(dirname "$found"):$PATH"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_nssm() {
+    if ! find_nssm; then
+        command -v winget >/dev/null 2>&1 ||
+            die "--service needs NSSM, and winget is not available to install it. Install NSSM from https://nssm.cc, put nssm.exe on PATH, and re-run."
+        note "installing NSSM with winget ..."
+        # Exit code ignored: winget fails "already installed" and some agreement
+        # prompts in ways that still leave nssm.exe in place. find_nssm decides.
+        winget install --id NSSM.NSSM --exact --silent --disable-interactivity \
+            --accept-source-agreements --accept-package-agreements >/dev/null 2>&1 || true
+        find_nssm || die "NSSM did not install. Try: winget install NSSM.NSSM — then re-run."
+    fi
+    ok "NSSM at $(command -v nssm)"
+}
+
+# mDNS arrives as inbound UDP on 5353. Run interactively, Windows asks once
+# whether scribe.exe may use the network; run as a service, nobody is there to
+# answer, the prompt never shows, and "Find server" sees nothing. A rule for
+# this binary answers it ahead of time. Adding one needs Administrator.
+allow_mdns() {
+    local dir="$1" win
+    win="$(cygpath -w "$dir/scribe.exe")"
+    if ! is_admin; then
+        note "not Administrator, so no firewall rule for LAN discovery. If Windows asks"
+        note "whether scribe.exe may use the network, allow it, or \"Find server\" sees nothing."
+        return 0
+    fi
+    powershell -NoProfile -Command "Remove-NetFirewallRule -DisplayName 'Scribe LAN discovery' -ErrorAction SilentlyContinue; New-NetFirewallRule -DisplayName 'Scribe LAN discovery' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program '$win' -Profile Any | Out-Null" >/dev/null 2>&1 &&
+        ok "firewall allows LAN discovery for scribe.exe" ||
+        note "could not add the firewall rule for LAN discovery"
+}
+
 install_native_windows() {
     local dir="${INSTALL_DIR:-}"
     if [ -z "$dir" ]; then
@@ -310,6 +422,13 @@ install_native_windows() {
     dir="$(cd "$dir" && pwd)"
 
     step "Checking prerequisites"
+    # Checked first, so a missing prerequisite stops the run before a large
+    # download rather than after it.
+    if [ "$AS_SERVICE" = 1 ]; then
+        is_admin || die "--service installs Windows services, which needs Administrator.
+    Right-click Git Bash, choose Run as administrator, and run the same command."
+        ensure_nssm
+    fi
     require_docker
 
     # Re-running the installer is the documented upgrade path, so an existing
@@ -450,6 +569,24 @@ install_native_windows() {
     fi
     toml_set "$cfg" public_base_url "\"$url\""
 
+    # Announce the server so the app's "Find server" can see it. What goes out
+    # is public_base_url (the tailnet address), never a token, and the API
+    # stays on loopback. A loopback URL is not worth announcing: the server
+    # refuses to, since it would send the phone to itself.
+    local lan=false
+    case "$url" in http://127.0.0.1*) ;; *) [ "$ADVERTISE_LAN" = 1 ] && lan=true ;; esac
+    if grep -q '^advertise_lan' "$cfg"; then
+        toml_set "$cfg" advertise_lan "$lan"
+    else
+        # A config written before discovery existed has no such key. Re-runs
+        # keep the old server.toml, so add it to [api] beside public_base_url.
+        sed -i "/^public_base_url/a advertise_lan = $lan" "$cfg"
+    fi
+    if [ "$lan" = true ]; then
+        ok "announcing on the local network for \"Find server\""
+        allow_mdns "$dir"
+    fi
+
     ./scribe.exe --config "$cfg" doctor 2>&1 | sed 's/^/    /' || true
 
     local logcmd="tail -f $dir/serve.log $dir/worker.log"
@@ -462,7 +599,7 @@ install_native_windows() {
         if [ "$AS_SERVICE" = 1 ]; then
             step "Installing the Windows services"
             powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-service.ps1 -DbPort "$DB_PORT" -ApiPort "$API_PORT" ||
-                die "the service install failed — it needs an Administrator shell and NSSM (winget install NSSM.NSSM)"
+                die "the service install failed — see the output above"
             logcmd="tail -f $dir/logs/scribe-serve.log"
             stopcmd="nssm stop scribe-serve ; nssm stop scribe-worker"
         else
@@ -499,7 +636,7 @@ install_native_windows() {
     fi
 
     summary "$url" "$(sed -n 's/^phone = "\(.*\)"/\1/p' deploy/devices.toml)" "$dir" "$logcmd" "$stopcmd"
-    [ "$AS_SERVICE" = 1 ] || note "For an always-on server, re-run with --service (Administrator + NSSM)."
+    [ "$AS_SERVICE" = 1 ] || note "For an always-on server, re-run with --service from an Administrator Git Bash."
 }
 
 summary() {

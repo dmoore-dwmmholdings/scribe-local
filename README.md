@@ -69,7 +69,9 @@ curl -fsSL https://raw.githubusercontent.com/dmoore-dwmmholdings/scribe-local/ma
 ```
 
 - `--service` — install always-on Windows services. Start Git Bash as
-  Administrator, and install NSSM first with `winget install NSSM.NSSM`.
+  Administrator. The installer installs NSSM with winget if it is missing.
+- `--no-lan` — do not announce the server on the local network. The app's
+  **Find server** then cannot see it.
 - `--dir PATH` — install to a different directory (default `~/scribe`).
 - `--model NAME` — `parakeet-tdt-0.6b-v3` (default) or `whisper-large-v3-turbo`.
 - `--no-tailscale` — do not publish the API on your tailnet.
