@@ -35,6 +35,7 @@ import {
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
+import * as FileSystem from 'expo-file-system/legacy';
 import { api, ApiError } from '../../src/api/client';
 import type {
   NameSpeakerRequest,
@@ -57,7 +58,7 @@ import {
 } from '../../src/playback/karaoke';
 import { colors, mono, radius, speakerColor } from '../../src/theme';
 import { log } from '../../src/util/logger';
-import { buildExport, type ExportFormat } from '../../src/util/export';
+import { audioFilename, buildExport, type ExportFormat } from '../../src/util/export';
 import { MindMapModal } from '../../src/components/MindMap';
 import { TranslateModal } from '../../src/components/Translate';
 
@@ -243,17 +244,24 @@ const UtteranceRow = memo(function UtteranceRow({
 /** Bottom-sheet-style picker for the export format. */
 function ExportSheet({
   visible,
+  hasText,
   onSelect,
   onDismiss,
 }: {
   visible: boolean;
-  onSelect: (format: ExportFormat) => void;
+  /** Whether there is a transcript or summary to export as text. */
+  hasText: boolean;
+  onSelect: (format: ExportFormat | 'audio') => void;
   onDismiss: () => void;
 }) {
-  const options: { label: string; sub: string; value: ExportFormat }[] = [
+  const textOptions: { label: string; sub: string; value: ExportFormat }[] = [
     { label: 'Markdown', sub: 'Summary + transcript · .md', value: 'markdown' },
     { label: 'Plain text', sub: 'Summary + transcript · .txt', value: 'text' },
     { label: 'Subtitles', sub: 'Timed captions · .srt', value: 'srt' },
+  ];
+  const options: { label: string; sub: string; value: ExportFormat | 'audio' }[] = [
+    ...(hasText ? textOptions : []),
+    { label: 'Audio', sub: 'Full recording · .wav', value: 'audio' },
   ];
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
@@ -654,6 +662,8 @@ export default function RecordingDetailScreen() {
   const [namingUtterance, setNamingUtterance] = useState<Utterance | null>(null);
   const [savingSpeaker, setSavingSpeaker] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  // Percent downloaded while exporting the audio; null when not exporting.
+  const [audioExport, setAudioExport] = useState<number | null>(null);
   const [rate, setRate] = useState(1);
   const [templates, setTemplates] = useState<SummaryTemplate[]>(FALLBACK_TEMPLATES);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -890,9 +900,36 @@ export default function RecordingDetailScreen() {
 
   // -------------------------------------------------------------------------
 
+  // Download the full audio and hand the file to the share sheet: Save to Files,
+  // AirDrop, or any app that takes a file. The previous export is cleared first
+  // rather than after sharing, because a share target may still be reading the
+  // file when the sheet closes.
+  const handleExportAudio = useCallback(async () => {
+    if (!detail || !id) return;
+    const dir = `${FileSystem.cacheDirectory}exports/`;
+    try {
+      await FileSystem.deleteAsync(dir, { idempotent: true });
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+      const dest = `${dir}${audioFilename(detail)}`;
+      setAudioExport(0);
+      log('export', `downloading audio to ${dest}`);
+      const uri = await api.downloadAudio(id, dest, setAudioExport);
+      setAudioExport(null);
+      await Share.share({ url: uri, title: audioFilename(detail) });
+    } catch (err) {
+      setAudioExport(null);
+      log('export', 'audio export failed', err);
+      Alert.alert('Audio export failed', err instanceof Error ? err.message : String(err));
+    }
+  }, [detail, id]);
+
   const handleExport = useCallback(
-    async (format: ExportFormat) => {
+    async (format: ExportFormat | 'audio') => {
       setShowExport(false);
+      if (format === 'audio') {
+        await handleExportAudio();
+        return;
+      }
       if (!detail) return;
       try {
         const { content, filename } = buildExport(detail, format);
@@ -903,7 +940,7 @@ export default function RecordingDetailScreen() {
         Alert.alert('Export failed', err instanceof Error ? err.message : String(err));
       }
     },
-    [detail],
+    [detail, handleExportAudio],
   );
 
   // Per-speaker talk-time, derived from utterance durations. Computed from
@@ -1374,7 +1411,9 @@ export default function RecordingDetailScreen() {
         title={recording.title ?? 'Recording'}
         date={formatDate(recording.created_at)}
         onBack={() => router.back()}
-        onShare={utterances.length > 0 || summaries.length > 0 ? () => setShowExport(true) : undefined}
+        // Audio can be exported with no transcript at all, which is exactly
+        // when it is wanted most: a recording that failed to process.
+        onShare={() => setShowExport(true)}
         onMenu={() => setShowActions(true)}
       />
 
@@ -1656,9 +1695,18 @@ export default function RecordingDetailScreen() {
 
       <ExportSheet
         visible={showExport}
+        hasText={utterances.length > 0 || summaries.length > 0}
         onSelect={handleExport}
         onDismiss={() => setShowExport(false)}
       />
+      <Modal visible={audioExport !== null} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.sheetCard}>
+            <Text style={styles.modalTitle}>Downloading audio</Text>
+            <Text style={styles.sheetRowSub}>{audioExport ?? 0}%</Text>
+          </View>
+        </View>
+      </Modal>
 
       <TemplateSheet
         visible={showTemplates}

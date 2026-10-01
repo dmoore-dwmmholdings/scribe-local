@@ -537,6 +537,46 @@ export const api = {
     return url(baseUrl, `/recordings/${recordingId}/segments/${seq}`);
   },
 
+  /**
+   * Download the recording's full audio to `dest`, for sharing as a file.
+   *
+   * This is the server's 16 kHz mono WAV — the file every pipeline stage after
+   * transcode works from — so what is shared is exactly what was transcribed
+   * and diarized. It exists once the transcode stage has run.
+   *
+   * `onProgress` receives whole percentages, so a caller can put it straight
+   * into state without re-rendering on every chunk.
+   */
+  async downloadAudio(
+    recordingId: string,
+    dest: string,
+    onProgress?: (percent: number) => void,
+  ): Promise<string> {
+    const { baseUrl, deviceKey } = useSettingsStore.getState();
+    const download = FileSystem.createDownloadResumable(
+      url(baseUrl, `/recordings/${recordingId}/audio`),
+      dest,
+      { headers: { Authorization: `Bearer ${deviceKey}` } },
+      ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+        if (onProgress && totalBytesExpectedToWrite > 0) {
+          onProgress(Math.floor((totalBytesWritten / totalBytesExpectedToWrite) * 100));
+        }
+      },
+    );
+    const result = await download.downloadAsync();
+    if (!result) throw new Error('The download was cancelled.');
+    if (result.status !== 200) {
+      // The body of an error response was written to `dest`; it is not audio.
+      await FileSystem.deleteAsync(dest, { idempotent: true });
+      throw new Error(
+        result.status === 404
+          ? 'The audio is not ready yet. It exists once processing has transcoded the recording.'
+          : `The server answered ${result.status}.`,
+      );
+    }
+    return result.uri;
+  },
+
   /** Authorization header value for use with the audio player. */
   authHeader(): string {
     const { deviceKey } = useSettingsStore.getState();

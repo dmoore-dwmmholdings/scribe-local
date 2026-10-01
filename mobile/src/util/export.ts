@@ -147,6 +147,16 @@ function toSrt(d: RecordingDetailResponse): string {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/**
+ * File name for the full-audio export. The date and a short id go in so that
+ * several untitled recordings saved to one folder do not overwrite each other,
+ * and so the file can be matched back to its recording on the server.
+ */
+export function audioFilename(d: RecordingDetailResponse): string {
+  const date = d.recording.created_at.slice(0, 10);
+  return `${slug(exportTitle(d))}-${date}-${d.recording.id.slice(0, 8)}.wav`;
+}
+
 /** Build the export payload for a recording in the requested format. */
 export function buildExport(
   detail: RecordingDetailResponse,
