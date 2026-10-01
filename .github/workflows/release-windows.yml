@@ -37,8 +37,12 @@ jobs:
             exit 1
           }
 
+      # No rust-cache, deliberately. sherpa-onnx's build script downloads its
+      # prebuilt libraries into target/sherpa-onnx-prebuilt and copies the DLLs
+      # into target/release. The cache restores the record that the script ran
+      # but not those files, so a cached build fails to link
+      # (LNK1181 sherpa-onnx-c-api.lib). An uncached build is about ten minutes.
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
       - name: Build the CPU bundle
         shell: pwsh
