@@ -9,8 +9,9 @@ transcription service as plain text: blocks of a speaker line ending in a
 timestamp ("Jane Doe 1:23" or "Speaker 2 1:02:03"), then the words, then a
 blank line. That is the format Otter.ai exports.
 
-Both are reduced to lowercase words without punctuation, and filler sounds are
-dropped from both, since services disagree about writing them. The two word
+Both are reduced to lowercase words without punctuation, with numbers spelled
+out and informal contractions ("gonna") expanded, and filler sounds are dropped
+from both, since services disagree about writing all of these. The two word
 sequences are then aligned, and every aligned pair yields both scores:
 
 - word error rate: substitutions, deletions and insertions over reference words.
@@ -44,14 +45,53 @@ HEADER = re.compile(r"^(?P<name>.+?)\s+(?P<ts>\d{1,2}:\d{2}(?::\d{2})?)\s*$")
 UNNAMED = re.compile(r"^Speaker \d+$")
 FILLERS = {"um", "uh", "uhm", "umm", "uhh", "mm", "mmm", "hmm", "hm", "mhm", "erm", "er", "ah"}
 
+# Spellings that differ between services without either being wrong. One
+# writes "gonna", the other "going to"; counting that as two errors measures
+# house style, not hearing.
+EXPAND = {
+    "gonna": "going to", "gotta": "got to", "wanna": "want to", "kinda": "kind of",
+    "sorta": "sort of", "lemme": "let me", "gimme": "give me", "ok": "okay",
+}
+ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen " \
+       "fifteen sixteen seventeen eighteen nineteen".split()
+TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+
+
+def number_words(n):
+    """Integer to words: 275 -> "two hundred seventy five". One service writes
+    digits and another words, and neither is an error."""
+    if n < 20:
+        return ONES[n]
+    if n < 100:
+        return TENS[n // 10] + ("" if n % 10 == 0 else " " + ONES[n % 10])
+    for size, name in ((10**9, "billion"), (10**6, "million"), (1000, "thousand"), (100, "hundred")):
+        if n >= size:
+            rest = n % size
+            return number_words(n // size) + " " + name + ("" if rest == 0 else " " + number_words(rest))
+
+
+def spell_numbers(text):
+    text = text.replace("%", " percent ").replace("&", " and ")
+
+    def one(m):
+        whole, frac = m.group(1).replace(",", ""), m.group(2)
+        out = number_words(int(whole)) if len(whole) < 13 else whole
+        if frac:
+            out += " point " + " ".join(ONES[int(d)] for d in frac)
+        return " " + out + " "
+
+    return re.sub(r"(\d[\d,]*)(?:\.(\d+))?", one, text)
+
 
 def words_of(text):
-    """Lowercase words, hyphens split, punctuation dropped, fillers removed."""
+    """Lowercase words, hyphens split, punctuation dropped, fillers removed,
+    numbers spelled out and informal contractions expanded."""
     out = []
-    for tok in re.split(r"[\s\-–—/]+", text.lower()):
+    for tok in re.split(r"[\s\-–—/]+", spell_numbers(text.lower())):
         tok = re.sub(r"[^a-z0-9']", "", tok).strip("'")
-        if tok and tok not in FILLERS:
-            out.append(tok)
+        if not tok or tok in FILLERS:
+            continue
+        out.extend(EXPAND.get(tok, tok).split())
     return out
 
 
