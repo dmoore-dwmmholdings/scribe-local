@@ -107,6 +107,95 @@ execution provider.
 The `DYLD_LIBRARY_PATH` is needed because the sherpa-onnx dylib is emitted next
 to the binary without an rpath entry pointing at itself.
 
+## A real meeting, against a professional transcript
+
+Every other number on this page comes from synthetic voices. This section is
+from a real recording: a 2 h 49 min meeting with five main speakers, recorded
+on a phone in the room, scored against a transcript of the same audio from a
+commercial transcription service. That transcript has its own errors, so these
+are measures of agreement, and its ceiling is below 100%. The audio and the
+reference stay out of this repository.
+
+```bash
+TRANSCRIPT_CHECK_ASR_CACHE=words.json TRANSCRIPT_CHECK_DUMP=run.json \
+SCRIBE_DIARIZE_FRAGMENTS=fragments.json \
+  ./target/release/examples/transcript_check models meeting.wav
+scripts/score-transcript.py --ref meeting_reference.txt --hyp run.json --speakers
+```
+
+The scorer aligns the two word sequences once, and reads both scores from that
+alignment: word error rate, and speaker accuracy — the share of aligned words
+credited to the right person, under the best one-to-one matching of clusters to
+people. Numbers are spelled out and "gonna"-style contractions expanded on both
+sides first, since the services disagree about writing them. The two caches
+make experiments cheap: the transcription is reused, and so is diarization's
+first pass, which is about 90% of its cost, so clustering can be swept in
+seconds.
+
+Where it started and where it stands:
+
+| | word error rate | speaker accuracy | speakers |
+|---|---|---|---|
+| as shipped (sherpa-onnx 1.13.2, int8 Parakeet) | 64.5%* | 27% | 1 |
+| sherpa-onnx 1.13.8 | 32.8% | 30% | 1 |
+| + speaker count read from people-merges | 32.8% | 86.4% | 5 |
+| + one refinement pass | 32.8% | 87.2% | 5 |
+| + full-precision Parakeet | 16.5% | — | 5 |
+| + decoding gaps of 1.5 s again | **15.1%** | **85.3%**† | **5** |
+
+\* Before the number and contraction normalisation, which is worth about four
+points.
+† Over 28,495 aligned words where the row above it had 21,768: the words gained
+are the hard ones — quiet voices, cross-talk — and are hard for diarization too.
+
+**sherpa-onnx 1.13.2 dropped half the words.** On identical audio and the same
+checkpoint, 1.13.2 transcribed 12,577 words and 1.13.8 transcribes 22,775,
+against 28,310 in the reference. The upgrade also ends the segmentation crash
+described above.
+
+**The int8 Parakeet export drops words too.** Deletions fall from 6,876 to 1,536
+with the full-precision export, at the same speed. It is a 2.5 GB download
+where int8 is 0.7 GB, and `models pull` now installs it.
+
+**The speaker count collapsed on a long recording.** `choose_cut` judges each
+merge against the merges already accepted, and on a long recording those are
+thousands of slivers being absorbed — at similarities no fixture shows — so no
+merge between people ever looks like a step down. Stating the count gave 85%,
+so the voices were separable. `choose_people_cut` reads only the merges that
+join two clusters each holding a person's worth of speech: they run 0.74 to
+0.46 while joining takes of one voice, then fall to 0.20 at the first join of
+two people. It stops at the first fall of 0.20 or more across two consecutive
+such merges; a single-merge fall was tried first, and one merge in between
+(0.43, 0.31, 0.19) hid the cliff on two runs. The two rules run together and
+the one finding more speakers wins, since each errs towards too few where the
+other is right. The two-step threshold gives the same answers from 0.16 to
+0.22 over every fixture and six variants of the meeting.
+
+**Most remaining speaker errors are at handovers.** Of the words given to the
+wrong person, 54% are within five words of a change of speaker in the
+reference, where it has its own sloppiness too; deep inside a turn the error
+rate is 6–8%.
+
+Tried and not kept, on this recording:
+
+| change | result |
+|---|---|
+| decode window 15 / 20 / 45 s (30 s) | 28.0 / 30.2 / 36.2% on int8; 30 s best on full precision too |
+| level normalisation before ASR | 16.8% against 16.5% |
+| modified beam search | 23.3%, three times slower |
+| Whisper large-v3-turbo | 16.5%, five times slower, approximate word timings |
+| split silence 120 / 250 ms (160) | 83.9 / 85.0% |
+| segmentation shift 0.05 (0.1) | 85.5% with the two-step count, twice the cost |
+| per-window clustering 0.7 / 0.9 (0.8) | 84.0 / 83.9% |
+| TitaNet-large / ResNet34 / CAM++ embeddings | 83.0 / 36.3 / 33.5% (84.8 / 42.4 / 32.5% told five) |
+| nearest-edge fallback for words in no turn | +0.05 points, 1.9% of words |
+| LLM name correction, chunked, 4B / 26B model | 15.2% / 15.2% against 15.1%; names spoken 3–7 times each, already right, none changed |
+
+The LLM correction pass sends the whole transcript in one request. On this
+meeting that is about 40,000 tokens, past what many local models take, and the
+pass is written to skip silently when the request fails — so on long meetings
+it does nothing. A reasoning model timed out on a single 60-line chunk.
+
 ## The whole pipeline, on your own audio
 
 The harnesses above each measure one model against known answers. `e2e-check.sh`
