@@ -924,8 +924,10 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
             people_merges.push((history.len(), s));
             if std::env::var("SCRIBE_DIARIZE_MERGES").is_ok() {
                 eprintln!(
-                    "   people-merge {live:>4} clusters  sim {s:.4}  {:>8} ms + {:>8} ms",
-                    speech[i], speech[j]
+                    "   people-merge {live:>4} clusters  sim {s:.4}  {:>8} ms + {:>8} ms  people {}",
+                    speech[i],
+                    speech[j],
+                    count_substantial(&alive, &speech)
                 );
             }
         }
@@ -1460,24 +1462,40 @@ fn choose_people_cut(people: &[(usize, f32)]) -> Option<usize> {
     // last merge at -0.01 is a ratio of zero, which beat every real cliff and
     // cut clean six-voice fixtures down to two.
     //
-    // And it is the *first* such fall, not the largest. Once different people
-    // are being joined their similarities spread out too — 0.50, then 0.23,
-    // then 0.13 on a four-voice fixture — so the largest fall can sit between
-    // two of those, one person short.
+    // It is the *first* such fall, not the largest. Once different people are
+    // being joined their similarities spread out too — 0.50, then 0.23, then
+    // 0.13 on a four-voice fixture — so the largest fall can sit between two
+    // of those, one person short.
+    //
+    // And it is measured across two consecutive merges, cutting at the steeper
+    // of the two steps. A single merge in between can halve a cliff: one run of
+    // the meeting went 0.43 -> 0.31 -> 0.19, two steps of 0.12 that a one-step
+    // threshold read as no cliff at all, and that run came back as one speaker.
+    // Over every fixture and six variants of the meeting, the two-step fall
+    // gives the same answers anywhere from 0.16 to 0.22; a one-step fall only
+    // between 0.11 and 0.12.
     let drop = people_drop();
-    (0..people.len() - 1)
-        .find(|&k| people[k].1 - people[k + 1].1 >= drop)
-        .map(|k| people[k + 1].0)
+    (0..people.len().saturating_sub(2))
+        .find(|&k| people[k].1 - people[k + 2].1 >= drop)
+        .map(|k| {
+            let first = people[k].1 - people[k + 1].1;
+            let second = people[k + 1].1 - people[k + 2].1;
+            if first >= second { people[k + 1].0 } else { people[k + 2].0 }
+        })
+        .or_else(|| {
+            // Too short a sequence for a two-step span: one step must do it.
+            (people.len() == 2 && people[0].1 - people[1].1 >= drop).then_some(people[1].0)
+        })
 }
 
-/// How far the similarity has to fall between consecutive people-merges to
+/// How far the similarity has to fall, across two consecutive people-merges, to
 /// count as the point where different people start being joined. Experiment
 /// hook: `SCRIBE_PEOPLE_DROP`.
 fn people_drop() -> f32 {
     std::env::var("SCRIBE_PEOPLE_DROP")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0.15)
+        .unwrap_or(0.2)
 }
 
 fn choose_cut(history: &[(usize, f32, (usize, usize))]) -> usize {
