@@ -915,6 +915,11 @@ export default function RecordingDetailScreen() {
       log('export', `downloading audio to ${dest}`);
       const uri = await api.downloadAudio(id, dest, setAudioExport);
       setAudioExport(null);
+      // The Export sheet is a Modal, and a short recording can finish
+      // downloading before it has finished closing. The share sheet cannot
+      // present over it, and fails without an error.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      log('export', `sharing ${uri}`);
       await Share.share({ url: uri, title: audioFilename(detail) });
     } catch (err) {
       setAudioExport(null);
@@ -1699,14 +1704,17 @@ export default function RecordingDetailScreen() {
         onSelect={handleExport}
         onDismiss={() => setShowExport(false)}
       />
-      <Modal visible={audioExport !== null} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+      {/* An overlay, not a Modal. iOS presents the share sheet from the top
+          view controller, and a Modal still closing when the download ends is
+          that controller: the share sheet then silently never appears. */}
+      {audioExport !== null && (
+        <View style={[StyleSheet.absoluteFill, styles.modalOverlay]} pointerEvents="auto">
           <View style={styles.sheetCard}>
             <Text style={styles.modalTitle}>Downloading audio</Text>
-            <Text style={styles.sheetRowSub}>{audioExport ?? 0}%</Text>
+            <Text style={styles.sheetRowSub}>{audioExport}%</Text>
           </View>
         </View>
-      </Modal>
+      )}
 
       <TemplateSheet
         visible={showTemplates}
