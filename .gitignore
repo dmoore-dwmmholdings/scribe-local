@@ -46,3 +46,7 @@ Thumbs.db
 .idea
 .vscode/*
 !.vscode/extensions.json
+
+# Reference transcripts of real meetings, used to score the pipeline. This repo
+# is public: they and the audio stay out of it.
+*_otter.ai.txt
