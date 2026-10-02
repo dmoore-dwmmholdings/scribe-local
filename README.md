@@ -51,7 +51,7 @@ The command does all of these steps:
   that current phones write.
 - It makes the URL signature secret and the device token for the phone.
 - It starts Postgres and applies the migrations.
-- It downloads the ASR models (about 750 MB).
+- It downloads the ASR models (about 2.6 GB).
 - It publishes the API on your tailnet.
 - It starts the API and the worker.
 
@@ -302,7 +302,7 @@ models/
 ```
 
 `scribe models pull` downloads these assets for the default
-`parakeet-tdt-0.6b-v3` stack. The download is about 750 MB.
+`parakeet-tdt-0.6b-v3` stack. The download is about 2.6 GB.
 
 The command keeps each file that it finds in the directory. Thus you can start
 the command again safely.

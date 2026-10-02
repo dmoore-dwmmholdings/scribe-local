@@ -38,7 +38,7 @@ assembles `dist\scribe-server\` (+ `.zip`) containing: `scribe.exe` + all DLLs,
 `deploy\server.toml`, `docker-compose.yml`, the server scripts, and a README.
 
 The ONNX models are not in the bundle. On the server, this command downloads
-them (about 750 MB). It keeps each file that it finds, thus you can start it
+them (about 2.6 GB). It keeps each file that it finds, thus you can start it
 again safely:
 
 ```powershell

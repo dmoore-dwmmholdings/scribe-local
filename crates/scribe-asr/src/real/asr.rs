@@ -65,6 +65,12 @@ const MIN_RECOVER_MS: i64 = 4_000;
 /// turn one recording into an unbounded decode loop.
 const MAX_RECOVERY_PASSES: usize = 6;
 
+/// A stretch with no words this long is decoded again on its own. Against a
+/// professional transcript of a real meeting, on the full-precision Parakeet:
+/// word error rate 16.5% without, 15.3% at 1.0 s, 15.1% at 1.5 s, 15.2% at
+/// 2.5 s — a plateau, and this sits in it. Deletions fell from 1,536 to 750.
+const GAP_RECOVERY_MS: i64 = 1_500;
+
 /// How far back from a window's nominal end to look for a quiet moment to cut at.
 ///
 /// A quarter of the window: far enough to reach a pause in ordinary speech,
@@ -212,6 +218,16 @@ impl SherpaTranscriber {
             model_config,
             ..Default::default()
         };
+
+        // SCRIBE_ASR_DECODING=modified_beam_search (with SCRIBE_ASR_BEAM paths,
+        // default 4) instead of greedy search. Experiment hook.
+        if let Ok(method) = std::env::var("SCRIBE_ASR_DECODING") {
+            config.decoding_method = Some(method);
+            config.max_active_paths = std::env::var("SCRIBE_ASR_BEAM")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4);
+        }
 
         // Opt-in hotword biasing: only engage when a hotwords file is configured,
         // so the default decode path is untouched. Hotwords require
@@ -366,7 +382,8 @@ impl Transcriber for SherpaTranscriber {
             .unwrap_or(self.max_clip_ms);
         let window = ((max_clip_ms * sr as i64) / 1000) as usize;
         if window == 0 || audio.samples.len() <= window {
-            return self.decode_span(sr, &audio.samples, 0);
+            let first = self.decode_span(sr, &audio.samples, 0)?;
+            return self.recover_gaps(sr, &audio.samples, first);
         }
 
         // Long audio: decode a window at a time, offsetting each window's word
@@ -393,6 +410,58 @@ impl Transcriber for SherpaTranscriber {
             start = end;
         }
 
+        self.recover_gaps(sr, &audio.samples, Transcript { text, words })
+    }
+}
+
+impl SherpaTranscriber {
+    /// Decode, on its own, every stretch where the transcript has no words for
+    /// longer than `GAP_RECOVERY_MS` (`SCRIBE_ASR_GAP_MS` overrides; 0 is off).
+    ///
+    /// The recovery in `decode_span` only notices a decode that stops early. A
+    /// transducer can also go quiet in the middle of a window and pick up again
+    /// later, and then the words either side of the hole look healthy. Against
+    /// a professional transcript of a real meeting, a hundred such holes of ten
+    /// to twenty seconds held over two thousand words. A gap that is really
+    /// silence decodes to nothing, so this costs little when nothing is missing.
+    fn recover_gaps(&self, sr: u32, samples: &[f32], first: Transcript) -> Result<Transcript> {
+        let gap_ms: i64 = std::env::var("SCRIBE_ASR_GAP_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(GAP_RECOVERY_MS);
+        if gap_ms <= 0 {
+            return Ok(first);
+        }
+        let total_ms = samples_to_ms(samples.len(), sr);
+        let mut bounds: Vec<(i64, i64)> = Vec::new();
+        let mut prev_end = 0i64;
+        for w in &first.words {
+            if w.start_ms - prev_end >= gap_ms {
+                bounds.push((prev_end, w.start_ms));
+            }
+            prev_end = prev_end.max(w.end_ms);
+        }
+        if total_ms - prev_end >= gap_ms {
+            bounds.push((prev_end, total_ms));
+        }
+
+        let mut words = first.words;
+        let mut recovered = 0usize;
+        for (from_ms, to_ms) in bounds {
+            let a = ms_to_samples(from_ms, sr).min(samples.len());
+            let b = ms_to_samples(to_ms, sr).min(samples.len());
+            if b <= a {
+                continue;
+            }
+            let part = self.decode_span(sr, &samples[a..b], from_ms)?;
+            recovered += part.words.len();
+            words.extend(part.words);
+        }
+        if recovered > 0 {
+            words.sort_by_key(|w| (w.start_ms, w.end_ms));
+            tracing::info!(recovered, "ASR: recovered words from gaps in the transcript");
+        }
+        let text = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
         Ok(Transcript { text, words })
     }
 }

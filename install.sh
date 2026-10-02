@@ -251,7 +251,7 @@ install_with_docker() {
     cd "$dir"
 
     step "Building and starting the stack"
-    note "The first build compiles the ML stack and downloads ~750 MB of models."
+    note "The first build compiles the ML stack and downloads ~2.6 GB of models."
     note "Expect 15-30 minutes. Later runs take seconds."
     docker compose up -d --build
 
@@ -601,7 +601,7 @@ install_native_windows() {
     ./scribe.exe --config "$cfg" migrate 2>&1 | grep -v "slow threshold" | tail -1
 
     step "Downloading the speech models"
-    note "About 750 MB the first time. Files that are already there are skipped."
+    note "About 2.6 GB the first time. Files that are already there are skipped."
     ./scribe.exe --config "$cfg" models pull || die "the model download did not finish — re-run this installer to continue it"
 
     local url="http://127.0.0.1:$API_PORT" ts=""

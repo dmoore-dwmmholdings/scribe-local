@@ -9,12 +9,12 @@
   example, docker-compose.yml, the server scripts, and a README.
 
   The ONNX models are NOT bundled by default - `scribe.exe models pull` downloads
-  them on the server (about 750 MB), which keeps the bundle small enough to ship
+  them on the server (about 2.6 GB), which keeps the bundle small enough to ship
   as a release asset. Use -WithModels for an offline server.
 
 .PARAMETER OutDir      Output folder (relative to repo). Default dist\scribe-server.
 .PARAMETER Cpu         Skip the GPU DLLs (CPU-only server).
-.PARAMETER WithModels  Copy the local models/ folder into the bundle (adds ~750 MB).
+.PARAMETER WithModels  Copy the local models/ folder into the bundle (adds ~2.6 GB).
 .PARAMETER Zip         Also produce <OutDir>.zip.
 
 .EXAMPLE
@@ -146,7 +146,7 @@ The manual steps, if you would rather do them yourself:
 1. Install prereqs: Docker Desktop, Visual C++ Redistributable 2015-2022 x64,
    ffmpeg (on PATH), an LLM (LM Studio or Ollama), Tailscale, and an NVIDIA
    driver (GPU bundle). No CUDA toolkit needed - the CUDA DLLs are bundled.
-2. Download the speech models (~750 MB; skips anything already present):
+2. Download the speech models (~2.6 GB; skips anything already present):
       .\scribe.exe --config deploy\server.toml models pull
 3. Edit deploy\server.toml (signing_secret, public_base_url, summarize_model)
    and create deploy\devices.toml from the example (device-token auth is ON).

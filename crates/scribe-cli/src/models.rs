@@ -136,7 +136,11 @@ fn hf(repo: &str, file: &str) -> String {
 
 /// The download recipe for the default stack.
 ///
-/// ASR is the sherpa-onnx INT8 export of Parakeet-TDT-0.6B-v3, installed under
+/// ASR is the sherpa-onnx full-precision export of Parakeet-TDT-0.6B-v3, not
+/// the INT8 one this used to install. Against a professional transcript of a
+/// real 2 h 49 min meeting the INT8 model dropped 6,876 of 29,245 words and the
+/// full-precision one 1,536, at the same decoding speed: word error rate 32.8%
+/// -> 16.5%. It is a 2.5 GB download where INT8 was 0.7 GB. Installed under
 /// a per-model subdirectory so a second checkpoint can sit beside it (see
 /// `AsrModelPaths::discover_for`). Diarization is pyannote-segmentation-3.0
 /// plus NeMo TitaNet-large, whose 192-dim output matches the `vector(192)`
@@ -150,10 +154,14 @@ fn plan(cfg: &Config) -> Vec<Download> {
     // filenames differ from the names the loader looks for, so each entry
     // carries its own (remote name, local name) pair.
     let asr: &[(&str, &str, u64)] = match cfg.asr.model.as_str() {
+        // `encoder.onnx` is an external-data stub naming `encoder.weights`.
+        // The loader prefers these to an INT8 set left in the same directory,
+        // so an existing install moves to them on its next pull.
         m if m == PARAKEET => &[
-            ("encoder.int8.onnx", "encoder.int8.onnx", 652_184_281),
-            ("decoder.int8.onnx", "decoder.int8.onnx", 11_845_275),
-            ("joiner.int8.onnx", "joiner.int8.onnx", 6_355_277),
+            ("encoder.onnx", "encoder.onnx", 41_766_257),
+            ("encoder.weights", "encoder.weights", 2_435_420_160),
+            ("decoder.onnx", "decoder.onnx", 47_233_743),
+            ("joiner.onnx", "joiner.onnx", 25_286_330),
             ("tokens.txt", "tokens.txt", 93_939),
         ],
         m if m == WHISPER_TURBO => &[
@@ -168,7 +176,7 @@ fn plan(cfg: &Config) -> Vec<Download> {
     };
     if !asr.is_empty() {
         let repo = if cfg.asr.model == PARAKEET {
-            "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+            "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3"
         } else {
             "csukuangfj/sherpa-onnx-whisper-turbo"
         };

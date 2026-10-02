@@ -23,7 +23,7 @@ task.
 | `ollama` | The LLM for summaries. This container is optional. |
 
 The API and the worker use the same image. The image contains the ASR stack and
-the ONNX runtime. The models are approximately 750 MB. The `scribe-init`
+the ONNX runtime. The models are approximately 2.6 GB. The `scribe-init`
 container downloads them into a Docker volume.
 
 The image does the transcription on the CPU. Parakeet on a CPU is faster than
@@ -72,7 +72,7 @@ The command does all of these steps:
   that current phones write.
 - It makes the URL signature secret and the device token for the phone.
 - It starts Postgres and applies the migrations.
-- It downloads the ASR models (about 750 MB).
+- It downloads the ASR models (about 2.6 GB).
 - It publishes the API on your tailnet.
 - It starts the API and the worker.
 
