@@ -8,8 +8,19 @@
 //!
 //! ```text
 //! cargo run --release -p scribe-pipeline --example transcript_check -- \
-//!     models <conversation.wav> <truth.json>
+//!     models <conversation.wav> [truth.json]
 //! ```
+//!
+//! Without a truth file it runs the pipeline and reports timings only — the
+//! form used with `TRANSCRIPT_CHECK_DUMP` on a real recording, which is then
+//! scored against a reference transcript by `scripts/score-transcript.py`.
+//!
+//! - `TRANSCRIPT_CHECK_DUMP=out.json` writes every word with its time and
+//!   speaker, and the diarized turns.
+//! - `TRANSCRIPT_CHECK_ASR_CACHE=words.json` reuses a transcription if the file
+//!   exists, and writes it if not. Diarization experiments on a long recording
+//!   then cost the diarization alone.
+//! - `TRANSCRIPT_CHECK_SPEAKERS=n` states the speaker count.
 //!
 //! See docs/measuring-diarization.md for the models and the fixtures.
 
@@ -21,9 +32,39 @@ use scribe_core::config::AsrConfig;
 use scribe_core::types::Word;
 use scribe_pipeline::{label_words, utterance_spans};
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct Truth {
     turns: Vec<TruthTurn>,
+}
+
+/// One word as cached and dumped. Short keys: a long meeting has tens of
+/// thousands of these.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DumpWord {
+    w: String,
+    s: i64,
+    e: i64,
+    #[serde(default)]
+    c: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spk: Option<i32>,
+}
+
+#[derive(serde::Serialize)]
+struct DumpTurn {
+    spk: i32,
+    s: i64,
+    e: i64,
+}
+
+#[derive(serde::Serialize)]
+struct Dump {
+    audio_ms: i64,
+    num_speakers: usize,
+    asr_secs: f64,
+    diar_secs: f64,
+    words: Vec<DumpWord>,
+    turns: Vec<DumpTurn>,
 }
 
 #[derive(serde::Deserialize)]
@@ -37,15 +78,21 @@ struct TruthTurn {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() < 3 {
-        eprintln!("usage: transcript_check <models_dir> <audio.wav> <truth.json>");
+    if args.len() < 2 {
+        eprintln!("usage: transcript_check <models_dir> <audio.wav> [truth.json]");
         std::process::exit(2);
     }
     let models_dir = PathBuf::from(&args[0]);
     let wav = PathBuf::from(&args[1]);
-    let truth: Truth =
-        serde_json::from_str(&std::fs::read_to_string(&args[2]).expect("read truth"))
-            .expect("parse truth");
+    let truth: Truth = match args.get(2) {
+        Some(path) => serde_json::from_str(&std::fs::read_to_string(path).expect("read truth"))
+            .expect("parse truth"),
+        None => Truth::default(),
+    };
+    let asr_cache = std::env::var("TRANSCRIPT_CHECK_ASR_CACHE").ok().map(PathBuf::from);
+    let speakers: Option<i32> = std::env::var("TRANSCRIPT_CHECK_SPEAKERS")
+        .ok()
+        .and_then(|v| v.parse().ok());
 
     let mut cfg = AsrConfig::default();
     // SCRIBE_ASR_MODEL selects the checkpoint under <models_dir>/asr.
@@ -80,7 +127,29 @@ fn main() {
     println!("threads          {}", cfg.resolved_num_threads());
 
     let t0 = std::time::Instant::now();
-    let transcript = engine.transcriber().transcribe(&wav).expect("transcribe");
+    let cached: Option<Vec<DumpWord>> = asr_cache
+        .as_ref()
+        .filter(|p| p.exists())
+        .map(|p| serde_json::from_str(&std::fs::read_to_string(p).expect("read ASR cache")).expect("parse ASR cache"));
+    let asr_words: Vec<DumpWord> = match cached {
+        Some(words) => {
+            println!("transcription    cached ({} words)", words.len());
+            words
+        }
+        None => {
+            let transcript = engine.transcriber().transcribe(&wav).expect("transcribe");
+            let words: Vec<DumpWord> = transcript
+                .words
+                .iter()
+                .map(|w| DumpWord { w: w.text.clone(), s: w.start_ms, e: w.end_ms, c: w.conf, spk: None })
+                .collect();
+            if let Some(p) = &asr_cache {
+                std::fs::write(p, serde_json::to_string(&words).expect("serialise words"))
+                    .expect("write ASR cache");
+            }
+            words
+        }
+    };
     let asr_secs = t0.elapsed().as_secs_f64();
 
     // TRANSCRIPT_CHECK_ASR_ONLY skips diarization, for sweeps that only care
@@ -93,21 +162,23 @@ fn main() {
             num_speakers: 0,
         }
     } else {
-        engine.diarizer().diarize(&wav, None).expect("diarize")
+        engine.diarizer().diarize(&wav, speakers).expect("diarize")
     };
     let diar_secs = t1.elapsed().as_secs_f64();
 
-    let audio_ms = truth.turns.last().map(|t| t.end_ms).unwrap_or(0);
+    let audio_ms = match truth.turns.last() {
+        Some(t) => t.end_ms,
+        None => scribe_asr::read_wav(&wav).map(|w| w.duration_ms()).unwrap_or(0),
+    };
     let audio_secs = audio_ms as f64 / 1000.0;
 
-    let mut words: Vec<Word> = transcript
-        .words
+    let mut words: Vec<Word> = asr_words
         .iter()
         .map(|w| Word {
-            text: w.text.clone(),
-            start_ms: w.start_ms,
-            end_ms: w.end_ms,
-            conf: w.conf,
+            text: w.w.clone(),
+            start_ms: w.s,
+            end_ms: w.e,
+            conf: w.c,
             local_idx: None,
         })
         .collect();
@@ -132,7 +203,31 @@ fn main() {
         audio_secs / (asr_secs + diar_secs + merge_secs).max(1e-9)
     );
     println!("words            {}", words.len());
+    println!("speakers found   {}", diarization.num_speakers);
     println!("speaker islands  {islands}  (brief runs both neighbours disagree with)");
+
+    if let Ok(path) = std::env::var("TRANSCRIPT_CHECK_DUMP") {
+        let dump = Dump {
+            audio_ms,
+            num_speakers: diarization.num_speakers,
+            asr_secs,
+            diar_secs,
+            words: words
+                .iter()
+                .map(|w| DumpWord { w: w.text.clone(), s: w.start_ms, e: w.end_ms, c: w.conf, spk: w.local_idx })
+                .collect(),
+            turns: diarization
+                .turns
+                .iter()
+                .map(|t| DumpTurn { spk: t.local_idx, s: t.start_ms, e: t.end_ms })
+                .collect(),
+        };
+        std::fs::write(&path, serde_json::to_string(&dump).expect("serialise dump")).expect("write dump");
+        println!("dump             {path}");
+    }
+    if truth.turns.is_empty() {
+        return;
+    }
 
     let mut wer_pct = 0.0f64;
     let spoken: Vec<String> = truth.turns.iter().flat_map(|t| normalise(&t.text)).collect();
