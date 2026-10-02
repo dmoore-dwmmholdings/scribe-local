@@ -72,6 +72,8 @@ const COHESION_RATIO: f32 = 0.73;
 /// four at 53.3%). The split and the participant floor downstream are stricter
 /// than it is, so it never binds.
 const MIN_DURATION_ON: f32 = 0.3;
+/// Segmentation window shift, as a fraction of the window. See `build_diarizer`.
+const SEG_WINDOW_SHIFT: f32 = 0.1;
 const MIN_DURATION_OFF: f32 = 0.5;
 
 /// How many merges the step-back may undo. Two people merging into one cluster
@@ -275,12 +277,18 @@ impl SherpaDiarizer {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(CLUSTER_THRESHOLD),
+            // Per-segment confidence is not used here, and costs time.
+            compute_confidence: false,
         };
 
         let config = OfflineSpeakerDiarizationConfig {
             segmentation: OfflineSpeakerSegmentationModelConfig {
                 pyannote: OfflineSpeakerSegmentationPyannoteModelConfig {
                     model: Some(path_str(&self.paths.segmentation)?),
+                    // How far the segmentation model's window moves each step,
+                    // as a fraction of the window. 0.1 is what sherpa-onnx
+                    // used before this was configurable (1.13.2 and earlier).
+                    window_shift_ratio: env_f32_or("SCRIBE_SEG_SHIFT", SEG_WINDOW_SHIFT),
                 },
                 num_threads: self.num_threads,
                 debug: false,
@@ -414,7 +422,19 @@ impl SherpaDiarizer {
         // windows went by, which made the answer depend on the order they
         // happened to arrive in.
         let mut fragments: Vec<Fragment> = Vec::new();
-        let mut start = 0usize;
+        // SCRIBE_DIARIZE_FRAGMENTS caches pass 1, which is ~90% of the cost:
+        // with the file present, the windows are not segmented or embedded
+        // again, and only the clustering below runs. That is what makes
+        // sweeping the clustering on a multi-hour recording take seconds. The
+        // cache is only valid for the audio and pass-1 settings that wrote it.
+        let fragments_cache = std::env::var("SCRIBE_DIARIZE_FRAGMENTS").ok().map(std::path::PathBuf::from);
+        let cached = fragments_cache.as_ref().filter(|p| p.exists()).map(|p| load_fragments(p)).transpose()?;
+        let mut start = if let Some(cached) = cached {
+            fragments = cached;
+            audio.samples.len()
+        } else {
+            0usize
+        };
         while start < audio.samples.len() {
             let end = (start + window).min(audio.samples.len());
             let offset_ms = (start as i64 * 1000) / sr as i64;
@@ -479,6 +499,10 @@ impl SherpaDiarizer {
             }
 
             start = end;
+        }
+
+        if let Some(p) = fragments_cache.as_ref().filter(|p| !p.exists()) {
+            save_fragments(p, &fragments)?;
         }
 
         if fragments.is_empty() {
@@ -553,6 +577,45 @@ impl SherpaDiarizer {
             num_speakers,
         })
     }
+}
+
+/// The on-disk form of a [`Fragment`], for the pass-1 cache.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedFragment {
+    turns: Vec<(i32, i64, i64)>,
+    embedding: Option<Vec<f32>>,
+    speech_ms: i64,
+}
+
+fn save_fragments(path: &Path, fragments: &[Fragment]) -> Result<()> {
+    let cached: Vec<CachedFragment> = fragments
+        .iter()
+        .map(|f| CachedFragment {
+            turns: f.turns.iter().map(|t| (t.local_idx, t.start_ms, t.end_ms)).collect(),
+            embedding: f.embedding.clone(),
+            speech_ms: f.speech_ms,
+        })
+        .collect();
+    let json = serde_json::to_string(&cached).map_err(|e| Error::Internal(format!("fragments: {e}")))?;
+    std::fs::write(path, json).map_err(Error::Io)
+}
+
+fn load_fragments(path: &Path) -> Result<Vec<Fragment>> {
+    let json = std::fs::read_to_string(path).map_err(Error::Io)?;
+    let cached: Vec<CachedFragment> =
+        serde_json::from_str(&json).map_err(|e| Error::Internal(format!("fragments: {e}")))?;
+    Ok(cached
+        .into_iter()
+        .map(|c| Fragment {
+            turns: c
+                .turns
+                .into_iter()
+                .map(|(local_idx, start_ms, end_ms)| SpeakerTurn { local_idx, start_ms, end_ms })
+                .collect(),
+            embedding: c.embedding,
+            speech_ms: c.speech_ms,
+        })
+        .collect())
 }
 
 /// One window speaker: a stretch of a single voice, before anything is decided
@@ -822,6 +885,9 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     // pair joined. Recording the pair rather than a snapshot of the whole
     // partition keeps this linear in the number of merges.
     let mut history: Vec<(usize, f32, (usize, usize))> = Vec::new();
+    // The merges that joined two clusters each holding enough speech to be a
+    // person, as (index into `history`, similarity). See `choose_people_cut`.
+    let mut people_merges: Vec<(usize, f32)> = Vec::new();
     // How many clusters hold enough speech to be somebody, after each merge.
     // `substantial[k]` is that count once `k` merges have been applied — which
     // is how a stated number of *people* is located in a sequence of merges
@@ -831,6 +897,7 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     let substantial = |ms: i64| -> bool {
         ms >= floor && (total_speech <= 0 || (ms as f64) / (total_speech as f64) >= MIN_SPEAKER_SHARE)
     };
+    let is_person = substantial;
     let count_substantial = |alive: &[bool], speech: &[i64]| -> usize {
         (0..alive.len()).filter(|&k| alive[k] && substantial(speech[k])).count()
     };
@@ -853,6 +920,15 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
             }
         }
         let Some((i, j, s)) = best else { break };
+        if is_person(speech[i]) && is_person(speech[j]) {
+            people_merges.push((history.len(), s));
+            if std::env::var("SCRIBE_DIARIZE_MERGES").is_ok() {
+                eprintln!(
+                    "   people-merge {live:>4} clusters  sim {s:.4}  {:>8} ms + {:>8} ms",
+                    speech[i], speech[j]
+                );
+            }
+        }
         history.push((live, s, (i, j)));
 
         // Lance-Williams update for average linkage: the merged cluster's
@@ -905,7 +981,23 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     // the most-merged partition holding the stated number, rather than the first
     // partition to stumble into it.
     let cut = {
-        let discovered = choose_cut(&history);
+        // Two readings of the merge sequence, and the one that finds more
+        // speakers wins. `choose_cut` is right on every fixture but collapses a
+        // long real meeting to one speaker: thousands of slivers being absorbed
+        // set its sense of "consistent", and no merge between people looks
+        // like a step down from that. `choose_people_cut` reads only the merges
+        // between people-sized clusters, which finds that meeting's five, but
+        // can stop a person short where several voices are alike. Each is
+        // wrong where the other is right, and both err towards too few.
+        // SCRIBE_COUNT_RULE=merges or =people runs one alone, for comparison.
+        let discovered = match std::env::var("SCRIBE_COUNT_RULE").ok().as_deref() {
+            Some("merges") => choose_cut(&history),
+            Some("people") => choose_people_cut(&people_merges).unwrap_or_else(|| choose_cut(&history)),
+            _ => {
+                let merged = choose_cut(&history);
+                choose_people_cut(&people_merges).map_or(merged, |p| p.min(merged))
+            }
+        };
         match target {
             None => discovered,
             // No point holds the stated number: the audio does not support it,
@@ -1107,7 +1199,80 @@ fn cluster_fragments(fragments: &[Fragment], expected: Option<i32>) -> Vec<i32> 
     }
 
     fold_slight_speakers(fragments, &mut assignment);
+    let passes = std::env::var("SCRIBE_REFINE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    refine_assignment(fragments, &mut assignment, passes);
     assignment
+}
+
+/// Move each fragment to the speaker whose voice it most resembles, and repeat.
+///
+/// Agglomerative clustering never revisits a merge: a fragment that joined the
+/// wrong cluster early, while every cluster was a handful of fragments, stays
+/// there however clear it becomes later that it belongs elsewhere. Once the
+/// speaker set is settled, each speaker has a voice — the speech-weighted mean
+/// of its fragments — and a fragment closer to another speaker's voice than to
+/// its own is in the wrong place. The speaker set does not change here, only
+/// who holds what. One pass: on a real meeting it moved speaker accuracy from
+/// 86.4% to 87.2% and further passes changed nothing; on every fixture it is
+/// inert. Experiment hook: `SCRIBE_REFINE` passes, 0 to skip.
+fn refine_assignment(fragments: &[Fragment], assignment: &mut [i32], passes: usize) {
+    for _ in 0..passes {
+        let mut centroids: HashMap<i32, (Vec<f32>, f32)> = HashMap::new();
+        for (frag, &cluster) in fragments.iter().zip(assignment.iter()) {
+            let Some(emb) = frag.embedding.as_ref().filter(|e| !e.is_empty()) else { continue };
+            let weight = (frag.speech_ms.max(1) as f32) / 1000.0;
+            let entry = centroids.entry(cluster).or_insert_with(|| (vec![0.0; emb.len()], 0.0));
+            if entry.0.len() != emb.len() {
+                continue;
+            }
+            for (a, b) in entry.0.iter_mut().zip(emb.iter()) {
+                *a += *b * weight;
+            }
+            entry.1 += weight;
+        }
+        if centroids.len() < 2 {
+            return;
+        }
+        let mut voices: Vec<(i32, Vec<f32>)> = centroids
+            .into_iter()
+            .map(|(c, (mut sum, _))| {
+                l2_normalize(&mut sum);
+                (c, sum)
+            })
+            .collect();
+        voices.sort_by_key(|(c, _)| *c);
+
+        let mut moved = 0usize;
+        for (i, frag) in fragments.iter().enumerate() {
+            let Some(emb) = frag.embedding.as_ref().filter(|e| !e.is_empty()) else { continue };
+            let mut best = (assignment[i], f32::MIN);
+            for (c, voice) in &voices {
+                if voice.len() != emb.len() {
+                    continue;
+                }
+                let sim = cosine(voice, emb);
+                if sim > best.1 {
+                    best = (*c, sim);
+                }
+            }
+            if best.0 != assignment[i] {
+                assignment[i] = best.0;
+                moved += 1;
+            }
+        }
+        if moved == 0 {
+            break;
+        }
+    }
+
+    // A speaker can be emptied by the moves; keep indices contiguous.
+    let mut seen: Vec<i32> = assignment.to_vec();
+    seen.sort_unstable();
+    seen.dedup();
+    let renumber: HashMap<i32, i32> = seen.iter().enumerate().map(|(new, old)| (*old, new as i32)).collect();
+    for a in assignment.iter_mut() {
+        *a = renumber[a];
+    }
 }
 
 /// Fold clusters holding too little speech to be a participant into the voice
@@ -1274,6 +1439,47 @@ fn relative_drop() -> f32 {
 /// somewhere.
 ///
 /// Returns how many merges to keep.
+/// Where the merges between people stop being merges of one person.
+///
+/// Most merges absorb a sliver: a fragment too short to be anybody joining a
+/// cluster that is. Those say nothing about how many people there are, and on a
+/// long real recording they swamp the sequence `choose_cut` reads — thousands
+/// of them, at similarities a clean fixture never shows. The merges that decide
+/// the count are the few that join two clusters each holding a person's worth
+/// of speech. While they join takes of one voice they stay similar; the first
+/// one that joins two people is a cliff. This stops before the steepest one.
+///
+/// `None` when there are too few such merges to have a shape, or no fall steep
+/// enough to be a cliff, and the caller falls back to `choose_cut`.
+fn choose_people_cut(people: &[(usize, f32)]) -> Option<usize> {
+    if people.len() < 2 {
+        return None;
+    }
+    // The fall is a difference, not a ratio. Similarities between different
+    // people sit near zero and can cross it, where a ratio means nothing: a
+    // last merge at -0.01 is a ratio of zero, which beat every real cliff and
+    // cut clean six-voice fixtures down to two.
+    //
+    // And it is the *first* such fall, not the largest. Once different people
+    // are being joined their similarities spread out too — 0.50, then 0.23,
+    // then 0.13 on a four-voice fixture — so the largest fall can sit between
+    // two of those, one person short.
+    let drop = people_drop();
+    (0..people.len() - 1)
+        .find(|&k| people[k].1 - people[k + 1].1 >= drop)
+        .map(|k| people[k + 1].0)
+}
+
+/// How far the similarity has to fall between consecutive people-merges to
+/// count as the point where different people start being joined. Experiment
+/// hook: `SCRIBE_PEOPLE_DROP`.
+fn people_drop() -> f32 {
+    std::env::var("SCRIBE_PEOPLE_DROP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.15)
+}
+
 fn choose_cut(history: &[(usize, f32, (usize, usize))]) -> usize {
     let drop = relative_drop();
     let mut accepted: Vec<f32> = Vec::new();

@@ -99,7 +99,7 @@ flate2 = "1"
 # Use the SHARED (DLL) prebuilt, not the default static one. The static Windows
 # prebuilt is compiled with the static CRT (/MT) and won't link against `ort`'s
 # dynamic-CRT (/MD) objects (LNK2038). The shared build is /MD, matching ort.
-sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
+sherpa-onnx = { version = "=1.13.8", default-features = false, features = ["shared"] }
 fastembed = "4"
 ort = "2"
 ndarray = "0.16"
