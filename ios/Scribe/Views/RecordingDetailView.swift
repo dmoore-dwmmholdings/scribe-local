@@ -3,6 +3,8 @@ import SwiftUI
 struct RecordingDetailView: View {
     @State private var model: RecordingDetailModel
     private let initial: Recording?
+    /// Play from this moment once loaded — from a search hit or a citation.
+    private let startAtMs: Int?
 
     @State private var filter = ""
     @State private var alert: AlertItem?
@@ -21,9 +23,10 @@ struct RecordingDetailView: View {
         var id: Int { hashValue }
     }
 
-    init(recordingId: String, initial: Recording?) {
+    init(recordingId: String, initial: Recording?, startAtMs: Int? = nil) {
         _model = State(initialValue: RecordingDetailModel(recordingId: recordingId))
         self.initial = initial
+        self.startAtMs = startAtMs
     }
 
     private var recording: Recording? { model.recording ?? initial }
@@ -78,7 +81,13 @@ struct RecordingDetailView: View {
         .task {
             await model.load()
             player.setTranscript(model.utterances)
-            if recording?.status == .ready { player.load(recordingId: model.recordingId, durationMs: recording?.durationMs) }
+            if recording?.status == .ready {
+                player.load(recordingId: model.recordingId, durationMs: recording?.durationMs)
+                if let ms = startAtMs {
+                    follow = true
+                    player.seek(toMs: ms, play: true)
+                }
+            }
         }
         .refreshable { await model.load() }
         .onDisappear { model.stopPolling(); player.pause() }

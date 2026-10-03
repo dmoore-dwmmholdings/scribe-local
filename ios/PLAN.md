@@ -55,7 +55,7 @@ feature cannot be done without one.
 - [x] **Speakers** — done: `Views/Speakers/SpeakerTagSheet.swift` (known or new name, recognise-later, re-learn voice with confirm, remove name, not a participant with confirm, warns when the voice is already enrolled under another name), `Views/Speakers/SpeakersView.swift` (library, rename, forget), "Who is this?" on each line, Speakers in Settings. — `src/components/SpeakerTagSheet.tsx`, `app/speakers.tsx`: tag a
       speaker by name or enrolled voice, re-learn a voice, untag, not a
       participant; the enrolled library with rename and delete.
-- [ ] **Search + Ask** — `app/(tabs)/search.tsx`, `app/(tabs)/ask.tsx`: hybrid search
+- [x] **Search + Ask** — done: `Views/SearchView.swift` (debounced, this week / said-by filters, highlighted snippets, opens the recording playing from the hit), `Views/AskView.swift` (threaded with history, failed turns never sent back, suggestions, sources open at the cited moment, new chat); detail takes `startAtMs`. — `app/(tabs)/search.tsx`, `app/(tabs)/ask.tsx`: hybrid search
       with snippets and seek-to; Ask with history and citations.
 - [ ] **Export** — `src/util/export.ts`: Markdown, text, SRT via the share sheet; full
       audio (`/recordings/{id}/audio` to a file, then share).
