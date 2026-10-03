@@ -31,7 +31,7 @@ feature cannot be done without one.
       one `APIClient` (bearer auth, `ApiError` with status, `/health`, every route
       the old client calls). Settings store (`src/state/settingsStore.ts`):
       server URL + device id in UserDefaults, device key in Keychain.
-- [ ] **Settings + pairing** — `app/(tabs)/settings.tsx`, `src/state/pairing.ts`,
+- [x] **Settings + pairing** — done: `Views/SettingsView.swift` (test = health + authenticated call, Find server, quality, participants, reduce motion), `Services/Discovery.swift` (NWBrowser TXT), `Services/Pairing.swift` + confirm-before-replace deep link in `ScribeApp`. Speakers/schedule/log links come with their items. — `app/(tabs)/settings.tsx`, `src/state/pairing.ts`,
       `modules/scribe-discovery`: URL/key fields, Test connection (health, then an
       authenticated call), Find server (NWBrowser on `_scribe._tcp`, TXT `url`,
       `auth`), `scribe://pair?url=&key=` deep link, audio quality, default

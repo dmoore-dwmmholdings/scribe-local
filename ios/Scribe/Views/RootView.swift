@@ -7,7 +7,7 @@ struct RootView: View {
             placeholder("Library").tabItem { Label("Library", systemImage: "books.vertical") }
             placeholder("Search").tabItem { Label("Search", systemImage: "magnifyingglass") }
             placeholder("Ask").tabItem { Label("Ask", systemImage: "bubble.left.and.text.bubble.right") }
-            placeholder("Settings").tabItem { Label("Settings", systemImage: "gearshape") }
+            SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
     }
 
