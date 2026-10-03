@@ -36,7 +36,7 @@ feature cannot be done without one.
       authenticated call), Find server (NWBrowser on `_scribe._tcp`, TXT `url`,
       `auth`), `scribe://pair?url=&key=` deep link, audio quality, default
       participants.
-- [ ] **Library** — `app/(tabs)/library.tsx`, `src/state/recordingsStore.ts`:
+- [x] **Library** — done: `Models/LibraryStore.swift` (disk cache, auth-error banner), `Views/LibraryView.swift` (rows, status badge, tag chips, pull to refresh, swipe delete with confirm). Detail is a stub; import and finishing stuck uploads come with Recording/Upload. — `app/(tabs)/library.tsx`, `src/state/recordingsStore.ts`:
       list with status, duration, tags, pull to refresh, tag filter, delete.
 - [ ] **Recording detail** — `app/recordings/[id].tsx` (the big one; split it):
       summary + action items/decisions/topics, transcript by speaker with

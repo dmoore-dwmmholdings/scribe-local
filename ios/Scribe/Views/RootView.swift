@@ -4,7 +4,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             placeholder("Record").tabItem { Label("Record", systemImage: "mic.fill") }
-            placeholder("Library").tabItem { Label("Library", systemImage: "books.vertical") }
+            LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }
             placeholder("Search").tabItem { Label("Search", systemImage: "magnifyingglass") }
             placeholder("Ask").tabItem { Label("Ask", systemImage: "bubble.left.and.text.bubble.right") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
