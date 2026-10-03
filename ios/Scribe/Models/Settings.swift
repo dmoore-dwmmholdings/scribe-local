@@ -11,12 +11,14 @@ final class Settings {
     enum AudioQuality: String, CaseIterable, Identifiable {
         case low, medium, high
         var id: String { rawValue }
-        /// AAC bitrate for each choice.
+        /// AAC bitrate for each choice. At 16 kHz mono the encoder accepts at
+        /// most 48 kbps; 64 kbps and up make the file fail to open, and the
+        /// recording then captures nothing.
         var bitRate: Int {
             switch self {
-            case .low: return 32_000
-            case .medium: return 64_000
-            case .high: return 128_000
+            case .low: return 24_000
+            case .medium: return 32_000
+            case .high: return 48_000
             }
         }
     }
@@ -53,6 +55,14 @@ final class Settings {
         let p = defaults.integer(forKey: Keys.defaultParticipants)
         defaultParticipants = p > 0 ? p : 2
         reduceMotion = defaults.bool(forKey: Keys.reduceMotion)
+        #if DEBUG
+        // UI tests start already connected to a local server.
+        let env = ProcessInfo.processInfo.environment
+        if let url = env["SCRIBE_TEST_BASE_URL"] {
+            baseURL = url
+            deviceKey = env["SCRIBE_TEST_KEY"] ?? ""
+        }
+        #endif
         if let id = defaults.string(forKey: Keys.deviceId) {
             deviceId = id
         } else {

@@ -25,6 +25,8 @@ final class SegmentedRecorder {
     var onLevel: ((Float) -> Void)?
     /// An interruption began (false) or recording resumed after one (true).
     var onInterruption: ((Bool) -> Void)?
+    /// A segment file could not be opened: audio is not being kept. Main queue.
+    var onError: ((String) -> Void)?
 
     private let engine = AVAudioEngine()
     private let writer = DispatchQueue(label: "com.dwmmholdings.scribe.recorder")
@@ -62,8 +64,14 @@ final class SegmentedRecorder {
                                 options: [.allowBluetoothHFP, .defaultToSpeaker, .mixWithOthers])
         try session.setActive(true)
         observe()
+        // Open the first file before the engine runs: if it cannot be created
+        // there is no point recording, and saying so beats a timer at 0:00.
+        let opened = writer.sync { openNextFile() }
+        guard opened else {
+            throw NSError(domain: "Scribe", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                "The recording file could not be created, so nothing would be kept. Try a lower audio quality in Settings."])
+        }
         try startEngine()
-        writer.sync { openNextFile() }
         running = true
     }
 
@@ -80,6 +88,10 @@ final class SegmentedRecorder {
     @discardableResult
     func stop() -> Int {
         running = false
+        #if DEBUG
+        feedTimer?.cancel()
+        feedTimer = nil
+        #endif
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
@@ -95,6 +107,14 @@ final class SegmentedRecorder {
     // MARK: Engine
 
     private func startEngine() throws {
+        #if DEBUG
+        // UI tests feed a file instead of the microphone (the simulator's input
+        // is often silent): same conversion, segments and upload from there on.
+        if let path = ProcessInfo.processInfo.environment["SCRIBE_TEST_AUDIO_FILE"] {
+            try startFileFeed(path)
+            return
+        }
+        #endif
         let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0 else {
@@ -109,6 +129,28 @@ final class SegmentedRecorder {
         engine.prepare()
         try engine.start()
     }
+
+    #if DEBUG
+    private var feedTimer: DispatchSourceTimer?
+
+    private func startFileFeed(_ path: String) throws {
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Self.sampleRate, channels: 1, interleaved: false)
+        converter = AVAudioConverter(from: file.processingFormat, to: outFormat)
+        let chunk: AVAudioFrameCount = 4096
+        let interval = Double(chunk) / file.processingFormat.sampleRate
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "com.dwmmholdings.scribe.feed"))
+        t.schedule(deadline: .now(), repeating: interval)
+        t.setEventHandler { [weak self] in
+            guard let self, let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunk) else { return }
+            if file.framePosition >= file.length { file.framePosition = 0 }
+            try? file.read(into: buf, frameCount: chunk)
+            self.handle(buf)
+        }
+        t.resume()
+        feedTimer = t
+    }
+    #endif
 
     private func handle(_ input: AVAudioPCMBuffer) {
         guard let converter, let outFormat else { return }
@@ -157,16 +199,27 @@ final class SegmentedRecorder {
         }
     }
 
-    private func openNextFile() {
+    /// Open the next segment file. Falls back to lower bitrates if the asked-for
+    /// one is refused, and reports when none work rather than dropping audio.
+    @discardableResult
+    private func openNextFile() -> Bool {
         let url = directory.appendingPathComponent(String(format: "seg-%04d.m4a", seq))
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: Self.sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: bitRate,
-        ]
-        file = try? AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         fileStartFrame = framesWritten
+        for rate in [bitRate, 32_000, 24_000] where rate <= bitRate || rate == bitRate {
+            let settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: Self.sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: rate,
+            ]
+            if let f = try? AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false) {
+                file = f
+                return true
+            }
+        }
+        file = nil
+        DispatchQueue.main.async { self.onError?("Audio could not be saved — the recording file would not open.") }
+        return false
     }
 
     private func closeFile() {

@@ -188,10 +188,26 @@ struct AskResponse: Codable {
     let citations: [Citation]
 }
 
-struct HealthResponse: Codable {
+struct HealthResponse: Decodable {
     let status: String
     let version: String
-    let db: String
+    /// Whether the server's database answered. The server sends a boolean;
+    /// accept a string too, so an older or newer server cannot break the test.
+    let dbOK: Bool
+    var publicBaseUrl: String?
+    var auth: String?
+
+    enum CodingKeys: String, CodingKey { case status, version, db, publicBaseUrl, auth }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = try c.decode(String.self, forKey: .status)
+        version = try c.decode(String.self, forKey: .version)
+        if let b = try? c.decode(Bool.self, forKey: .db) { dbOK = b }
+        else { dbOK = ((try? c.decode(String.self, forKey: .db)) ?? "").lowercased() == "ok" }
+        publicBaseUrl = try c.decodeIfPresent(String.self, forKey: .publicBaseUrl)
+        auth = try c.decodeIfPresent(String.self, forKey: .auth)
+    }
 }
 
 struct CreateRecordingRequest: Codable {

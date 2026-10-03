@@ -11,26 +11,29 @@ struct PlaybackBar: View {
             if let err = player.error {
                 Text(err).font(.caption2).foregroundStyle(Theme.amber).frame(maxWidth: .infinity, alignment: .leading)
             }
-            ZStack(alignment: .leading) {
-                Slider(value: Binding(
-                    get: { scrubbing ?? Double(player.currentMs) },
-                    set: { scrubbing = $0 }
-                ), in: 0...Double(max(1, player.durationMs))) { editing in
-                    if !editing, let s = scrubbing {
-                        player.seek(toMs: Int(s))
-                        scrubbing = nil
-                    }
+            Slider(value: Binding(
+                get: { scrubbing ?? Double(player.currentMs) },
+                set: { scrubbing = $0 }
+            ), in: 0...Double(max(1, player.durationMs))) { editing in
+                if !editing, let s = scrubbing {
+                    player.seek(toMs: Int(s))
+                    scrubbing = nil
                 }
-                .accessibilityLabel("Playback position")
-                // Marks captured while recording, as ticks on the track.
+            }
+            .accessibilityLabel("Playback position")
+            // Marks as ticks on the track. In an overlay, so the reader takes
+            // the slider's size: a bare GeometryReader in this bar grew to fill
+            // the screen and covered the transcript.
+            .overlay {
                 GeometryReader { g in
                     ForEach(marks, id: \.self) { m in
                         Rectangle().fill(Theme.amber).frame(width: 2, height: 10)
-                            .offset(x: g.size.width * CGFloat(m) / CGFloat(max(1, player.durationMs)) - 1, y: g.size.height / 2 - 5)
+                            .position(x: g.size.width * CGFloat(m) / CGFloat(max(1, player.durationMs)), y: g.size.height / 2)
                     }
                 }
                 .allowsHitTesting(false)
             }
+            .frame(height: 30)
             HStack(spacing: 22) {
                 Text(formatClock(ms: Int(scrubbing ?? Double(player.currentMs))))
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.textMuted).frame(width: 56, alignment: .leading)
@@ -59,7 +62,9 @@ struct PlaybackBar: View {
             .font(.title3)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+        .glassBackground(cornerRadius: 26)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 4)
     }
 
     private var rateLabel: String {

@@ -20,6 +20,10 @@ final class RecordingSession {
     private var recorder: SegmentedRecorder?
     private var ticker: Timer?
 
+    /// The server's id for the recording in progress, once the upload queue
+    /// has created it — what live transcription polls.
+    var serverId: String? { localId.flatMap { LocalRecordings.shared.get($0)?.serverId } }
+
     var isActive: Bool {
         switch state {
         case .recording, .paused, .interrupted: return true
@@ -49,6 +53,7 @@ final class RecordingSession {
             DispatchQueue.main.async { UploadQueue.shared.kick() }
         }
         rec.onLevel = { [weak self] in self?.level = $0 }
+        rec.onError = { [weak self] msg in self?.error = msg }
         rec.onInterruption = { [weak self] resumed in
             guard let self else { return }
             if resumed { if self.state == .interrupted { self.state = .recording } }
