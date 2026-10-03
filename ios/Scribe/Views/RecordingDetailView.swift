@@ -13,6 +13,8 @@ struct RecordingDetailView: View {
     @State private var showTags = false
     @State private var editing: Utterance?
     @State private var tagging: TagTarget?
+    @State private var shared: SharedFile?
+    @State private var downloadPercent: Int?
 
     struct TagTarget: Identifiable { let localIdx: Int; var id: Int { localIdx } }
     @State private var player = Player()
@@ -77,7 +79,21 @@ struct RecordingDetailView: View {
         .background(Theme.bg)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { actionsMenu } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { exportMenu }
+            ToolbarItem(placement: .topBarTrailing) { actionsMenu }
+        }
+        .sheet(item: $shared) { f in ShareSheet(url: f.url).ignoresSafeArea() }
+        .overlay {
+            if let p = downloadPercent {
+                VStack(spacing: 10) {
+                    ProgressView(value: Double(p), total: 100).tint(Theme.accent).frame(width: 180)
+                    Text("Downloading audio · \(p)%").font(.footnote).foregroundStyle(Theme.textPrimary)
+                }
+                .padding(20)
+                .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
         .task {
             await model.load()
             player.setTranscript(model.utterances)
@@ -155,6 +171,42 @@ struct RecordingDetailView: View {
                 if let s = recording?.status { StatusBadge(status: s) }
             }
             .font(.caption).foregroundStyle(Theme.textMuted)
+        }
+    }
+
+    private var exportMenu: some View {
+        Menu {
+            if let d = model.detail, !d.utterances.isEmpty || !d.allSummaries.isEmpty {
+                ForEach(Exporter.Format.allCases) { f in
+                    Button(f.label) {
+                        do { shared = SharedFile(url: try Exporter.write(d, as: f, names: model.name(for:))) }
+                        catch { alert = AlertItem(title: "Export failed", message: error.localizedDescription) }
+                    }
+                }
+                Divider()
+            }
+            Button { exportAudio() } label: { Label("Audio (.wav)", systemImage: "waveform") }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+        }
+        .disabled(model.detail == nil || downloadPercent != nil)
+        .accessibilityLabel("Export")
+    }
+
+    /// Download the full audio, then share it — Save to Files, AirDrop, or
+    /// any app that takes a file.
+    private func exportAudio() {
+        guard let d = model.detail else { return }
+        downloadPercent = 0
+        Task {
+            do {
+                let url = try await Exporter.downloadAudio(d) { downloadPercent = $0 }
+                downloadPercent = nil
+                shared = SharedFile(url: url)
+            } catch {
+                downloadPercent = nil
+                alert = AlertItem(title: "Audio export failed", message: error.localizedDescription)
+            }
         }
     }
 

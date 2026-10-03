@@ -57,7 +57,7 @@ feature cannot be done without one.
       participant; the enrolled library with rename and delete.
 - [x] **Search + Ask** — done: `Views/SearchView.swift` (debounced, this week / said-by filters, highlighted snippets, opens the recording playing from the hit), `Views/AskView.swift` (threaded with history, failed turns never sent back, suggestions, sources open at the cited moment, new chat); detail takes `startAtMs`. — `app/(tabs)/search.tsx`, `app/(tabs)/ask.tsx`: hybrid search
       with snippets and seek-to; Ask with history and citations.
-- [ ] **Export** — `src/util/export.ts`: Markdown, text, SRT via the share sheet; full
+- [x] **Export** — done: `Services/Exporter.swift` (Markdown, text, SRT as real files; full WAV with progress), Export menu in the detail toolbar, SwiftUI share sheet (no modal-dismiss race). — `src/util/export.ts`: Markdown, text, SRT via the share sheet; full
       audio (`/recordings/{id}/audio` to a file, then share).
 
 When every core item is ticked, the app builds, and it is installed on the phone:
