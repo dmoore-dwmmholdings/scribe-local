@@ -60,6 +60,8 @@ feature cannot be done without one.
 - [x] **Export** — done: `Services/Exporter.swift` (Markdown, text, SRT as real files; full WAV with progress), Export menu in the detail toolbar, SwiftUI share sheet (no modal-dismiss race). — `src/util/export.ts`: Markdown, text, SRT via the share sheet; full
       audio (`/recordings/{id}/audio` to a file, then share).
 
+**Done 2026-10-03:** every core item ticked, built and installed; `../scribe-mobile-rn-old` deleted (every file in it matched `91e1ab1`, apart from the regenerable `node_modules` and generated `ios/`), and `mobile/` removed from the repo.
+
 When every core item is ticked, the app builds, and it is installed on the phone:
 delete `../scribe-mobile-rn-old`, commit the removal of `mobile/` from the repo
 (and the `mobile/` lines in `.gitignore`), update README/docs that point at

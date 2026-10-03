@@ -11,7 +11,7 @@ Two physical machines, three logical roles. All on one Tailscale tailnet.
 
 ```mermaid
 flowchart LR
-  subgraph Phone["React Native app — anywhere"]
+  subgraph Phone["iPhone app (SwiftUI) — anywhere"]
     REC[Recorder: segmented AAC/m4a]
     UP[tus resumable upload]
   end
@@ -69,7 +69,7 @@ scribe/
 │   ├── scribe-api/             # Axum routers, handlers, auth, blob serving
 │   └── scribe-cli/             # clap subcommands → wires everything (builds `scribe`)
 ├── migrations/                 # SQL files applied by `scribe migrate`
-└── mobile/                     # React Native / Expo app (separate agent)
+└── ios/                        # Native SwiftUI iPhone app (XcodeGen)
 ```
 
 ### Feature flags

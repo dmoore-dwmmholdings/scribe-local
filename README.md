@@ -15,7 +15,7 @@ Install and run:
 - [Prerequisites](#prerequisites)
 - [Quickstart (stub build — no GPU / ONNX required)](#quickstart-stub-build)
 - [Real-ML build (ONNX + GPU)](#real-ml-build)
-- [Mobile app](#mobile-app)
+- [iPhone app](#iphone-app)
 
 How it works:
 
@@ -101,7 +101,7 @@ Two physical machines, three logical roles, all on one Tailscale tailnet:
 
 ```mermaid
 flowchart LR
-  subgraph Phone["React Native app — anywhere"]
+  subgraph Phone["iPhone app (SwiftUI) — anywhere"]
     REC[Recorder: segmented AAC/m4a]
     UP[tus resumable upload]
   end
@@ -152,7 +152,7 @@ crates/
   scribe-api/      Axum routers, handlers, device auth, blob serving
   scribe-cli/      clap subcommands → wires everything (builds `scribe` binary)
 migrations/        SQL applied by `scribe migrate`
-mobile/            React Native / Expo app
+ios/               Native SwiftUI iPhone app (XcodeGen project)
 ```
 
 ---
@@ -461,7 +461,7 @@ embed_dim       = 768
 ## API endpoints
 
 All routes except `GET /health` require `Authorization: Bearer <key>` when
-`auth.require_device_token = true`. This is what the mobile app sends.
+`auth.require_device_token = true`. This is what the iPhone app sends.
 
 ```
 GET    /health                              liveness probe
@@ -524,14 +524,20 @@ CLI: `scribe update <keygen|sign|verify|apply|rollback|info>`.
 
 ---
 
-## Mobile app
+## iPhone app
 
-The React Native / Expo app lives in [`mobile/`](mobile/). It handles:
-- Segmented AAC recording with iOS background audio + Android foreground service.
-- tus resumable upload to the storage node.
-- Transcript viewing, search, speaker labelling, and RAG Q&A.
+The app is native SwiftUI, in [`ios/`](ios/). It handles:
+- Recording 16 kHz mono AAC in gapless 30-second segments, in the background,
+  through calls and route changes, with no connection needed.
+- An upload queue that sends each segment as it closes and never gives up on
+  a recording.
+- Transcripts with word-level playback, speaker tagging and the speaker library,
+  search, and Ask with follow-ups.
+- Pairing by QR code or by finding the server on the local network.
 
-See `mobile/` for its own README.
+Build and install it with [docs/install-iphone.md](docs/install-iphone.md). It
+replaced a React Native app, which is in git history at `91e1ab1` under
+`mobile/`.
 
 ---
 
