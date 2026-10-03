@@ -113,11 +113,15 @@ struct ScribeLiveActivityWidget: Widget {
                         Text(context.state.isPaused ? "Paused" : "Recording")
                             .font(.caption).foregroundStyle(Theme.textMuted)
                     }
-                    .padding(.leading, 4)
+                    // The top corners beside the camera curve tightly.
+                    .padding(.leading, 18)
+                    .padding(.top, 8)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Elapsed(state: context.state, font: .system(.body, design: .rounded).weight(.medium))
-                        .padding(.trailing, 4)
+                        .frame(width: 70, alignment: .trailing)
+                        .padding(.trailing, 18)
+                        .padding(.top, 8)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     HStack {
@@ -130,6 +134,11 @@ struct ScribeLiveActivityWidget: Widget {
                         Spacer(minLength: 8)
                         Controls(paused: context.state.isPaused, compact: true)
                     }
+                    // The island's bottom corners curve hardest; keep the row
+                    // well inside them.
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
                 }
             } compactLeading: {
                 EmberDot(paused: context.state.isPaused)
@@ -139,6 +148,8 @@ struct ScribeLiveActivityWidget: Widget {
             } minimal: {
                 EmberDot(paused: context.state.isPaused)
             }
+            .contentMargins(.horizontal, 16, for: .expanded)
+            .contentMargins(.top, 12, for: .expanded)
             .widgetURL(URL(string: "scribe://record"))
             .keylineTint(Theme.accent)
         }

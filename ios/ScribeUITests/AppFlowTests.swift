@@ -136,6 +136,12 @@ final class AppFlowTests: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
         snap("activity-island")
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        // Long-press the island to expand it.
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.03)).press(forDuration: 1.2)
+        Thread.sleep(forTimeInterval: 1.5)
+        snap("activity-island-expanded")
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
         let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.005))
         top.press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.7)))
         Thread.sleep(forTimeInterval: 2)
