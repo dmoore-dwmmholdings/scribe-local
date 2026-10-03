@@ -132,6 +132,32 @@ final class RecordingDetailModel {
         await run { _ = try await APIClient.shared.setTags(recordingId, tags: tags) }
     }
 
+    /// Name a diarized speaker. A notice comes back when the voice was already
+    /// enrolled under another name, which otherwise stops either being recognised.
+    @MainActor func tagSpeaker(_ localIdx: Int, _ req: NameSpeakerRequest) async -> SpeakerTagSheet.TagOutcome {
+        busy = true
+        defer { busy = false }
+        do {
+            let r = try await APIClient.shared.nameSpeaker(recordingId: recordingId, localIdx: localIdx, req)
+            await load(quiet: true)
+            if let other = r.alreadyEnrolledAs, !other.isEmpty, other != r.displayName {
+                return .notice("This voice is already in the library as \(other). Two names for one voice means neither is recognised — rename or forget one in Speakers.")
+            }
+            return .done
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    @MainActor func untagSpeaker(_ localIdx: Int) async -> String? {
+        await run { try await APIClient.shared.unnameSpeaker(recordingId: recordingId, localIdx: localIdx) }
+    }
+
+    /// Drop a voice that is not a person in the meeting, and its lines.
+    @MainActor func removeSpeaker(_ localIdx: Int) async -> String? {
+        await run { try await APIClient.shared.removeRecordingSpeaker(recordingId: recordingId, localIdx: localIdx) }
+    }
+
     @MainActor func edit(_ u: Utterance, text: String) async -> String? {
         await run { _ = try await APIClient.shared.editUtterance(recordingId: recordingId, utteranceId: u.id, text: text) }
     }

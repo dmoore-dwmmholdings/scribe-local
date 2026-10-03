@@ -52,7 +52,7 @@ feature cannot be done without one.
 - [x] **Upload queue** — done: `Recording/UploadQueue.swift` (creates the server recording, uploads in order, completes once stopped and all up, deletes the local copy only then; backs off 2 s→5 min and never gives up; wakes on segment, launch, foreground, network; stops on 401 with a reason; 409 on complete = already done), "On this phone" section in the Library. — `src/recording/uploadQueue.ts`: create recording, PUT each
       segment as it closes, retry with backoff, survive relaunch (persist the
       queue), complete with duration + marks.
-- [ ] **Speakers** — `src/components/SpeakerTagSheet.tsx`, `app/speakers.tsx`: tag a
+- [x] **Speakers** — done: `Views/Speakers/SpeakerTagSheet.swift` (known or new name, recognise-later, re-learn voice with confirm, remove name, not a participant with confirm, warns when the voice is already enrolled under another name), `Views/Speakers/SpeakersView.swift` (library, rename, forget), "Who is this?" on each line, Speakers in Settings. — `src/components/SpeakerTagSheet.tsx`, `app/speakers.tsx`: tag a
       speaker by name or enrolled voice, re-learn a voice, untag, not a
       participant; the enrolled library with rename and delete.
 - [ ] **Search + Ask** — `app/(tabs)/search.tsx`, `app/(tabs)/ask.tsx`: hybrid search

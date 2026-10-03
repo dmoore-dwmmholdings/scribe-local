@@ -10,6 +10,9 @@ struct RecordingDetailView: View {
     @State private var showParticipants = false
     @State private var showTags = false
     @State private var editing: Utterance?
+    @State private var tagging: TagTarget?
+
+    struct TagTarget: Identifiable { let localIdx: Int; var id: Int { localIdx } }
     @State private var player = Player()
     @State private var follow = true
 
@@ -104,6 +107,15 @@ struct RecordingDetailView: View {
         .sheet(item: $editing) { u in
             EditUtteranceSheet(original: u.text) { text in act { await model.edit(u, text: text) } }
                 .presentationDetents([.medium])
+        }
+        .sheet(item: $tagging) { t in
+            SpeakerTagSheet(
+                currentLabel: model.speakerName(t.localIdx),
+                isNamed: model.speakers.first(where: { $0.localIdx == t.localIdx })?.speakerId != nil,
+                onTag: { await model.tagSpeaker(t.localIdx, $0) },
+                onUntag: { await model.untagSpeaker(t.localIdx) },
+                onNotParticipant: { await model.removeSpeaker(t.localIdx) }
+            )
         }
         .alert(item: $alert) { a in Alert(title: Text(a.title), message: Text(a.message)) }
     }
@@ -278,6 +290,9 @@ struct RecordingDetailView: View {
                     .id(u.id)
                         .contextMenu {
                             Button { player.seek(toMs: u.startMs, play: true) } label: { Label("Play from here", systemImage: "play") }
+                            if let idx = u.localIdx {
+                                Button { tagging = TagTarget(localIdx: idx) } label: { Label("Who is this?", systemImage: "person.crop.circle.badge.questionmark") }
+                            }
                             Button { editing = u } label: { Label("Edit text", systemImage: "pencil") }
                             Button { UIPasteboard.general.string = u.text } label: { Label("Copy", systemImage: "doc.on.doc") }
                         }

@@ -105,6 +105,7 @@ struct SettingsView: View {
 
     private var deviceSection: some View {
         Section("This device") {
+            NavigationLink { SpeakersView() } label: { Label("Speakers", systemImage: "person.2.wave.2") }
             LabeledField("Update token") {
                 SecureField("For server self-update only", text: $updateToken)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
