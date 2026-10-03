@@ -19,6 +19,10 @@ final class RecordingSession {
 
     private var recorder: SegmentedRecorder?
     private var ticker: Timer?
+    /// For the Live Activity's timer: time spent paused, and since when.
+    private var pausedMs: Double = 0
+    private var pauseBegan: Date?
+    private var segmentsUploaded = 0
 
     /// The server's id for the recording in progress, once the upload queue
     /// has created it — what live transcription polls.
@@ -56,8 +60,12 @@ final class RecordingSession {
         rec.onError = { [weak self] msg in self?.error = msg }
         rec.onInterruption = { [weak self] resumed in
             guard let self else { return }
-            if resumed { if self.state == .interrupted { self.state = .recording } }
-            else if self.state == .recording { self.state = .interrupted }
+            if resumed {
+                if self.state == .interrupted { self.state = .recording; self.activityResumed() }
+            } else if self.state == .recording {
+                self.state = .interrupted
+                self.activityPaused()
+            }
         }
         do {
             try rec.start()
@@ -71,6 +79,10 @@ final class RecordingSession {
         marks = []
         elapsedMs = 0
         state = .recording
+        pausedMs = 0
+        pauseBegan = nil
+        segmentsUploaded = 0
+        LiveActivityController.shared.start(title: title?.isEmpty == false ? title : nil, startedAt: Date())
         UIApplication.shared.isIdleTimerDisabled = true
         ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self, let r = self.recorder else { return }
@@ -82,12 +94,37 @@ final class RecordingSession {
         guard state == .recording else { return }
         recorder?.pause()
         state = .paused
+        activityPaused()
     }
 
     func resume() {
         guard state == .paused || state == .interrupted else { return }
         recorder?.resume()
         state = .recording
+        activityResumed()
+    }
+
+    /// The upload queue sent a segment of this recording.
+    func segmentUploaded(localId id: String) {
+        guard id == localId, isActive else { return }
+        segmentsUploaded += 1
+        let n = segmentsUploaded
+        LiveActivityController.shared.update { $0.segmentsUploaded = n }
+    }
+
+    private func activityPaused() {
+        if pauseBegan == nil { pauseBegan = Date() }
+        LiveActivityController.shared.update { $0.isPaused = true }
+    }
+
+    private func activityResumed() {
+        if let began = pauseBegan { pausedMs += Date().timeIntervalSince(began) * 1000 }
+        pauseBegan = nil
+        let paused = pausedMs
+        LiveActivityController.shared.update {
+            $0.isPaused = false
+            $0.pausedMs = paused
+        }
     }
 
     /// Bookmark this moment, in recorded time.
@@ -106,6 +143,7 @@ final class RecordingSession {
         ticker = nil
         let total = r.stop()
         recorder = nil
+        LiveActivityController.shared.end()
         elapsedMs = total
         level = 0
         UIApplication.shared.isIdleTimerDisabled = false

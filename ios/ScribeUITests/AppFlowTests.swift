@@ -124,4 +124,25 @@ final class AppFlowTests: XCTestCase {
         }
         app.buttons["Stop"].tap()
     }
+
+    /// The Live Activity: the Dynamic Island from the Home Screen, and the
+    /// Lock Screen presentation from the notification view.
+    func test4_liveActivity() {
+        tab("Record")
+        app.buttons["Start recording"].tap()
+        app.tap()
+        Thread.sleep(forTimeInterval: 4)
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        snap("activity-island")
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.005))
+        top.press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.7)))
+        Thread.sleep(forTimeInterval: 2)
+        snap("activity-lockscreen")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        Thread.sleep(forTimeInterval: 1)
+        if app.buttons["Stop"].waitForExistence(timeout: 5) { app.buttons["Stop"].tap() }
+    }
 }

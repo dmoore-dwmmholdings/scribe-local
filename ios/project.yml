@@ -21,6 +21,9 @@ targets:
     platform: iOS
     sources:
       - path: Scribe
+      - path: Shared
+    dependencies:
+      - target: ScribeLiveActivity
     info:
       path: Scribe/Info.plist
       properties:
@@ -51,6 +54,28 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.dwmmholdings.scribenative
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
+  # Lock Screen and Dynamic Island while recording.
+  ScribeLiveActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ScribeLiveActivity
+      - path: Shared
+      - path: Scribe/Theme.swift
+    info:
+      path: ScribeLiveActivity/Info.plist
+      properties:
+        CFBundleDisplayName: Scribe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dwmmholdings.scribenative.liveactivity
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) WIDGET_EXTENSION
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
   # Drives the app in the simulator against a local server and saves
   # screenshots: ios/run-ui-tests.sh.
   ScribeUITests:

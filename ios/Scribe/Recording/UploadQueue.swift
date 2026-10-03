@@ -129,6 +129,7 @@ final class UploadQueue {
                 r.lastError = nil
             }
             try? FileManager.default.removeItem(at: url)
+            RecordingSession.shared.segmentUploaded(localId: id)
         }
 
         guard let now = store.get(id), now.finished, now.pendingSegments == 0, !now.completed else { return }
