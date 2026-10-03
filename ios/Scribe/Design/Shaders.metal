@@ -78,69 +78,85 @@ static float fbm3(float2 p) {
     return v;
 }
 
-/// A sphere of light, after the Siri orb in ember colours. Soft ribbons of the
-/// bright end of the palette flow inside it — no dark patches, it glows from
-/// within — under a broad glass sheen and a pink rim, with a halo that fades
-/// out before the frame's edge. `level` (0…1) speeds and stirs the flow and
-/// lifts the glow.
+/// A drop of liquid glass with light flowing inside, after the Siri orb in
+/// ember colours. Not a lit ball: the outline wobbles like a liquid, the glass
+/// is flat across the middle and curves only at the edge, so the strands inside
+/// magnify and bend towards the rim as they would through a lens, and the edge
+/// carries Liquid Glass's specular rim — bright upper left, fainter lower right
+/// — over a thin dark line that gives the glass its thickness. `level` (0…1)
+/// speeds the flow, stirs it, and makes the drop wobble more.
 [[ stitchable ]] half4 emberOrb(float2 pos, half4 color, float2 size, float time, float level) {
     float halfSize = min(size.x, size.y) * 0.5;
     float2 uv = (pos - size * 0.5) / halfSize;
-    float radius = 0.70 + 0.05 * level;
-    float2 q = uv / radius;
-    float r = length(q);
-    float px = 1.0 / (halfSize * radius);
-    float edge = 1.0 / radius;  // the frame's edge, in sphere units
+    float base = 0.70 + 0.04 * level;
+    float2 q0 = uv / base;
+    float ang = atan2(q0.y, q0.x);
+    float2 ringPt = float2(cos(ang), sin(ang));
 
-    // Halo: gone well before the frame's edge, so the frame never shows.
-    float haloT = clamp((r - 1.0) / max(edge * 0.92 - 1.0, 0.01), 0.0, 1.0);
-    float halo = pow(1.0 - haloT, 2.6) * (0.28 + 0.42 * level);
+    // A liquid outline: the radius wobbles with slow noise around the edge.
+    float wob = (vnoise(ringPt * 1.3 + float2(time * 0.35, -time * 0.25)) - 0.5) * (0.05 + 0.08 * level)
+              + (vnoise(ringPt * 2.6 + float2(-time * 0.6, time * 0.4) + 9.0) - 0.5) * (0.02 + 0.04 * level);
+    float R = 1.0 + wob;
+    float r = length(q0) / R;      // 1 at the wobbling edge
+    float px = 1.0 / (halfSize * base * R);
+    float frameEdge = 1.0 / base;
+
+    // Halo, gone before the frame's edge.
+    float haloT = clamp((length(q0) - R) / max(frameEdge * 0.92 - R, 0.01), 0.0, 1.0);
+    float halo = pow(1.0 - haloT, 2.8) * (0.26 + 0.40 * level);
     half3 haloColor = mix(half3(1.0, 0.45, 0.25), half3(1.0, 0.35, 0.50), half(0.5 + 0.5 * sin(time * 0.5)));
     if (r > 1.0 + px) {
         return half4(haloColor * half(halo), half(halo));
     }
 
-    float z = sqrt(max(1.0 - r * r, 0.0));
-    float3 n = float3(q, z);
+    // Lens profile: flat in the middle, curving only near the edge.
+    float edgeCurve = pow(clamp(r, 0.0, 1.0), 6.0);
+    // Refraction: the inside is seen magnified and bent towards the rim.
+    float2 q = (q0 / R) * (1.0 - 0.38 * edgeCurve);
 
-    // Flow: a slow warped field, curving with the sphere.
+    // Flow.
     float t = time * (0.22 + 0.7 * level);
-    float2 p = q * 0.62 / (0.6 + 0.4 * z);
+    float2 p = q * 0.62;
     float2 w = float2(fbm3(p + float2(t * 0.55, -t * 0.4)),
                       fbm3(p + float2(-t * 0.45, t * 0.3) + 3.7));
     float field = fbm3(p * 1.3 + (1.2 + 1.3 * level) * w + float2(0.0, t * 0.2));
 
-    // A deep, warm, translucent body…
-    half3 col = mix(half3(0.24, 0.05, 0.06), half3(0.62, 0.20, 0.12), half(z * 0.9));
+    // Tinted glass body, lighter than a solid ball: warm, deep, even.
+    half3 col = mix(half3(0.30, 0.07, 0.07), half3(0.52, 0.15, 0.11), half(0.5 + 0.5 * w.x));
 
-    // …with strands of light running through it: contour lines of the flowing
-    // field, so they cross the whole sphere, each strand its own ember colour.
+    // Strands of light: contour lines of the field, each its own ember colour.
     float k = field * 3.4 + 0.12 * t;
     float width = 0.10 + 0.05 * level;
     float strand = exp(-pow(abs(sin(3.14159 * k)) / width, 2.0));
     half3 strandColor = emberLoop(floor(k) * 0.29 + 0.1 * w.y);
-    // A softer, dimmer layer behind, from the other field, for depth.
     float k2 = w.y * 4.0 - 0.08 * t + 0.5;
     float back = exp(-pow(abs(sin(3.14159 * k2)) / (width * 2.4), 2.0));
     half3 backColor = emberLoop(floor(k2) * 0.37 + 0.5);
-
-    col += backColor * half(back * (0.28 + 0.2 * level) * (0.4 + 0.6 * z));
+    col += backColor * half(back * (0.30 + 0.2 * level));
     col += strandColor * half(strand * (0.95 + 0.4 * level));
-    // The strands' hot centres run nearly white.
     col += half3(1.0, 0.92, 0.8) * half(pow(strand, 6.0) * 0.45);
 
-    // A warm core of light behind it all.
-    float core = pow(z, 4.0);
-    col += half3(1.0, 0.55, 0.28) * half(core * (0.22 + 0.28 * level));
+    // A warm light deep in the middle.
+    float centre = exp(-dot(q, q) * 2.2);
+    col += half3(1.0, 0.55, 0.28) * half(centre * (0.20 + 0.28 * level));
 
-    // Glass: a bright pink-white rim, a broad sheen upper left, a faint
-    // reflected light lower right.
-    float fres = pow(1.0 - z, 2.4);
-    col = mix(col, half3(1.0, 0.66, 0.74), half(fres * 0.7));
-    float sheen = pow(max(dot(n, normalize(float3(-0.42, -0.6, 0.68))), 0.0), 18.0);
-    col += half3(1.0, 0.96, 0.92) * half(sheen * 0.35);
-    float bounce = pow(max(dot(n, normalize(float3(0.5, 0.6, 0.6))), 0.0), 6.0);
-    col += half3(1.0, 0.5, 0.6) * half(bounce * 0.10);
+    // The glass edge. A thin dark line just inside the rim (the glass's
+    // thickness), then the rim itself catching light — bright upper left,
+    // fainter lower right — as Liquid Glass does.
+    float d = 1.0 - r;                                  // distance in from the edge
+    float2 dir = q0 / max(length(q0), 1e-4);
+    float topLeft = clamp(dot(dir, normalize(float2(-0.6, -0.8))), 0.0, 1.0);
+    float bottomRight = clamp(dot(dir, normalize(float2(0.6, 0.8))), 0.0, 1.0);
+    float inner = exp(-pow((d - 0.055) / 0.03, 2.0));
+    col *= half(1.0 - 0.35 * inner);
+    float rim = exp(-pow(d / 0.018, 2.0));
+    col += half3(1.0, 0.95, 0.9) * half(rim * (0.25 + 0.85 * pow(topLeft, 1.5) + 0.35 * pow(bottomRight, 2.0)));
+    // A soft edge glow all round, in the palette, where the glass is thickest.
+    col += half3(1.0, 0.5, 0.55) * half(edgeCurve * 0.28);
+    // A broad, soft reflection across the top.
+    float2 rq = q0 / R - float2(-0.18, -0.42);
+    float reflection = exp(-pow(length(rq * float2(0.8, 1.6)) / 0.42, 2.0));
+    col += half3(1.0, 0.97, 0.94) * half(reflection * 0.16);
 
     float inside = smoothstep(1.0 + px, 1.0 - px, r);
     float alpha = mix(halo, 1.0, inside);
