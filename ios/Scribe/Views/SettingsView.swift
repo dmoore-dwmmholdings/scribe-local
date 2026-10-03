@@ -23,104 +23,128 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                connectionSection
-                recordingSection
-                deviceSection
+            TabScreen("Settings") {
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionLabel("Connection")
+                    connectionCard
+                    Text("Find server looks for your Scribe server on this Wi-Fi network and fills in its tailnet address. Scanning the QR code the installer prints does the same, with the key.")
+                        .font(.caption).foregroundStyle(Theme.textDim).padding(.horizontal, 6)
+
+                    SectionLabel("Recording").padding(.top, 14)
+                    recordingCard
+
+                    SectionLabel("This device").padding(.top, 14)
+                    deviceCard
+                }
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.bg)
-            .navigationTitle("Settings")
-            .onAppear(perform: loadDrafts)
             .confirmationDialog("Choose a server", isPresented: $showFound, titleVisibility: .visible) {
                 ForEach(found) { server in
                     Button("\(server.name) — \(server.url)") { choose(server) }
                 }
             }
             .alert(item: $alert) { a in Alert(title: Text(a.title), message: Text(a.message)) }
+            .onAppear(perform: loadDrafts)
         }
     }
 
-    // MARK: Sections
+    // MARK: Cards
 
-    private var connectionSection: some View {
-        Section {
-            LabeledField("Server URL") {
-                TextField("https://scribe.example.ts.net", text: $baseURL)
-                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-            }
-            LabeledField("Device key") {
-                HStack {
-                    Group {
-                        if keyVisible { TextField("Not needed on your tailnet", text: $deviceKey) }
-                        else { SecureField("Not needed on your tailnet", text: $deviceKey) }
+    private var connectionCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 14) {
+                FieldBox(label: "Server URL") {
+                    TextField("", text: $baseURL, prompt: Text("https://scribe.example.ts.net").foregroundColor(Theme.textDim))
+                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
+                FieldBox(label: "Device key") {
+                    HStack {
+                        Group {
+                            if keyVisible { TextField("", text: $deviceKey, prompt: Text("Not needed on your tailnet").foregroundColor(Theme.textDim)) }
+                            else { SecureField("", text: $deviceKey, prompt: Text("Not needed on your tailnet").foregroundColor(Theme.textDim)) }
+                        }
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Button { keyVisible.toggle() } label: {
+                            Image(systemName: keyVisible ? "eye.slash" : "eye").foregroundStyle(Theme.textMuted)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(keyVisible ? "Hide key" : "Show key")
                     }
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button { keyVisible.toggle() } label: {
-                        Image(systemName: keyVisible ? "eye.slash" : "eye").foregroundStyle(Theme.textMuted)
-                    }.buttonStyle(.plain)
                 }
+                HStack(spacing: 10) {
+                    PillButton(title: testing ? "Testing…" : "Test connection", icon: "antenna.radiowaves.left.and.right",
+                               prominent: false, busy: testing) { Task { await testConnection() } }
+                    PillButton(title: scanning ? "Searching…" : "Find server", icon: "wifi",
+                               prominent: false, busy: scanning) { Task { await findServer() } }
+                }
+                if let r = testResult { testResultView(r) }
+                PillButton(title: "Save", icon: "checkmark", action: save)
             }
-            HStack {
-                Button { Task { await testConnection() } } label: {
-                    Label(testing ? "Testing…" : "Test connection", systemImage: "antenna.radiowaves.left.and.right")
-                }.disabled(testing)
-                Spacer()
-                Button { Task { await findServer() } } label: {
-                    Label(scanning ? "Searching…" : "Find server", systemImage: "wifi")
-                }.disabled(scanning)
-            }
-            .buttonStyle(.borderless)
-            if let r = testResult { testResultView(r) }
-            Button("Save", action: save).bold()
-        } header: {
-            Text("Connection")
-        } footer: {
-            Text("Find server looks for your Scribe server on this Wi-Fi network and fills in its tailnet address. Scanning the QR code the installer prints does the same, with the key.")
         }
     }
 
-    private var recordingSection: some View {
-        Section {
-            Picker("Audio quality", selection: $settings.audioQuality) {
-                Text("Low").tag(Settings.AudioQuality.low)
-                Text("Medium").tag(Settings.AudioQuality.medium)
-                Text("High").tag(Settings.AudioQuality.high)
-            }
-            Stepper(value: $participants, in: 1...20) {
+    private var recordingCard: some View {
+        Card(padding: 14) {
+            VStack(spacing: 0) {
                 HStack {
-                    Text("Default participants")
+                    Text("Audio quality").foregroundStyle(Theme.textPrimary)
                     Spacer()
-                    Text("\(participants)").foregroundStyle(Theme.textMuted).monospacedDigit()
+                    Picker("Audio quality", selection: $settings.audioQuality) {
+                        Text("Low").tag(Settings.AudioQuality.low)
+                        Text("Medium").tag(Settings.AudioQuality.medium)
+                        Text("High").tag(Settings.AudioQuality.high)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
                 }
+                .padding(.vertical, 8)
+                Hairline()
+                HStack {
+                    Text("Default participants").foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Text("\(participants)").font(.mono(15)).foregroundStyle(Theme.textMuted)
+                    Stepper("", value: $participants, in: 1...20).labelsHidden()
+                }
+                .padding(.vertical, 8)
+                .onChange(of: participants) { _, v in settings.defaultParticipants = v }
+                Hairline()
+                Toggle(isOn: $settings.reduceMotion) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reduce motion").foregroundStyle(Theme.textPrimary)
+                        Text("Still the orb and the edge glow").font(.caption).foregroundStyle(Theme.textMuted)
+                    }
+                }
+                .tint(Theme.accent)
+                .padding(.vertical, 8)
             }
-            .onChange(of: participants) { _, v in settings.defaultParticipants = v }
-            Toggle("Reduce motion", isOn: $settings.reduceMotion)
-        } header: {
-            Text("Recording")
-        } footer: {
-            Text("Every option records 16 kHz mono AAC; only the bitrate changes. The participant count pre-fills the Record screen and helps speaker detection.")
         }
     }
 
-    private var deviceSection: some View {
-        Section("This device") {
-            NavigationLink { SpeakersView() } label: { Label("Speakers", systemImage: "person.2.wave.2") }
-            LabeledField("Update token") {
-                SecureField("For server self-update only", text: $updateToken)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-            }
-            HStack {
-                Text("Device ID")
-                Spacer()
-                Text(settings.deviceId).foregroundStyle(Theme.textMuted).font(.footnote.monospaced())
-                    .textSelection(.enabled)
-            }
-            HStack {
-                Text("Version")
-                Spacer()
-                Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")
-                    .foregroundStyle(Theme.textMuted)
+    private var deviceCard: some View {
+        Card(padding: 14) {
+            VStack(alignment: .leading, spacing: 0) {
+                NavigationLink { SpeakersView() } label: { CardRow(icon: "person.2.wave.2", label: "Speakers") }
+                    .buttonStyle(.plain)
+                Hairline()
+                FieldBox(label: "Update token") {
+                    SecureField("", text: $updateToken, prompt: Text("For server self-update only").foregroundColor(Theme.textDim))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
+                .padding(.vertical, 12)
+                Hairline()
+                HStack {
+                    Text("Device ID").foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Text(settings.deviceId).font(.mono(12)).foregroundStyle(Theme.textMuted).textSelection(.enabled)
+                }
+                .padding(.vertical, 12)
+                Hairline()
+                HStack {
+                    Text("Version").foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")
+                        .font(.mono(12)).foregroundStyle(Theme.textMuted)
+                }
+                .padding(.vertical, 12)
             }
         }
     }
@@ -165,7 +189,9 @@ struct SettingsView: View {
         do {
             let health = try await APIClient.shared.health()
             _ = try await APIClient.shared.listRecordings(limit: 1)
-            testResult = .ok("Connected · v\(health.version) · DB \(health.db) · access OK")
+            testResult = health.dbOK
+                ? .ok("Connected · v\(health.version) · database OK · access OK")
+                : .failed("The server answered (v\(health.version)) but its database did not. Check Docker on the server.")
         } catch let e as APIError where e.isUnauthorized {
             testResult = .failed(deviceKey.isEmpty
                 ? "No device key, and the server did not admit this phone by its tailnet identity. Paste a key from the server, or sign in to Tailscale as the server's owner."

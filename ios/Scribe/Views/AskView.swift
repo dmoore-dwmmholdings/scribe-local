@@ -27,6 +27,13 @@ struct AskView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
+                        ScreenTitle("Ask") {
+                            if !turns.isEmpty {
+                                Button("New chat") { turns = []; draft = "" }
+                                    .font(.mono(12, weight: .bold)).foregroundStyle(Theme.accent).disabled(thinking)
+                            }
+                        }
+                        .padding(.horizontal, -16)
                         if turns.isEmpty { hero } else { thread }
                         if thinking {
                             HStack(spacing: 8) { ProgressView(); Text("Thinking…").foregroundStyle(Theme.textMuted) }
@@ -37,15 +44,8 @@ struct AskView: View {
                 }
                 .onChange(of: turns.count) { _, _ in withAnimation { proxy.scrollTo(turns.last?.id, anchor: .top) } }
             }
-            .background(Theme.bg)
-            .navigationTitle("Ask")
-            .toolbar {
-                if !turns.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("New chat") { turns = []; draft = "" }.disabled(thinking)
-                    }
-                }
-            }
+            .background(Theme.bg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .bottom) { composer }
             .navigationDestination(for: RecordingLink.self) { link in
                 RecordingDetailView(recordingId: link.id, initial: nil, startAtMs: link.seekMs)
@@ -58,7 +58,7 @@ struct AskView: View {
             Text("Ask your meetings").font(.title2.weight(.semibold)).foregroundStyle(Theme.textPrimary)
             Text("Ask anything about your recordings, then keep talking — follow-ups remember what you already asked. Answers link back to the moment in the audio.")
                 .font(.callout).foregroundStyle(Theme.textMuted)
-            Text("TRY ASKING").font(.caption.weight(.semibold)).foregroundStyle(Theme.textDim).padding(.top, 8)
+            SectionLabel("Try asking", color: Theme.textDim).padding(.top, 8)
             ForEach(Self.suggestions, id: \.self) { s in
                 Button { ask(s) } label: {
                     HStack {
@@ -85,7 +85,7 @@ struct AskView: View {
                     Text(a).font(.callout).foregroundStyle(turn.failed ? Theme.amber : Theme.textBody).textSelection(.enabled)
                 }
                 if !turn.citations.isEmpty {
-                    Text("SOURCES").font(.caption2.weight(.semibold)).foregroundStyle(Theme.textDim)
+                    SectionLabel("Sources", color: Theme.textDim)
                     ForEach(Array(turn.citations.enumerated()), id: \.offset) { _, c in
                         NavigationLink(value: RecordingLink(id: c.recordingId, title: c.recordingTitle, seekMs: c.startMs)) {
                             HStack(alignment: .top, spacing: 8) {
@@ -124,7 +124,6 @@ struct AskView: View {
             .accessibilityLabel("Send")
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
-        .background(.ultraThinMaterial)
     }
 
     private func ask(_ text: String) {

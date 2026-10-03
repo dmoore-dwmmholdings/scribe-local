@@ -11,24 +11,66 @@ struct LibraryView: View {
         return store.recordings.filter { ($0.tags ?? []).contains(tag) }
     }
 
+    private var pendingLocal: [LocalRecording] {
+        LocalRecordings.shared.items.filter { !$0.completed }.sorted { $0.createdAt > $1.createdAt }
+    }
+
     var body: some View {
         NavigationStack {
-            Group {
-                if !Settings.shared.isConfigured {
-                    ContentUnavailableView("No server yet", systemImage: "server.rack",
-                                           description: Text("Set up your Scribe server in Settings."))
-                } else if store.recordings.isEmpty && !store.loading && pendingLocal.isEmpty {
-                    ContentUnavailableView("No recordings yet", systemImage: "waveform",
-                                           description: Text("Recordings you make appear here once they upload."))
-                } else {
-                    list
+            TabScreen("Library", accessory: {
+                Text("\(store.recordings.count)").font(.mono(11)).foregroundStyle(Theme.textMuted)
+            }) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let err = store.authError {
+                        Label(err, systemImage: "lock.trianglebadge.exclamationmark")
+                            .font(.footnote).foregroundStyle(Theme.amber).padding(.bottom, 4)
+                    }
+                    if !pendingLocal.isEmpty {
+                        SectionLabel("On this phone").padding(.top, 4)
+                        ForEach(pendingLocal) { r in Card(padding: 14) { LocalRecordingRow(recording: r) } }
+                        if let why = UploadQueue.shared.blocked {
+                            Button { UploadQueue.shared.kick() } label: {
+                                Label(why, systemImage: "arrow.clockwise").font(.footnote).foregroundStyle(Theme.amber)
+                            }
+                        }
+                    }
+                    if !store.tags.isEmpty { tagChips }
+                    if !Settings.shared.isConfigured {
+                        empty("No server yet", "Set up your Scribe server in Settings. Recordings wait on this phone until then.", "server.rack")
+                    } else if store.recordings.isEmpty && pendingLocal.isEmpty && !store.loading {
+                        empty("No recordings yet", "Recordings you make appear here once they upload.", "waveform")
+                    }
+                    if !shown.isEmpty {
+                        SectionLabel(tag.map { "#\($0)" } ?? "Recordings").padding(.top, 8)
+                    }
+                    ForEach(shown) { r in
+                        NavigationLink(value: r) {
+                            Card(padding: 14) { RecordingRow(recording: r) }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("recording-row")
+                        .contextMenu {
+                            Button(role: .destructive) { pendingDelete = r } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+                    if let tag, shown.isEmpty {
+                        Text("No recordings tagged “\(tag)”.").font(.footnote).foregroundStyle(Theme.textMuted)
+                    }
                 }
             }
-            .background(Theme.bg)
-            .navigationTitle("Library")
             .navigationDestination(for: Recording.self) { RecordingDetailView(recordingId: $0.id, initial: $0) }
             .refreshable { await store.refresh() }
-            .task { await store.refresh() }
+            .task {
+                // Keep statuses moving while anything is still on its way: a
+                // recording that finished processing should not sit at
+                // PROCESSING until someone pulls to refresh.
+                while !Task.isCancelled {
+                    await store.refresh()
+                    let busy = store.recordings.contains { $0.status == .processing || $0.status == .uploading }
+                        || !pendingLocal.isEmpty
+                    try? await Task.sleep(for: .seconds(busy ? 5 : 60))
+                }
+            }
             .confirmationDialog("Delete this recording?", isPresented: Binding(
                 get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
             ), titleVisibility: .visible, presenting: pendingDelete) { r in
@@ -45,46 +87,14 @@ struct LibraryView: View {
         }
     }
 
-    private var pendingLocal: [LocalRecording] {
-        LocalRecordings.shared.items.filter { !$0.completed }.sorted { $0.createdAt > $1.createdAt }
-    }
-
-    private var list: some View {
-        List {
-            if !pendingLocal.isEmpty {
-                Section {
-                    ForEach(pendingLocal) { r in LocalRecordingRow(recording: r) }
-                        .listRowBackground(Theme.surface)
-                    if let why = UploadQueue.shared.blocked {
-                        Button { UploadQueue.shared.kick() } label: {
-                            Label(why, systemImage: "arrow.clockwise").font(.footnote)
-                        }
-                        .listRowBackground(Theme.surface)
-                    }
-                } header: {
-                    Text("On this phone")
-                }
-            }
-            if let err = store.authError {
-                Label(err, systemImage: "lock.trianglebadge.exclamationmark")
-                    .font(.footnote).foregroundStyle(Theme.amber)
-                    .listRowBackground(Theme.surface)
-            }
-            if !store.tags.isEmpty {
-                tagChips.listRowBackground(Color.clear).listRowInsets(EdgeInsets())
-            }
-            ForEach(shown) { r in
-                NavigationLink(value: r) { RecordingRow(recording: r) }
-                    .listRowBackground(Theme.surface)
-                    .swipeActions {
-                        Button(role: .destructive) { pendingDelete = r } label: { Label("Delete", systemImage: "trash") }
-                    }
-            }
-            if let tag, shown.isEmpty {
-                Text("No recordings tagged “\(tag)”.").foregroundStyle(Theme.textMuted).listRowBackground(Color.clear)
-            }
+    private func empty(_ title: String, _ body: String, _ icon: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 34)).foregroundStyle(Theme.accent.opacity(0.7))
+            Text(title).font(.headline).foregroundStyle(Theme.textPrimary)
+            Text(body).font(.footnote).foregroundStyle(Theme.textMuted).multilineTextAlignment(.center)
         }
-        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
     }
 
     private var tagChips: some View {
@@ -93,8 +103,8 @@ struct LibraryView: View {
                 Chip(label: "All", active: tag == nil) { tag = nil }
                 ForEach(store.tags, id: \.self) { t in Chip(label: t, active: tag == t) { tag = (tag == t ? nil : t) } }
             }
-            .padding(.horizontal, 16).padding(.vertical, 6)
         }
+        .padding(.vertical, 4)
     }
 }
 
@@ -102,22 +112,27 @@ struct RecordingRow: View {
     let recording: Recording
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(recording.title?.isEmpty == false ? recording.title! : "Untitled recording")
-                .font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-            HStack(spacing: 6) {
-                if let d = recording.createdDate {
-                    Text(d.formatted(date: .abbreviated, time: .shortened))
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Theme.accent.opacity(0.07))
+                .frame(width: 44, height: 44)
+                .overlay(Image(systemName: "waveform").foregroundStyle(Theme.accent))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(recording.title?.isEmpty == false ? recording.title! : "Untitled recording")
+                    .font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                HStack(spacing: 6) {
+                    if let d = recording.createdDate { Text(d.formatted(.dateTime.month(.abbreviated).day().hour().minute())) }
+                    if let ms = recording.durationMs { Text("· \(formatClock(ms: ms))") }
+                    StatusBadge(status: recording.status)
                 }
-                if let ms = recording.durationMs { Text("· \(formatClock(ms: ms))") }
-                StatusBadge(status: recording.status)
+                .font(.mono(11, weight: .medium)).foregroundStyle(Theme.textMuted)
+                if let tags = recording.tags, !tags.isEmpty {
+                    Text(tags.map { "#\($0)" }.joined(separator: " ")).font(.caption2).foregroundStyle(Theme.textDim)
+                }
             }
-            .font(.caption).foregroundStyle(Theme.textMuted)
-            if let tags = recording.tags, !tags.isEmpty {
-                Text(tags.map { "#\($0)" }.joined(separator: " ")).font(.caption2).foregroundStyle(Theme.textDim)
-            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.textDim)
         }
-        .padding(.vertical, 2)
     }
 }
 
@@ -157,7 +172,7 @@ struct StatusBadge: View {
     let status: RecordingStatus
     var body: some View {
         if status != .ready {
-            Text(label).font(.caption2.weight(.semibold))
+            Text(label).font(.mono(10, weight: .bold))
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(color.opacity(0.15), in: Capsule())
                 .foregroundStyle(color)

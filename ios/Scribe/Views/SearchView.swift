@@ -21,31 +21,47 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                filters.listRowBackground(Color.clear).listRowInsets(EdgeInsets())
-                if let error {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(Theme.amber)
-                }
-                if searched && hits.isEmpty && !searching && error == nil {
-                    ContentUnavailableView.search(text: query)
-                        .listRowBackground(Color.clear)
-                }
-                if !hits.isEmpty {
-                    Section("\(hits.count) results") {
+            TabScreen("Search") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(Theme.textMuted)
+                        TextField("", text: $query, prompt: Text("Search across all meetings…").foregroundColor(Theme.textDim))
+                            .foregroundStyle(Theme.textPrimary)
+                            .textInputAutocapitalization(.never)
+                            .submitLabel(.search)
+                            .onSubmit { Task { await run() } }
+                        if !query.isEmpty {
+                            Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textDim) }
+                                .accessibilityLabel("Clear search")
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 11)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(Theme.border, lineWidth: 1))
+
+                    filters
+                    if let error {
+                        Label(error, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(Theme.amber)
+                    }
+                    if searching && hits.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(.top, 30) }
+                    if searched && hits.isEmpty && !searching && error == nil {
+                        VStack(spacing: 8) {
+                            Text("No matches found").font(.headline).foregroundStyle(Theme.textPrimary)
+                            Text("Try other words, or widen the filters.").font(.footnote).foregroundStyle(Theme.textMuted)
+                        }
+                        .frame(maxWidth: .infinity).padding(.top, 40)
+                    }
+                    if !hits.isEmpty {
+                        SectionLabel("\(hits.count) results").padding(.top, 6)
                         ForEach(Array(hits.enumerated()), id: \.offset) { _, hit in
                             NavigationLink(value: RecordingLink(id: hit.recordingId, title: hit.recordingTitle, seekMs: hit.startMs)) {
-                                HitRow(hit: hit, query: query)
+                                Card(padding: 14) { HitRow(hit: hit, query: query) }
                             }
-                            .listRowBackground(Theme.surface)
+                            .buttonStyle(.plain)
                         }
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.bg)
-            .navigationTitle("Search")
-            .searchable(text: $query, prompt: "Search across all meetings…")
-            .onSubmit(of: .search) { Task { await run() } }
             .task(id: "\(query)|\(range.rawValue)|\(speaker?.id ?? "")") {
                 // Debounce typing; an empty box clears the results.
                 try? await Task.sleep(for: .milliseconds(400))
@@ -53,7 +69,6 @@ struct SearchView: View {
                 await run()
             }
             .task { speakers = (try? await APIClient.shared.speakers()) ?? [] }
-            .overlay { if searching && hits.isEmpty { ProgressView() } }
             .navigationDestination(for: RecordingLink.self) { link in
                 RecordingDetailView(recordingId: link.id, initial: nil, startAtMs: link.seekMs)
             }
@@ -79,7 +94,7 @@ struct SearchView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 6)
+            .padding(.vertical, 2)
         }
     }
 

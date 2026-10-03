@@ -233,7 +233,7 @@ struct RecordingDetailView: View {
     private func banner(_ text: String, _ icon: String) -> some View {
         Label(text, systemImage: icon).font(.footnote).foregroundStyle(Theme.textMuted)
             .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: Summary
@@ -242,7 +242,7 @@ struct RecordingDetailView: View {
         if let s = model.activeSummary {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("SUMMARY").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+                    SectionLabel("Summary").padding(.leading, -6)
                     Spacer()
                     if let t = s.template, let label = model.templates.first(where: { $0.id == t })?.label {
                         Text(label).font(.caption2).foregroundStyle(Theme.textMuted)
@@ -256,7 +256,8 @@ struct RecordingDetailView: View {
                 list("Topics", s.topics?.items)
             }
             .padding(14)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.border, lineWidth: 1))
         } else if recording?.status == .ready {
             Button { act { await model.summarize(template: model.templates.first?.id ?? "general") } } label: {
                 Label("Generate a summary", systemImage: "sparkles").frame(maxWidth: .infinity)
@@ -283,7 +284,7 @@ struct RecordingDetailView: View {
 
     private func marksSection(_ marks: [Int]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("MARKS").font(.caption.weight(.semibold)).foregroundStyle(Theme.textMuted)
+            SectionLabel("Marks", color: Theme.amber)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(marks, id: \.self) { m in
@@ -305,7 +306,7 @@ struct RecordingDetailView: View {
 
     private var talkTimeSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("TALK TIME").font(.caption.weight(.semibold)).foregroundStyle(Theme.textMuted)
+            SectionLabel("Talk time").padding(.leading, -6)
             ForEach(model.talkTime, id: \.name) { row in
                 HStack(spacing: 8) {
                     Circle().fill(Theme.speakerColor(row.localIdx)).frame(width: 8, height: 8)
@@ -322,7 +323,8 @@ struct RecordingDetailView: View {
             }
         }
         .padding(14)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.border, lineWidth: 1))
     }
 
     // MARK: Transcript
@@ -336,9 +338,11 @@ struct RecordingDetailView: View {
     @ViewBuilder private var transcriptSection: some View {
         if !model.utterances.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("TRANSCRIPT").font(.caption.weight(.semibold)).foregroundStyle(Theme.textMuted)
-                TextField("Find in transcript", text: $filter)
-                    .textFieldStyle(.roundedBorder)
+                SectionLabel("Transcript")
+                TextField("", text: $filter, prompt: Text("Find in transcript").foregroundColor(Theme.textDim))
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .foregroundStyle(Theme.textPrimary)
                     .textInputAutocapitalization(.never)
                 ForEach(shownUtterances) { u in
                     UtteranceRow(

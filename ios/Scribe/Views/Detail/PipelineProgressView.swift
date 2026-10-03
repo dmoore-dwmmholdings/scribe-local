@@ -41,7 +41,8 @@ struct PipelineProgressView: View {
                 }
             }
             .padding(14)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.border, lineWidth: 1))
         }
     }
 
