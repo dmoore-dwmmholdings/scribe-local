@@ -38,7 +38,7 @@ feature cannot be done without one.
       participants.
 - [x] **Library** — done: `Models/LibraryStore.swift` (disk cache, auth-error banner), `Views/LibraryView.swift` (rows, status badge, tag chips, pull to refresh, swipe delete with confirm). Detail is a stub; import and finishing stuck uploads come with Recording/Upload. — `app/(tabs)/library.tsx`, `src/state/recordingsStore.ts`:
       list with status, duration, tags, pull to refresh, tag filter, delete.
-- [ ] **Recording detail** — `app/recordings/[id].tsx` (the big one; split it):
+- [x] **Recording detail** — done: `Models/RecordingDetailModel.swift` (load, 4 s poll while working, actions), `Views/RecordingDetailView.swift` (summary + template menu, talk time, transcript with find + edit, participants/tags/edit sheets, reprocess/rediarize confirms), `Views/Detail/PipelineProgressView.swift`. Playback, speaker tagging and export hook in with their items. — `app/recordings/[id].tsx` (the big one; split it):
       summary + action items/decisions/topics, transcript by speaker with
       colours, pipeline progress while processing, summary templates, reprocess,
       rediarize, participants.
