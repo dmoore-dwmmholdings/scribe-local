@@ -14,7 +14,7 @@ struct RecordView: View {
     var body: some View {
         ZStack {
             Theme.bg.ignoresSafeArea()
-            if session.isActive { EdgeGlow(level: recording ? session.level : 0.1, reduceMotion: settings.reduceMotion) }
+            if session.isActive { EdgeGlow(level: recording ? session.level : 0.05, reduceMotion: settings.reduceMotion).transition(.opacity) }
 
             VStack(spacing: 0) {
                 header
@@ -51,7 +51,7 @@ struct RecordView: View {
         VStack(spacing: 22) {
             Spacer(minLength: 10)
             EmberOrb(level: recording ? session.level : 0, active: recording, reduceMotion: settings.reduceMotion)
-                .frame(width: 210, height: 210)
+                .frame(width: 280, height: 280)
             Text(formatClock(ms: session.elapsedMs))
                 .font(.system(size: 54, weight: .light, design: .rounded).monospacedDigit())
                 .foregroundStyle(session.state == .paused ? Theme.amber : Theme.textPrimary)
@@ -67,7 +67,8 @@ struct RecordView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
                 EmberOrb(level: recording ? session.level : 0, active: recording, reduceMotion: settings.reduceMotion)
-                    .frame(width: 58, height: 58)
+                    .frame(width: 76, height: 76)
+                    .padding(-9)
                 Text(formatClock(ms: session.elapsedMs))
                     .font(.system(size: 34, weight: .light, design: .rounded).monospacedDigit())
                     .foregroundStyle(session.state == .paused ? Theme.amber : Theme.textPrimary)

@@ -104,4 +104,24 @@ final class AppFlowTests: XCTestCase {
             XCTFail("No Play button on the recording")
         }
     }
+
+    /// Frames of the orb and the edge glow, idle and while recording, to judge
+    /// the animation by eye.
+    func test3_visuals() {
+        tab("Record")
+        snap("orb-idle-a")
+        Thread.sleep(forTimeInterval: 1.2)
+        snap("orb-idle-b")
+        app.buttons["Start recording"].tap()
+        app.tap()
+        if app.buttons["Turn off live transcript"].waitForExistence(timeout: 3) {
+            app.buttons["Turn off live transcript"].tap()
+        }
+        Thread.sleep(forTimeInterval: 3)
+        for i in 0..<4 {
+            snap("orb-recording-\(i)")
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        app.buttons["Stop"].tap()
+    }
 }
