@@ -49,7 +49,7 @@ feature cannot be done without one.
       `modules/scribe-audio-session`, `modules/scribe-bg-timer`, `app/(tabs)/index.tsx`:
       AVAudioSession record + background audio, AAC segments rotated without
       re-activating the session, marks, pause/resume, level meter, interruptions.
-- [ ] **Upload queue** — `src/recording/uploadQueue.ts`: create recording, PUT each
+- [x] **Upload queue** — done: `Recording/UploadQueue.swift` (creates the server recording, uploads in order, completes once stopped and all up, deletes the local copy only then; backs off 2 s→5 min and never gives up; wakes on segment, launch, foreground, network; stops on 401 with a reason; 409 on complete = already done), "On this phone" section in the Library. — `src/recording/uploadQueue.ts`: create recording, PUT each
       segment as it closes, retry with backoff, survive relaunch (persist the
       queue), complete with duration + marks.
 - [ ] **Speakers** — `src/components/SpeakerTagSheet.tsx`, `app/speakers.tsx`: tag a

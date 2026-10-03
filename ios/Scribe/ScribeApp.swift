@@ -12,6 +12,8 @@ struct ScribeApp: App {
                 // `scribe://pair?url=…&key=…`, from the QR code the installer
                 // prints. Confirmed before it replaces a saved server.
                 .onOpenURL { url in pairing = PairingPayload(url: url) }
+                // Anything recorded but not yet on the server resumes uploading.
+                .task { UploadQueue.shared.kick() }
                 .alert("Pair with this server?", isPresented: Binding(
                     get: { pairing != nil }, set: { if !$0 { pairing = nil } }
                 ), presenting: pairing) { p in

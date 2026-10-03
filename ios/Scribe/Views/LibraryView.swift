@@ -17,7 +17,7 @@ struct LibraryView: View {
                 if !Settings.shared.isConfigured {
                     ContentUnavailableView("No server yet", systemImage: "server.rack",
                                            description: Text("Set up your Scribe server in Settings."))
-                } else if store.recordings.isEmpty && !store.loading {
+                } else if store.recordings.isEmpty && !store.loading && pendingLocal.isEmpty {
                     ContentUnavailableView("No recordings yet", systemImage: "waveform",
                                            description: Text("Recordings you make appear here once they upload."))
                 } else {
@@ -45,8 +45,26 @@ struct LibraryView: View {
         }
     }
 
+    private var pendingLocal: [LocalRecording] {
+        LocalRecordings.shared.items.filter { !$0.completed }.sorted { $0.createdAt > $1.createdAt }
+    }
+
     private var list: some View {
         List {
+            if !pendingLocal.isEmpty {
+                Section {
+                    ForEach(pendingLocal) { r in LocalRecordingRow(recording: r) }
+                        .listRowBackground(Theme.surface)
+                    if let why = UploadQueue.shared.blocked {
+                        Button { UploadQueue.shared.kick() } label: {
+                            Label(why, systemImage: "arrow.clockwise").font(.footnote)
+                        }
+                        .listRowBackground(Theme.surface)
+                    }
+                } header: {
+                    Text("On this phone")
+                }
+            }
             if let err = store.authError {
                 Label(err, systemImage: "lock.trianglebadge.exclamationmark")
                     .font(.footnote).foregroundStyle(Theme.amber)
@@ -97,6 +115,38 @@ struct RecordingRow: View {
             .font(.caption).foregroundStyle(Theme.textMuted)
             if let tags = recording.tags, !tags.isEmpty {
                 Text(tags.map { "#\($0)" }.joined(separator: " ")).font(.caption2).foregroundStyle(Theme.textDim)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// A recording still on this phone: recording, uploading, or waiting.
+struct LocalRecordingRow: View {
+    let recording: LocalRecording
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(recording.title ?? recording.createdAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+            HStack(spacing: 6) {
+                if !recording.finished {
+                    Text("Recording").foregroundStyle(Theme.accent)
+                } else if recording.pendingSegments > 0 {
+                    Text("Uploading \(recording.segments.count - recording.pendingSegments) of \(recording.segments.count)")
+                } else {
+                    Text("Finishing upload")
+                }
+                if recording.durationMs > 0 { Text("· \(formatClock(ms: recording.durationMs))") }
+            }
+            .font(.caption).foregroundStyle(Theme.textMuted)
+            if recording.finished, recording.segments.count > 0 {
+                ProgressView(value: Double(recording.segments.count - recording.pendingSegments),
+                             total: Double(recording.segments.count))
+                    .tint(Theme.accent)
+            }
+            if let e = recording.lastError {
+                Text(e).font(.caption2).foregroundStyle(Theme.amber).lineLimit(2)
             }
         }
         .padding(.vertical, 2)
