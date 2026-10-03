@@ -10,6 +10,8 @@ struct RecordingDetailView: View {
     @State private var showParticipants = false
     @State private var showTags = false
     @State private var editing: Utterance?
+    @State private var player = Player()
+    @State private var follow = true
 
     enum Confirm: Identifiable {
         case reprocess, rediarize
@@ -29,6 +31,7 @@ struct RecordingDetailView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 header
@@ -43,19 +46,39 @@ struct RecordingDetailView: View {
                 if let tags = recording?.tags, !tags.isEmpty {
                     Text(tags.map { "#\($0)" }.joined(separator: "  ")).font(.caption).foregroundStyle(Theme.textMuted)
                 }
+                if let marks = recording?.marks, !marks.isEmpty { marksSection(marks) }
                 summarySection
                 if model.talkTime.count >= 2 { talkTimeSection }
                 transcriptSection
             }
             .padding(16)
         }
+        // Keep the line being spoken on screen while following.
+        .onChange(of: player.activeLine) { _, line in
+            guard follow, player.isPlaying, filter.isEmpty, let line else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(line, anchor: .center) }
+        }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if recording?.status == .ready || player.isReady {
+                PlaybackBar(player: player, marks: recording?.marks ?? [], follow: $follow)
+            }
+        }
+        .onChange(of: model.utterances) { _, u in player.setTranscript(u) }
+        .onChange(of: recording?.status) { _, s in
+            if s == .ready { player.load(recordingId: model.recordingId, durationMs: recording?.durationMs) }
+        }
         .background(Theme.bg)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { actionsMenu } }
-        .task { await model.load() }
+        .task {
+            await model.load()
+            player.setTranscript(model.utterances)
+            if recording?.status == .ready { player.load(recordingId: model.recordingId, durationMs: recording?.durationMs) }
+        }
         .refreshable { await model.load() }
-        .onDisappear { model.stopPolling() }
+        .onDisappear { model.stopPolling(); player.pause() }
         .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
                             titleVisibility: .visible, presenting: confirm) { c in
             switch c {
@@ -183,6 +206,28 @@ struct RecordingDetailView: View {
         }
     }
 
+    // MARK: Marks
+
+    private func marksSection(_ marks: [Int]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("MARKS").font(.caption.weight(.semibold)).foregroundStyle(Theme.textMuted)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(marks, id: \.self) { m in
+                        Button { player.seek(toMs: m, play: true) } label: {
+                            Label(formatClock(ms: m), systemImage: "flag.fill")
+                                .font(.footnote.monospacedDigit())
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(Theme.amber.opacity(0.15), in: Capsule())
+                                .foregroundStyle(Theme.amber)
+                        }
+                        .accessibilityLabel("Play from mark at \(formatClock(ms: m))")
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: Talk time
 
     private var talkTimeSection: some View {
@@ -223,8 +268,16 @@ struct RecordingDetailView: View {
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                 ForEach(shownUtterances) { u in
-                    UtteranceRow(utterance: u, name: model.name(for: u))
+                    UtteranceRow(
+                        utterance: u, name: model.name(for: u),
+                        tokens: player.tokens(forLine: u.id),
+                        activeToken: player.activeLine == u.id ? player.activeToken : nil,
+                        isActive: player.activeLine == u.id,
+                        onSeek: { ms in player.seek(toMs: ms, play: true) }
+                    )
+                    .id(u.id)
                         .contextMenu {
+                            Button { player.seek(toMs: u.startMs, play: true) } label: { Label("Play from here", systemImage: "play") }
                             Button { editing = u } label: { Label("Edit text", systemImage: "pencil") }
                             Button { UIPasteboard.general.string = u.text } label: { Label("Copy", systemImage: "doc.on.doc") }
                         }
@@ -240,9 +293,20 @@ struct RecordingDetailView: View {
     }
 }
 
-struct UtteranceRow: View {
+/// One transcript line. Each word is tappable and plays from that word; the
+/// word being spoken is lit.
+struct UtteranceRow: View, Equatable {
     let utterance: Utterance
     let name: String
+    let tokens: [Karaoke.Token]
+    let activeToken: Int?
+    let isActive: Bool
+    let onSeek: (Int) -> Void
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.utterance == b.utterance && a.name == b.name && a.activeToken == b.activeToken
+            && a.isActive == b.isActive && a.tokens.count == b.tokens.count
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -251,9 +315,25 @@ struct UtteranceRow: View {
                 Text(name).font(.caption.weight(.semibold)).foregroundStyle(Theme.speakerColor(utterance.localIdx))
                 Text(formatClock(ms: utterance.startMs)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.textDim)
             }
-            Text(utterance.text).font(.callout).foregroundStyle(Theme.textBody).textSelection(.enabled)
+            .onTapGesture { onSeek(utterance.startMs) }
+            if tokens.isEmpty {
+                Text(utterance.text).font(.callout).foregroundStyle(Theme.textBody)
+            } else {
+                FlowLayout(spacing: 4) {
+                    ForEach(Array(tokens.enumerated()), id: \.offset) { i, t in
+                        Text(t.text)
+                            .font(.callout)
+                            .foregroundStyle(i == activeToken ? Color(hex: 0xFFD9BF) : Theme.textBody)
+                            .padding(.horizontal, i == activeToken ? 2 : 0)
+                            .background(i == activeToken ? Theme.accent.opacity(0.28) : .clear, in: RoundedRectangle(cornerRadius: 3))
+                            .onTapGesture { onSeek(t.startMs) }
+                    }
+                }
+            }
         }
         .padding(.vertical, 4)
+        .padding(.horizontal, isActive ? 8 : 0)
+        .background(isActive ? Theme.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

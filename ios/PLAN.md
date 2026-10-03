@@ -42,7 +42,7 @@ feature cannot be done without one.
       summary + action items/decisions/topics, transcript by speaker with
       colours, pipeline progress while processing, summary templates, reprocess,
       rediarize, participants.
-- [ ] **Playback** — `src/playback/karaoke.ts`, `src/components/PlaybackWave.tsx`:
+- [x] **Playback** — done: `Services/Karaoke.swift` (port of karaoke.ts), `Services/Player.swift` (AVPlayer with bearer header, active line/word published only on change), `Views/Detail/PlaybackBar.swift` (scrub, ±15 s, 1–2×, mark ticks, follow), tappable words via `FlowLayout`, marks chips. — `src/playback/karaoke.ts`, `src/components/PlaybackWave.tsx`:
       stream `/recordings/{id}/audio` with the bearer header, play/pause/seek,
       rate, word highlight, tap a word to seek, marks.
 - [ ] **Recording** — `src/recording/segmentedRecorder.ts`, `recordingSession.ts`,
