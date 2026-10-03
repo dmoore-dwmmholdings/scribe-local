@@ -45,7 +45,7 @@ feature cannot be done without one.
 - [x] **Playback** — done: `Services/Karaoke.swift` (port of karaoke.ts), `Services/Player.swift` (AVPlayer with bearer header, active line/word published only on change), `Views/Detail/PlaybackBar.swift` (scrub, ±15 s, 1–2×, mark ticks, follow), tappable words via `FlowLayout`, marks chips. — `src/playback/karaoke.ts`, `src/components/PlaybackWave.tsx`:
       stream `/recordings/{id}/audio` with the bearer header, play/pause/seek,
       rate, word highlight, tap a word to seek, marks.
-- [ ] **Recording** — `src/recording/segmentedRecorder.ts`, `recordingSession.ts`,
+- [x] **Recording** — done: `Recording/SegmentedRecorder.swift` (AVAudioEngine tap → 16 kHz mono AAC, gapless 30 s rotation on a writer queue, interruptions, route changes, media reset), `Recording/RecordingSession.swift` (offline-first: segments land in `Recording/LocalRecordings.swift`), `Views/RecordView.swift` (title, participants, level, mark, pause/resume, stop). `UploadQueue` is a stub for the next item. — `src/recording/segmentedRecorder.ts`, `recordingSession.ts`,
       `modules/scribe-audio-session`, `modules/scribe-bg-timer`, `app/(tabs)/index.tsx`:
       AVAudioSession record + background audio, AAC segments rotated without
       re-activating the session, marks, pause/resume, level meter, interruptions.
