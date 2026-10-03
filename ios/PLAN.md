@@ -27,7 +27,7 @@ feature cannot be done without one.
 
 - [x] **Skeleton**: XcodeGen project, theme, five tabs, builds and installs. Bundle
       id `com.dwmmholdings.scribenative` so it sits beside the old app.
-- [ ] **Models + API client** — `src/types.ts`, `src/api/client.ts`: Codable types,
+- [x] **Models + API client** — done: `Models/Models.swift` (lenient summary lists, unknown enum cases tolerated), `Models/APIClient.swift` (every route, snake_case conversion, `APIError`), `Models/Settings.swift` (Keychain for secrets). — `src/types.ts`, `src/api/client.ts`: Codable types,
       one `APIClient` (bearer auth, `ApiError` with status, `/health`, every route
       the old client calls). Settings store (`src/state/settingsStore.ts`):
       server URL + device id in UserDefaults, device key in Keychain.
